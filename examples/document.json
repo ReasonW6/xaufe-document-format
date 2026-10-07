@@ -1,0 +1,18 @@
+{
+  "mode": "document",
+  "cover": true,
+  "metadata": {
+    "title_zh": "普通文档格式示例"
+  },
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "一、已有内容"
+    },
+    {
+      "type": "paragraph",
+      "text": "document 模式只对提供的内容排版，不强制新增摘要、目录、参考文献或固定论文章节。封面、页眉和正文样式仍可复用。"
+    }
+  ]
+}

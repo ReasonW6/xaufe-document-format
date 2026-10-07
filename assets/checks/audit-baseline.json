@@ -1,0 +1,1445 @@
+{
+  "version": "1.0.0",
+  "purpose": "独立静态验收基准；禁止调用排版器重新生成，修改必须核对来源并增加独立测试。",
+  "roles": {
+    "body": {
+      "pPr": {
+        "jc": {
+          "val": "both"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "420",
+          "firstLineChars": "200"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "h1": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "468",
+          "after": "468",
+          "line": "400",
+          "lineRule": "exact",
+          "beforeLines": "150",
+          "afterLines": "150"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "0"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 28,
+        "bold_required": false
+      }
+    },
+    "h2": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "360",
+          "firstLineChars": "150"
+        },
+        "spacing": {
+          "before": "156",
+          "after": "156",
+          "line": "400",
+          "lineRule": "exact",
+          "beforeLines": "50",
+          "afterLines": "50"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "1"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 24,
+        "bold_required": false
+      }
+    },
+    "h3": {
+      "pPr": {
+        "jc": {
+          "val": "both"
+        },
+        "ind": {
+          "left": "420",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "120",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "2"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "preface": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "400",
+          "after": "400",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "0"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 28,
+        "bold_required": false
+      }
+    },
+    "reference_title": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "400",
+          "after": "400",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "1"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "0"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 32,
+        "bold_required": false
+      }
+    },
+    "reference": {
+      "pPr": {
+        "jc": {
+          "val": "both"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "caption": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "figure": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "160",
+          "after": "80",
+          "line": "240",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "equation": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "240",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "code": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "table_text": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "spacer": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "header": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "280",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 18,
+        "bold_required": false
+      }
+    },
+    "abstract_spacer": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "abstract_zh": {
+      "pPr": {
+        "jc": {
+          "val": "both"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "420",
+          "firstLineChars": "200"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "abstract_en": {
+      "pPr": {
+        "jc": {
+          "val": "both"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "420",
+          "firstLineChars": "200"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "Times New Roman",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "keywords_zh": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "1154",
+          "right": "0",
+          "hanging": "1154"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "keywords_en": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "1435",
+          "right": "0",
+          "hanging": "1435"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "Times New Roman",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": true
+      }
+    },
+    "title_zh": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 32,
+        "bold_required": false
+      }
+    },
+    "title_en": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "Times New Roman",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 32,
+        "bold_required": true
+      }
+    },
+    "abstract_label_zh": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 28,
+        "bold_required": false
+      }
+    },
+    "abstract_label_en": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "360",
+          "lineRule": "auto"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "Times New Roman",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 28,
+        "bold_required": true
+      }
+    },
+    "toc_title": {
+      "pPr": {
+        "jc": {
+          "val": "center"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "800",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 32,
+        "bold_required": false
+      }
+    },
+    "toc1": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 28,
+        "bold_required": false
+      }
+    },
+    "toc2": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "280",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 28,
+        "bold_required": false
+      }
+    },
+    "toc3": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "560",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 28,
+        "bold_required": false
+      }
+    },
+    "h4": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "420",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "120",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "3"
+        }
+      },
+      "font": {
+        "eastAsia": "黑体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 21,
+        "bold_required": false
+      }
+    },
+    "toc4": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "840",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 28,
+        "bold_required": false
+      }
+    }
+  },
+  "overrides": {
+    "A": {
+      "h3": {
+        "ind": {
+          "leftChars": "200"
+        }
+      }
+    },
+    "B": {}
+  }
+}

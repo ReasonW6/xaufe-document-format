@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "metadata",
+    "blocks"
+  ],
+  "properties": {
+    "mode": {
+      "enum": [
+        "paper",
+        "document"
+      ]
+    },
+    "cover": {
+      "type": "boolean"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title_zh": {
+          "type": "string"
+        },
+        "title_en": {
+          "type": "string"
+        },
+        "student_name": {
+          "type": "string"
+        },
+        "student_id": {
+          "type": "string"
+        },
+        "major": {
+          "type": "string"
+        },
+        "class_name": {
+          "type": "string"
+        },
+        "supervisor": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string"
+        },
+        "course_name": {
+          "type": "string"
+        }
+      }
+    },
+    "abstract_zh": {
+      "type": "string"
+    },
+    "abstract_en": {
+      "type": "string"
+    },
+    "keywords_zh": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "keywords_en": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "level",
+              "text"
+            ],
+            "properties": {
+              "type": {
+                "const": "heading"
+              },
+              "level": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "preface": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type"
+            ],
+            "oneOf": [
+              {
+                "required": [
+                  "text"
+                ]
+              },
+              {
+                "required": [
+                  "runs"
+                ]
+              }
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "paragraph",
+                  "code",
+                  "equation"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "runs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "text"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    },
+                    "superscript": {
+                      "type": "boolean"
+                    },
+                    "subscript": {
+                      "type": "boolean"
+                    },
+                    "italic": {
+                      "type": "boolean"
+                    },
+                    "bold": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "path"
+            ],
+            "properties": {
+              "type": {
+                "const": "image"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "caption": {
+                "type": "string"
+              },
+              "alt": {
+                "type": "string"
+              },
+              "width_cm": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 15.8
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "header",
+              "rows"
+            ],
+            "properties": {
+              "type": {
+                "const": "table"
+              },
+              "header": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "rows": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "caption": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "page_break"
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "title": "XAUFE format-only content; task workflow is stored separately"
+}

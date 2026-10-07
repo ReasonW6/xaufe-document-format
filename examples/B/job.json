@@ -1,0 +1,18 @@
+{
+  "task": "format",
+  "template": "B",
+  "logo": "green",
+  "info": {
+    "course_name": "示例课程",
+    "title_zh": "B版格式示例",
+    "student_name": "示例同学",
+    "major": "软件工程",
+    "class_name": "软工2301"
+  },
+  "blank": [
+    "student_id"
+  ],
+  "format": {
+    "footer_page_numbers": true
+  }
+}

@@ -1,0 +1,219 @@
+{
+  "version": "1.0.0",
+  "note": "排版器唯一段落参数入口。来源见 references/parameter-provenance.md；检查器另用独立固定基准。",
+  "styles": {
+    "XAUFE Body": {
+      "first": 420,
+      "chars": 200
+    },
+    "Heading 1": {
+      "cn": "黑体",
+      "size": 14,
+      "align": "center",
+      "before": 468,
+      "after": 468,
+      "before_lines": 150,
+      "after_lines": 150,
+      "outline": 0,
+      "keep": true
+    },
+    "Heading 2": {
+      "cn": "黑体",
+      "size": 12,
+      "align": "left",
+      "first": 360,
+      "chars": 150,
+      "before": 156,
+      "after": 156,
+      "before_lines": 50,
+      "after_lines": 50,
+      "outline": 1,
+      "keep": true
+    },
+    "Heading 3": {
+      "cn": "黑体",
+      "size": 10.5,
+      "align": "both",
+      "outline": 2,
+      "keep": true,
+      "left": 420,
+      "after": 120
+    },
+    "XAUFE Preface": {
+      "cn": "黑体",
+      "size": 14,
+      "align": "center",
+      "before": 400,
+      "after": 400,
+      "outline": 0,
+      "keep": true
+    },
+    "XAUFE Chinese Title": {
+      "cn": "黑体",
+      "size": 16,
+      "bold": false,
+      "align": "center",
+      "line": 360,
+      "line_rule": "auto",
+      "keep": true
+    },
+    "XAUFE English Title": {
+      "cn": "Times New Roman",
+      "size": 16,
+      "bold": true,
+      "align": "center",
+      "line": 360,
+      "line_rule": "auto",
+      "keep": true
+    },
+    "XAUFE Chinese Abstract Label": {
+      "cn": "黑体",
+      "size": 14,
+      "bold": false,
+      "align": "center",
+      "line": 360,
+      "line_rule": "auto",
+      "keep": true
+    },
+    "XAUFE English Abstract Label": {
+      "cn": "Times New Roman",
+      "size": 14,
+      "bold": true,
+      "align": "center",
+      "line": 360,
+      "line_rule": "auto",
+      "keep": true
+    },
+    "XAUFE Abstract Chinese": {
+      "first": 420,
+      "chars": 200,
+      "line": 360,
+      "line_rule": "auto"
+    },
+    "XAUFE Abstract English": {
+      "cn": "Times New Roman",
+      "first": 420,
+      "chars": 200,
+      "line": 360,
+      "line_rule": "auto"
+    },
+    "XAUFE Keywords Chinese": {
+      "cn": "黑体",
+      "align": "left",
+      "line": 360,
+      "line_rule": "auto",
+      "left": 1154,
+      "hanging": 1154
+    },
+    "XAUFE Keywords English": {
+      "cn": "Times New Roman",
+      "bold": true,
+      "align": "left",
+      "line": 360,
+      "line_rule": "auto",
+      "left": 1435,
+      "hanging": 1435
+    },
+    "XAUFE Abstract Spacer": {
+      "line": 360,
+      "line_rule": "auto",
+      "align": "left"
+    },
+    "XAUFE TOC Title": {
+      "cn": "黑体",
+      "size": 16,
+      "align": "center",
+      "after": 800,
+      "keep": true
+    },
+    "TOC 1": {
+      "cn": "黑体",
+      "size": 14,
+      "align": "left",
+      "left": "$toc_indent"
+    },
+    "TOC 2": {
+      "cn": "宋体",
+      "size": 14,
+      "align": "left",
+      "left": "$toc_indent"
+    },
+    "TOC 3": {
+      "cn": "宋体",
+      "size": 14,
+      "align": "left",
+      "left": "$toc_indent"
+    },
+    "XAUFE References Title": {
+      "cn": "黑体",
+      "size": 16,
+      "align": "center",
+      "before": 400,
+      "after": 400,
+      "outline": 0,
+      "keep": true,
+      "break_before": true,
+      "line": 360,
+      "line_rule": "auto"
+    },
+    "XAUFE Reference": {
+      "align": "both",
+      "line": 360,
+      "line_rule": "auto"
+    },
+    "XAUFE Caption": {
+      "align": "center",
+      "keep": false,
+      "line": 400,
+      "line_rule": "exact",
+      "before": 0,
+      "after": 0
+    },
+    "XAUFE Figure": {
+      "align": "center",
+      "keep": true,
+      "line": 240,
+      "line_rule": "auto",
+      "before": 160,
+      "after": 80
+    },
+    "XAUFE Equation": {
+      "align": "center",
+      "keep": false,
+      "line": 240,
+      "line_rule": "auto",
+      "before": 0,
+      "after": 0
+    },
+    "XAUFE Table Text": {
+      "align": "left"
+    },
+    "XAUFE Code": {
+      "align": "left"
+    },
+    "XAUFE Spacer": {
+      "size": 10.5,
+      "align": "left"
+    },
+    "XAUFE Header": {
+      "size": 9,
+      "align": "left",
+      "line": 280
+    },
+    "Heading 4": {
+      "cn": "黑体",
+      "size": 10.5,
+      "align": "left",
+      "outline": 3,
+      "keep": true,
+      "left": 420,
+      "after": 120
+    },
+    "TOC 4": {
+      "cn": "宋体",
+      "size": 14,
+      "align": "left",
+      "left": "$toc_indent"
+    }
+  }
+}

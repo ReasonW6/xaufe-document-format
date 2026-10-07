@@ -1,0 +1,64 @@
+{
+  "version": "1.0.0",
+  "source": "用户本轮明确要求：红绿两版完成日期位于第一页封面底部，而不是信息栏下一行；底部定义为既有2.54厘米下边距以内的版心底部，不是页脚。",
+  "common": {
+    "paragraph_index": 14,
+    "paragraph_count": 15,
+    "height_twips": 16838,
+    "bottom_twips": 1440,
+    "frame_height_twips": 720,
+    "frame": {
+      "h": "720",
+      "wrap": "notBeside",
+      "hAnchor": "margin",
+      "vAnchor": "margin",
+      "xAlign": "center",
+      "yAlign": "bottom",
+      "hRule": "atLeast",
+      "anchorLock": "1",
+      "hSpace": "0",
+      "vSpace": "0"
+    },
+    "paragraph": {
+      "keepNext": {
+        "val": "0"
+      },
+      "keepLines": {
+        "val": "1"
+      },
+      "snapToGrid": {
+        "val": "0"
+      },
+      "spacing": {
+        "before": "0",
+        "after": "0",
+        "line": "720",
+        "lineRule": "exact"
+      },
+      "ind": {
+        "left": "0",
+        "right": "0",
+        "firstLine": "0"
+      },
+      "jc": {
+        "val": "center"
+      },
+      "outlineLvl": {
+        "val": "9"
+      }
+    },
+    "minimum_gap_pt": 12,
+    "render_tolerance_pt": 4,
+    "no_direct_page_break_property": true
+  },
+  "templates": {
+    "A": {
+      "left_twips": 1800,
+      "width_twips": 8306
+    },
+    "B": {
+      "left_twips": 1701,
+      "width_twips": 8958
+    }
+  }
+}

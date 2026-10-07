@@ -1,0 +1,126 @@
+{
+  "id": "A",
+  "name": "A｜本科学年论文",
+  "master_file": "assets/A/format-master.docx",
+  "master_sha256": "38ef597b7f60fc1b39dba9e166dfda62929445e570a9d2d229f1b2e7d860baf0",
+  "source_files": [
+    {
+      "file": "sources/A/信息学院学年论文细则.docx",
+      "sha256": "6e2edda608b2f45c6cd30bb1d814bc94086ca5c082ba2aa5b448eb44c46e7dd7",
+      "role": "原始学校要求、页面设置、字体字号、段落、Logo"
+    }
+  ],
+  "page_twips": {
+    "width": 11906,
+    "height": 16838,
+    "top": 1440,
+    "bottom": 1440,
+    "left": 1800,
+    "right": 1800,
+    "header": 851,
+    "footer": 992,
+    "gutter": 0
+  },
+  "logo": {
+    "default": "green",
+    "width_emu": 3695700,
+    "height_emu": 914400,
+    "alignment": "left"
+  },
+  "cover": {
+    "paragraph_count": 15,
+    "logo_paragraph": 0,
+    "title_paragraph": 5,
+    "fields": {
+      "student_name": 9,
+      "student_id": 10,
+      "major": 11,
+      "class_name": 12,
+      "supervisor": 13
+    },
+    "date_paragraph": 14,
+    "document_label": "本科学年论文(设计)",
+    "title_label": "论文题目：",
+    "label_paragraph": 3,
+    "required_fields": [
+      "title_zh",
+      "student_name",
+      "student_id",
+      "major",
+      "class_name",
+      "supervisor",
+      "date"
+    ],
+    "date_layout": {
+      "frame": {
+        "h": "720",
+        "wrap": "notBeside",
+        "hAnchor": "margin",
+        "vAnchor": "margin",
+        "xAlign": "center",
+        "yAlign": "bottom",
+        "hRule": "atLeast",
+        "anchorLock": "1",
+        "hSpace": "0",
+        "vSpace": "0"
+      },
+      "paragraph": {
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "720",
+          "lineRule": "exact"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "jc": {
+          "val": "center"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "purpose": "完成日期独立锚定封面版心底部；页脚不使用；不靠连续空行或大段前间距定位。"
+    }
+  },
+  "parts": [
+    "cover",
+    "toc",
+    "abstract_zh",
+    "abstract_en",
+    "body",
+    "references"
+  ],
+  "english_abstract": true,
+  "header": {
+    "enabled": true,
+    "left_pattern": "{major}专业本科学年论文",
+    "right_field": "title_zh"
+  },
+  "footer": {},
+  "toc": {
+    "indents_twips": [
+      0,
+      280,
+      560
+    ]
+  },
+  "paragraph_rules": "assets/paragraph-rules.json",
+  "style_overrides": {
+    "Heading 3": {
+      "left_chars": 200
+    }
+  }
+}

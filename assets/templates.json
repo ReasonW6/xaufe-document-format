@@ -1,0 +1,26 @@
+{
+  "templates": {
+    "A": {
+      "name": "A｜本科学年论文",
+      "spec": "assets/A/layout.json"
+    },
+    "B": {
+      "name": "B｜课程期末大作业",
+      "spec": "assets/B/layout.json"
+    }
+  },
+  "logos": {
+    "green": {
+      "file": "assets/logos/green.png",
+      "sha256": "2494b165fce546bb6fc464d67dcd1b2f5f178c7dd9f02a1c62fa0487f2061254",
+      "pixel_width": 505,
+      "pixel_height": 125
+    },
+    "red": {
+      "file": "assets/logos/red.png",
+      "sha256": "8e6ba9af46db1c09f1152d9bb9ee549175afcda41a63d82cab84a2dd48d3da2a",
+      "pixel_width": 350,
+      "pixel_height": 80
+    }
+  }
+}

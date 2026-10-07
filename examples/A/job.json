@@ -1,0 +1,12 @@
+{
+  "task": "format",
+  "template": "A",
+  "info": {
+    "title_zh": "A版格式示例",
+    "student_name": "示例同学",
+    "student_id": "20230001",
+    "major": "软件工程",
+    "class_name": "软工2301",
+    "supervisor": "示例教师"
+  }
+}

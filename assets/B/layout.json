@@ -1,0 +1,140 @@
+{
+  "id": "B",
+  "name": "B｜课程期末大作业",
+  "master_file": "assets/B/format-master.docx",
+  "master_sha256": "f6052501aee08b68baed11ebff1e24651cd302cf4428bdf19e0b15d7b4bd9790",
+  "source_files": [
+    {
+      "file": "sources/B/(1)封面模版.doc",
+      "sha256": "c56baf43ebd5f630ce79a044af83eea392c2139619c1380bce4058664aecf07f",
+      "role": "用户提供的红色课程模板原件"
+    },
+    {
+      "file": "sources/B/(2)摘要模版.doc",
+      "sha256": "6d7890cbea90e77e660190aaaa218445062c9fc69892c9ae5cac0677947ff103",
+      "role": "用户提供的红色课程模板原件"
+    },
+    {
+      "file": "sources/B/(3)目录模版.doc",
+      "sha256": "cd9d2ac5b4b3430c9b34e928a17447795c775bbd95947b6bb7824c2164ab9a47",
+      "role": "用户提供的红色课程模板原件"
+    },
+    {
+      "file": "sources/B/(4)正文模版.doc",
+      "sha256": "2551c3aecfc7569b1f007ca48cb0549e710e2a1934acf4f532b1427a6e1ff040",
+      "role": "用户提供的红色课程模板原件"
+    },
+    {
+      "file": "sources/B/(5)参考文献模版.doc",
+      "sha256": "21d7b2dbb8596be257002367214d01b900a67d5074e991cf45233a2ec3204373",
+      "role": "用户提供的红色课程模板原件"
+    }
+  ],
+  "page_twips": {
+    "width": 11906,
+    "height": 16838,
+    "top": 1440,
+    "bottom": 1440,
+    "left": 1701,
+    "right": 1247,
+    "header": 0,
+    "footer": 0,
+    "gutter": 0
+  },
+  "logo": {
+    "default": "red",
+    "width_emu": 3212465,
+    "height_emu": 734695,
+    "alignment": "left"
+  },
+  "cover": {
+    "paragraph_count": 15,
+    "logo_paragraph": 0,
+    "title_paragraph": 5,
+    "fields": {
+      "student_name": 9,
+      "student_id": 10,
+      "major": 11,
+      "class_name": 12
+    },
+    "date_paragraph": 14,
+    "document_label": "期末大作业",
+    "title_label": "题目：",
+    "label_paragraph": 3,
+    "required_fields": [
+      "course_name",
+      "title_zh",
+      "student_name",
+      "student_id",
+      "major",
+      "class_name",
+      "date"
+    ],
+    "course_paragraph": 2,
+    "date_value_run": 1,
+    "date_layout": {
+      "frame": {
+        "h": "720",
+        "wrap": "notBeside",
+        "hAnchor": "margin",
+        "vAnchor": "margin",
+        "xAlign": "center",
+        "yAlign": "bottom",
+        "hRule": "atLeast",
+        "anchorLock": "1",
+        "hSpace": "0",
+        "vSpace": "0"
+      },
+      "paragraph": {
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "720",
+          "lineRule": "exact"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "jc": {
+          "val": "center"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "purpose": "完成日期独立锚定封面版心底部；页脚不使用；不靠连续空行或大段前间距定位。"
+    }
+  },
+  "parts": [
+    "cover",
+    "abstract_zh",
+    "toc",
+    "body",
+    "references"
+  ],
+  "english_abstract": false,
+  "header": {
+    "enabled": false
+  },
+  "footer": {},
+  "toc": {
+    "indents_twips": [
+      0,
+      280,
+      560
+    ]
+  },
+  "paragraph_rules": "assets/paragraph-rules.json",
+  "style_overrides": {}
+}
