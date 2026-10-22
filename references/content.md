@@ -116,10 +116,11 @@ WORK 里只能有其中一个文件。
 | `figure` / `equation` / `code` | 只放图片 / 公式 / 代码的段落 |
 | `spacer` | 空段落 |
 | `preserve` | 原样保留不排版（旧封面） |
-| `delete` | 删除这一段（只用于用户同意删的内容和被替换的旧目录） |
+| `delete` | 删除这一段（只用于用户同意删的内容） |
+| `old_toc` | 原稿里的旧目录，由新目录代替（inspect 自动标，不要用在别的段落） |
 
 其他项：
-- `mode`：inspect 自动判断。`"paper"`＝原稿有摘要和标题，按完整论文结构排：自动生成目录、摘要单独成页、分节设页码（原稿里的旧目录会标成 `delete`，由新目录代替）。`"document"`＝普通文档，只排样式，不加目录。
+- `mode`：inspect 自动判断。`"paper"`＝原稿有摘要和标题，按完整论文结构排：自动生成目录、摘要单独成页、分节设页码（原稿里的旧目录会标成 `old_toc`，由新目录代替）。`"document"`＝普通文档，只排样式，不加目录。
 - `add`：只在 `mode` 为 `"paper"`、所选版式要英文摘要、原稿没有、**用户同意由你翻译**时使用，写法：
   ```json
   "add": {"title_en": "英文题目", "abstract_en": "英文摘要正文", "keywords_en": ["keyword one", "keyword two"]}
@@ -127,5 +128,5 @@ WORK 里只能有其中一个文件。
   用户不要英文摘要时，不写 `add`，改在 job.json 的 format 写 `"english_abstract": false`。
 - `replace_cover_before`：`0` 表示在最前面加上所选版式的封面；大于 0 表示原稿前面有旧封面，会被替换成新封面（数字是旧封面后第一块内容的位置，由 inspect 自动判断）；`null` 表示不加封面（用户不要封面时）。旧封面判断错了就问用户。
 - `format_tables`：`true` 表示表格也按模板调整宽度和字体。
-- 原稿有英文摘要但 B 版默认没有：问用户保留还是去掉。保留就在 job.json 的 format 写 `"english_abstract": true`；用户同意去掉时，把这些段落的 role 改成 `delete`。
-- `delete`：只用于用户同意删除的段落，以及 `mode: "paper"` 时被新目录代替的旧目录。run 会列出删了哪些段；回复里要告诉用户。
+- 原稿有英文摘要但 B 版默认没有：问用户保留还是去掉。保留就在 job.json 的 format 写 `"english_abstract": true`；用户同意去掉时，把这些段落的 role 改成 `delete`，并在 job.json 的 `approved_changes` 记一笔（见下一条）。
+- `delete`：只用于用户同意删除的段落。只排版时 `run` 会逐字对照原稿，删掉的文字必须写进 job.json 的 `approved_changes`（写法见 job.md），否则不交付。run 会列出删了哪些段；回复里要告诉用户。

@@ -119,17 +119,45 @@ def _online():
         return False
 
 
+SEARCH_URL = re.compile(
+    r"(?:google\.[a-z.]+/(?:search|scholar)|scholar\.google|baidu\.com/s\b|xueshu\.baidu\.com/s\b|bing\.com/search"
+    r"|sogou\.com/|so\.com/s\b|duckduckgo\.com|search\.cnki|kns\.cnki\.net/kns8?s?/(?:search|defaultresult)"
+    r"|[?&](?:q|wd|word|query|keyword|kw|searchword)=)",
+    re.I,
+)
+
+
+def _surname(author):
+    """The part of an author string a page or reference line is sure to contain."""
+    author = str(author or "").strip()
+    if _cjk(author):
+        return re.sub(r"\s+", "", author)
+    words = sorted(re.findall(r"[A-Za-zÀ-ÿ'-]{2,}", author), key=len, reverse=True)
+    return words[0] if words else ""
+
+
+def _contains_word(haystack, word):
+    if not word:
+        return True
+    if _cjk(word):
+        return word in re.sub(r"\s+", "", haystack)
+    return re.search(r"(?<![A-Za-z])" + re.escape(word) + r"(?![A-Za-z])", haystack, re.I) is not None
+
+
 def _page_check(entry, result, why=""):
-    """Entries without a usable DOI record: the linked page must show the title.
+    """Entries without a usable DOI record: the linked page must show title, first author and year.
 
     A page that refuses automated access (403/429, captcha, login wall) cannot
     be checked either way, so the entry is 无法验证, not 排除; only a page that
     loads and lacks the title, or a dead link, is evidence against the entry.
+    Search-result and aggregator links prove nothing about the work itself.
     """
     url = str(entry.get("url") or "").strip()
     title = str(entry.get("title") or "").strip()
     if not url:
         result.update(status=FIX, notes=[why + "请加上原文页面的 url（能打开、页面上有题目）"])
+    elif SEARCH_URL.search(url):
+        result.update(status=FIX, notes=["url 是搜索结果页或检索入口，证明不了这篇文献存在：换成文献本身的页面（期刊官网文章页、出版社书目页、学位论文库详情页）"])
     elif not title:
         result.update(status=FIX, notes=["缺 title：写上文献的题目，脚本要在链接页面上找它"])
     else:
@@ -137,16 +165,29 @@ def _page_check(entry, result, why=""):
             page = fetch_page(url)
         except Offline as exc:
             code = getattr(exc, "code", None)
-            if code in BLOCKED_HTTP or (code is None and re.search(r"timed? ?out|超时", str(exc), re.I)):
-                result.update(status=PENDING, notes=[why + f"网站拒绝自动访问或超时（{exc}），无法验证；请用户自己打开链接核对"])
+            if code in BLOCKED_HTTP:
+                result.update(status=PENDING, notes=[why + f"网站拒绝自动访问（{exc}），无法验证；请用户自己打开链接核对"])
                 return result
             if not _online():
                 raise Offline(str(exc), down=True) from exc
+            if code is None and re.search(r"timed? ?out|超时", str(exc), re.I):
+                result.update(status=PENDING, notes=[why + f"网站响应超时（{exc}），无法验证；请用户自己打开链接核对"])
+                return result
             result.update(status=DROP, notes=[f"链接打不开（{exc}）：换一个能打开的原文页面链接，或用 DOI"])
             return result
         if _norm(title) in _norm(page):
-            result["notes"].append("链接页面上有这个题目")
-            result["_source_text"] = page
+            authors = entry.get("authors") or []
+            first = _surname(authors[0] if isinstance(authors, list) and authors else authors)
+            year = str(entry.get("year") or "").strip()[:4]
+            missing = [x for x, ok in ((f"第一作者 {first}", _contains_word(page, first)), (f"年份 {year}", not year or year in page)) if not ok]
+            if not first:
+                missing.insert(0, "authors（refs.json 里没写作者）")
+            if missing:
+                result.update(status=FIX, notes=["链接页面上有这个题目，但找不到" + "、".join(missing)
+                                                 + "：可能是引用了它的别的页面。换成文献本身的页面，或核对作者和年份"])
+            else:
+                result["notes"].append("链接页面上有题目、第一作者和年份")
+                result["_source_text"] = page
         elif BLOCKED_PAGE.search(page[:20000]) or len(_norm(page)) < 200:
             result.update(status=PENDING, notes=[why + "链接打开的是验证码、登录页或空白页，无法验证；请用户自己打开链接核对"])
         else:
@@ -293,6 +334,65 @@ def _years(*records):
     return years
 
 
+def _families(csl):
+    return [str(a.get("family") or a.get("literal") or a.get("name") or "") for a in csl.get("author") or []]
+
+
+def _record_authors(entry, csl, result):
+    """Every author written in refs.json must match the record, in order; at least the first three."""
+    record = [f for f in _families(csl) if f]
+    authors = entry.get("authors") or []
+    authors = authors if isinstance(authors, list) else [authors]
+    if not record or _cjk(record[0]) != _cjk(str(authors[0] if authors else "")):
+        return
+    for i, (given, family) in enumerate(zip(authors, record), 1):
+        if _norm(family) not in _norm(given):
+            result["status"] = FIX
+            result["notes"].append(f"第 {i} 位作者对不上：记录里是 {family}，你写的是 {given}")
+            return
+    if len(authors) < min(3, len(record)):
+        result["status"] = FIX
+        result["notes"].append(f"作者少写了：记录里有 {len(record)} 位作者，至少要写前 {min(3, len(record))} 位（{'、'.join(record[:3])}）")
+    elif len(authors) > len(record):
+        result["status"] = FIX
+        result["notes"].append(f"作者多写了：记录里只有 {len(record)} 位（{'、'.join(record)}）")
+
+
+def text_problems(entry):
+    """The printed reference line (text) must say what was checked: title, authors, year, venue, DOI."""
+    text = str(entry.get("text") or "")
+    flat = _norm(text)
+    problems = []
+    title = str(entry.get("title") or "")
+    main = re.split(r"[:：]|\s[-–—]\s", title, maxsplit=1)[0]
+    if title and _norm(main) not in flat:
+        problems.append(f"text 里没有题目“{title[:30]}”")
+    authors = entry.get("authors") or []
+    authors = authors if isinstance(authors, list) else [authors]
+    absent = [a for a in authors[:3] if not _contains_word(text, _surname(a))]
+    if absent:
+        problems.append("text 里没有作者 " + "、".join(map(str, absent)))
+    year = str(entry.get("year") or "").strip()[:4]
+    if year and year not in text:
+        problems.append(f"text 里没有年份 {year}")
+    journal = str(entry.get("journal") or "")
+    words = [w for w in re.findall(r"[a-z]{4,}", journal.lower()) if w not in ("proceedings", "conference", "journal", "international")]
+    if _cjk(journal):
+        named = _norm(journal) in flat
+    else:  # venues are often abbreviated in the printed line; most distinctive words must be there
+        short = re.findall(r"\(([A-Za-z]{2,10})\)", journal)  # "... Recognition (CVPR)" printed as "CVPR"
+        named = not words or sum(w in text.lower() for w in words) >= 0.6 * len(words) or any(
+            _contains_word(text, a) for a in short
+        )
+    if journal and not named:
+        problems.append(f"text 里没有刊名/会议名“{journal[:30]}”")
+    written = re.search(r"10\.\d{4,9}/\S+", text)
+    doi = clean_doi(entry.get("doi"))
+    if written and doi and written.group(0).rstrip(".,;，。").lower() != doi.lower():
+        problems.append(f"text 里的 DOI {written.group(0)} 和 doi 字段 {doi} 不一样")
+    return problems
+
+
 def _first_author(csl):
     authors = csl.get("author") or []
     if not authors:
@@ -418,6 +518,8 @@ def check_entry(entry, this_year):
     elif record_author and _norm(record_author) not in _norm(given_first):
         result["status"] = FIX
         result["notes"].append(f"第一作者对不上：记录里是 {record_author}，你写的是 {given_first or '（空）'}")
+    else:
+        _record_authors(entry, csl, result)
 
     years = _years(csl, crossref)
     if openalex.get("publication_year"):
@@ -471,19 +573,25 @@ def check_all(entries, this_year=None):
             seen[key] = index
         if offline and clean_doi(entry.get("doi")) and not entry.get("from_user"):
             results.append(
-                {"text": str(entry.get("text") or ""), "status": PENDING, "notes": [offline], "year": _int(entry.get("year")), "per_year": None}
+                {"text": str(entry.get("text") or ""), "status": PENDING, "notes": [offline], "year": _int(entry.get("year")),
+                 "per_year": None, "unreachable": True}
             )
             continue
         try:
             verdict = check_entry(entry, this_year)
             verdict.update(support(entry, verdict.pop("_source_text", "")))
+            mismatch = text_problems(entry) if verdict["status"] in (PASS, PENDING) and not entry.get("from_user") else []
+            if mismatch:
+                verdict["status"] = FIX
+                verdict["notes"].append("；".join(mismatch) + "。text 是印在论文里的那一行，要和核对过的字段一致")
             results.append(verdict)
         except Offline as exc:
             note = f"连不上核对服务（{exc}），这条没核对"
             if exc.down:
                 offline = note
             results.append(
-                {"text": str(entry.get("text") or ""), "status": PENDING, "notes": [note], "year": _int(entry.get("year")), "per_year": None}
+                {"text": str(entry.get("text") or ""), "status": PENDING, "notes": [note], "year": _int(entry.get("year")),
+                 "per_year": None, "unreachable": True}
             )
     return results
 
@@ -505,17 +613,20 @@ def report(results, entries, minimum=DEFAULT_MIN, this_year=None):
     ]
     recent = sum(1 for y in counted if this_year - y < RECENT_YEARS)
     lines.append("")
-    lines.append(f"可用 {len(usable)} 条（不含“排除”），要求至少 {minimum} 条。")
+    lines.append(f"可用 {len(usable)} 条（不含“排除”），本次至少要 {minimum} 条（用户另有要求按用户的）。")
     if counted:
         lines.append(
             f"近 {RECENT_YEARS} 年（{this_year - RECENT_YEARS + 1} 年以后）{recent}/{len(counted)} 条，"
-            f"占 {round(100 * recent / len(counted))}%，要求不低于 60%（classic 为 true 的经典文献不算在内）。"
+            f"占 {round(100 * recent / len(counted))}%（建议不低于 60%，不是硬性要求；classic 为 true 的经典文献不算在内）。"
         )
     lines.append("")
     lines.append("→ 下一步：")
     lines.append("  排除：从 refs.json 删掉，另找一篇；不要把它改成查到的那篇。")
     lines.append("  信息不一致：确认是同一篇后，按提示同时改 refs.json 里的字段和 text，再运行 refs；不改不能用。")
     lines.append("  无法验证：可以用，但不能说成已验证；finish 会把原因列进给用户的清单。")
+    if any(r.get("unreachable") for r in results):
+        lines.append("  连不上核对服务的条目：联网后重新运行 refs。确实没法联网时先问用户是否接受未核实的文献，"
+                     "用户同意后在 job.json 写 \"accept_unverified_refs\": true，否则 run 会拦下。")
     lines.append("  观点支撑：给每条写 quote（支撑你那句话的原文原句）；没找到或没对照的会在清单里如实标出。")
     if len(usable) < minimum:
         lines.append(f"  可用的不够 {minimum} 条：继续检索；实在找不到就如实告诉用户还差 {minimum - len(usable)} 条，不要凑数。")

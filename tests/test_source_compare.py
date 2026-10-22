@@ -21,12 +21,17 @@ class SourceProseTests(unittest.TestCase):
         out = self.root / "output.docx"
         doc = Document()
         doc.add_paragraph("保留的第一段。")
+        doc.add_paragraph("这一段是排版时编出来的。")
         doc.save(out)
         report = S.compare([{"path": str(source)}], out)
         self.assertEqual(
             report["sources"][0]["missing"],
-            [{"location": "line 5", "text": "转换中不能漏掉的第二段。"}],
+            [{"location": "line 1", "text": "标题"}, {"location": "line 5", "text": "转换中不能漏掉的第二段。"}],
         )
+        self.assertEqual([a["text"] for a in report["added"]], ["这一段是排版时编出来的。"])
+        approved = S.compare([{"path": str(source)}], out, approved=["转换中不能漏掉的第二段", "编出来的"])
+        self.assertEqual([m["text"] for m in approved["sources"][0]["missing"]], ["标题"])
+        self.assertEqual(approved["added"], [])
 
     def test_known_metadata_labels_do_not_create_false_omissions(self):
         source = self.root / "raw.md"

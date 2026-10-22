@@ -10,6 +10,7 @@
     python -X utf8 scripts/xaufe.py run --work WORK [--office none] [--office-note "原因"]
     python -X utf8 scripts/xaufe.py finish --work WORK
     python -X utf8 scripts/xaufe.py preview --work WORK --docx 文件.docx
+    python -X utf8 scripts/xaufe.py adopt --work WORK --docx 手工改好的.docx --note "改了什么"
     python -X utf8 scripts/xaufe.py cancel --work WORK
 
 Output is plain Chinese text meant to be read and followed step by step.
@@ -86,7 +87,7 @@ def _intake(root):
     job = _read(root / "job.json", "job.json")
     if isinstance(job, dict) and job.get("task") not in ("write", "format"):
         raise ValueError(
-            'job.json 缺 task：这次要写内容就写 "task": "write"，只排版就写 "task": "format"（判断方法见 SKILL.md 第 0 步）。'
+            'job.json 缺 task：这次要写内容就写 "task": "write"，只排版就写 "task": "format"（判断方法见 SKILL.md 的“需要用户决定的事”）。'
         )
     return I.from_job(job, root / "intake.json")
 
@@ -180,10 +181,17 @@ def _writing_problems(root, content):
         current = hashlib.sha256(refs_json.read_bytes()).hexdigest() if refs_json.is_file() else None
         if saved.get("refs_sha256") != current:
             problems.append("refs.json 改过以后还没有重新运行 refs。")
-        usable = {_ref_key(r["text"]) for r in saved.get("results", []) if r["status"] in (R.PASS, R.PENDING, R.USER)}
+        results = {_ref_key(r["text"]): r for r in saved.get("results", [])}
+        accepted = _read(root / "job.json", "job.json").get("accept_unverified_refs") is True
         for index, text in enumerate(references, 1):
-            if _ref_key(text) not in usable:
+            r = results.get(_ref_key(text))
+            if r is None or r["status"] not in (R.PASS, R.PENDING, R.USER):
                 problems.append(f"参考文献第 {index} 条不在 refs 核对可用的条目里（要用 refs.json 里的 text 原样写）：{str(text)[:40]}")
+            elif r.get("unreachable") and not accepted:
+                problems.append(
+                    f"参考文献第 {index} 条因为连不上核对服务根本没核对：联网后重新运行 refs；确实没法联网，"
+                    "先问用户是否接受未核实的文献，用户同意后在 job.json 写 \"accept_unverified_refs\": true：" + str(text)[:30]
+                )
     for block in content.get("blocks", []):
         if block.get("type") == "paragraph":
             runs = block.get("runs") or []
@@ -398,7 +406,7 @@ def cmd_inspect(args):
             if b["kind"] == "paragraph" and (roles.get(b["id"]) == "toc_title" or (
                 roles.get(b["id"]) == "preserve" and (cover_end is None or b["block_index"] >= cover_end)
             )):
-                roles[b["id"]] = "delete"
+                roles[b["id"]] = "old_toc"
     mapping = {
         "source": str(source),
         "input_sha256": inv["input_sha256"],
@@ -430,8 +438,8 @@ def cmd_inspect(args):
         print("  原稿没有封面，会在最前面加上所选模板的封面。")
     if paper:
         print("  原稿有摘要和标题：按完整论文结构排（mode=paper），会自动生成目录、摘要单独成页。")
-        if "delete" in values or "delete" in roles.values():
-            print("  原稿里的旧目录已标为 delete，会换成自动生成的目录。")
+        if "old_toc" in roles.values():
+            print("  原稿里的旧目录已标为 old_toc，会换成自动生成的目录。")
         from customization import profile_for
 
         if profile_for(state)["english_abstract"] and "abstract_en" not in values:
@@ -489,7 +497,7 @@ def _build(root, level):
             source, resolved, draft, force=True, intake_path=root / "intake.json", cover_min_level=level
         )
         if result.get("deleted_paragraphs") and level == 0:
-            print(f"按 mapping 删除了 {len(result['deleted_paragraphs'])} 段（role 为 delete）：")
+            print(f"按 mapping 删除了 {len(result['deleted_paragraphs'])} 段（role 为 delete 或 old_toc）：")
             for text in result["deleted_paragraphs"]:
                 print("  - " + (text or "（空段）"))
     else:
@@ -513,7 +521,7 @@ def _body_length(root):
 
 
 def _review_template(result):
-    warnings = {w["code"]: "请填写：这条警告怎么处理的——" + w["message"][:80] for w in result["warnings"]}
+    warnings = {F.warning_key(w): "请填写：这条提示怎么处理的——" + F.warning_text(w)[:100] for w in result["warnings"]}
     static = result["validation_scope"] == "static-only"
     return {
         "vision": not static,
@@ -545,17 +553,27 @@ def cmd_run(args):
     if _task(root) == "write" and (root / "content.json").is_file():
         problems = _writing_problems(root, _read(root / "content.json", "content.json"))
         if problems:
-            raise ValueError(
-                "写作检查没通过（job.json 的 task 是 write）：\n  - "
-                + "\n  - ".join(problems[:15])
-                + "\n改好 content.json / refs.json 后重新 run。不要为了通过检查编造数字或出处。"
-            )
+            fix = "改 content.json / refs.json 后重新 run；不要为了通过检查编造数字或出处。"
+            issues = [
+                {"code": "WRITING_CHECK", "stage": "写作检查", "message": text, "cause": "写作模式（task 为 write）的硬性要求没满足。", "fix": fix}
+                for text in problems
+            ]
+            return _not_accepted(root, F.AcceptanceFailed("写作检查", issues))
     if args.office in ("word", "libreoffice", "wps", "wps-manual"):
         engine = "wps" if args.office.startswith("wps") else args.office
         D.configure_office(root, engine, "manual" if args.office == "wps-manual" else "auto")
+    if (root / "content.json").is_file() == (root / "mapping.json").is_file():
+        raise ValueError(
+            "WORK 里同时有 content.json 和 mapping.json，只能保留一个：新写文档用 content.json，已有 Word 用 mapping.json。"
+            if (root / "content.json").is_file()
+            else "还没有内容：新写文档请写 content.json；已有 Word 请先运行 inspect。"
+        )
     level = 0
     while True:
-        draft = _build(root, level)
+        try:
+            draft = _build(root, level)
+        except ValueError as exc:
+            return _not_accepted(root, F.AcceptanceFailed("排版", F.from_message(str(exc), root)))
         try:
             result = D.prepare(
                 root, draft, root / "intake.json", args.office_note, "none" if args.office == "none" else "auto"
@@ -592,7 +610,7 @@ def cmd_run(args):
     if result["warnings"]:
         print("\n需要处理的提示：")
         for w in result["warnings"]:
-            print(f"  - {w['code']}：{w['message']}")
+            print("  - " + F.warning_text(w))
     review = root / "review.json"
     if result["validation_scope"] == "static-only":
         print(f"\n→ 下一步：这次没有页图。核对内容和格式后，把 {review} 里所有“请填写”换成你的实际检查结果，然后运行 finish。")
@@ -720,7 +738,27 @@ def cmd_preview(args):
     if rendered["errors"]:
         print("\n渲染后版面检查发现问题：\n" + F.render_text(F.from_render(rendered)))
     for w in rendered["warnings"]:
-        print(f"注意（{w['code']}）：{w['message']}")
+        print("注意：" + F.warning_text(w))
+    return 0
+
+
+def cmd_adopt(args):
+    """A requirement the scripts cannot meet, handled by hand on a copy of the accepted output."""
+    import delivery as D
+
+    root, _ = _work(args.work)
+    try:
+        result = D.adopt(root, args.docx, args.note)
+    except F.AcceptanceFailed as exc:
+        return _not_accepted(root, exc)
+    _write(root / "review.json", _review_template(result))
+    print(f"手工处理过的 Word 已通过渲染后检查，共 {len(result['pages'])} 页。请逐页打开查看：")
+    for page in result["pages"]:
+        print(f"  第{page['page']}页：{page['path']}")
+    print("\n需要处理的提示（每条都要在 review.json 的 warnings 里写怎么处理的）：")
+    for w in result["warnings"]:
+        print("  - " + F.warning_text(w))
+    print(f"\n→ 下一步：看完每一页后填写 {root / 'review.json'}，然后运行 finish。交付时会把手工处理的内容告诉用户。")
     return 0
 
 
@@ -760,6 +798,10 @@ def main(argv=None):
     a = sub.add_parser("preview", help="给任意 .docx 生成页图（手工处理过的文档用）")
     a.add_argument("--work", required=True)
     a.add_argument("--docx", required=True)
+    a = sub.add_parser("adopt", help="脚本做不到的要求：验收在成品副本上手工处理过的 Word")
+    a.add_argument("--work", required=True)
+    a.add_argument("--docx", required=True)
+    a.add_argument("--note", required=True, help="手工改了什么，会告诉用户")
     a = sub.add_parser("inspect", help="读取已有 Word，生成可核对的 mapping.json")
     a.add_argument("--work", required=True)
     a.add_argument("--docx", required=True)
@@ -768,6 +810,7 @@ def main(argv=None):
     a.add_argument("--min", type=int, default=6, help="至少几篇；用户另有要求时填用户的数")
     args = parser.parse_args(argv)
     handler = {
+        "adopt": cmd_adopt,
         "compare": cmd_compare,
         "new": cmd_new,
         "check": cmd_check,

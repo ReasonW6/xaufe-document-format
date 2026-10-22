@@ -65,7 +65,7 @@ class CheckEntry(unittest.TestCase):
         self.assertEqual(r["status"], R.FIX)
         self.assertIn("url", r["notes"][0])
         self.assertEqual(fetch.call_count, 1)
-        with network(ra="ISTIC"), patch("refcheck.fetch_page", return_value="<h1>" + GOOD["title"] + "</h1>"):
+        with network(ra="ISTIC"), patch("refcheck.fetch_page", return_value="<h1>" + GOOD["title"] + "</h1> He K 2016"):
             self.assertEqual(R.check_all([{**GOOD, "url": "https://example.org/a"}])[0]["status"], R.PASS)
 
     def test_doi_of_another_paper_is_dropped_not_fixed(self):
@@ -90,7 +90,8 @@ class CheckEntry(unittest.TestCase):
         self.assertIn("刊名", joined)
 
     def test_chinese_entry_is_not_rewritten_to_pinyin_or_english(self):
-        cn = {**GOOD, "title": "图像分类的深度卷积神经网络模型综述", "authors": ["张珂"], "journal": "中国图象图形学报"}
+        cn = {**GOOD, "title": "图像分类的深度卷积神经网络模型综述", "authors": ["张珂"], "journal": "中国图象图形学报",
+              "text": "张珂, 冯晓晗, 郭玉荣, 等. 图像分类的深度卷积神经网络模型综述[J]. 中国图象图形学报, 2016."}
         csl = {**CSL_RECORD, "title": cn["title"], "author": [{"family": "Ke", "given": "Zhang"}], "container-title": "Journal of Image and Graphics"}
         r = self.check(cn, csl=csl, crossref={"message": {}})
         self.assertEqual(r["status"], R.PASS, r["notes"])
@@ -110,13 +111,23 @@ class CheckEntry(unittest.TestCase):
         self.assertIn("预印本", " ".join(r["notes"]))
 
     def test_entries_without_doi_are_checked_on_their_page(self):
-        book = {"text": "某作者. 某书[M]. 北京: 某出版社, 2020.", "title": "数据分析方法", "url": "https://example.org/book"}
+        book = {"text": "某作者. 数据分析方法[M]. 北京: 某出版社, 2020.", "title": "数据分析方法", "url": "https://example.org/book",
+                "authors": ["某作者"], "year": 2020}
         with patch("refcheck.fetch") as fetch, patch("refcheck.fetch_page") as page:
             self.assertEqual(R.check_all([{"text": book["text"]}])[0]["status"], R.DROP)
             self.assertEqual(R.check_all([{"text": "用户给的文献", "from_user": True}])[0]["status"], R.USER)
             self.assertEqual(R.check_all([{**book, "title": ""}])[0]["status"], R.FIX)
-            page.return_value = "数据 分析 方法 - 出版社"
+            page.return_value = "数据 分析 方法 - 某作者 著 - 出版社 2020"
             self.assertEqual(R.check_all([book])[0]["status"], R.PASS)
+            # The title alone may be a page that cites the work: author and year must be there too.
+            page.return_value = "数据 分析 方法 - 出版社"
+            r = R.check_all([book])[0]
+            self.assertEqual(r["status"], R.FIX)
+            self.assertIn("某作者", r["notes"][0])
+            # A search-result link proves nothing about the work.
+            r = R.check_all([{**book, "url": "https://www.baidu.com/s?wd=数据分析方法"}])[0]
+            self.assertEqual(r["status"], R.FIX)
+            self.assertIn("搜索结果页", r["notes"][0])
             page.return_value = "某出版社首页 " + "新书推荐 图书目录 联系我们 " * 30
             r = R.check_all([book])[0]
             self.assertEqual(r["status"], R.DROP)
@@ -147,19 +158,20 @@ class CheckEntry(unittest.TestCase):
         self.assertIn(DOI, r["notes"][0])
         self.assertIn("刊名", " ".join(r["notes"]))
         other_author = {**hit, "author": [{"family": "Smith"}]}
-        with network(search=[other_author]), patch("refcheck.fetch_page", return_value=CSL_RECORD["title"]):
-            r = R.check_all([entry])[0]
-        self.assertEqual(r["status"], R.PASS)
-        self.assertEqual(r["notes"], ["链接页面上有这个题目"])
+        with network(search=[other_author]), patch("refcheck.fetch_page", return_value=CSL_RECORD["title"] + " Kaiming He 2016"):
+            r = R.check_all([{**entry, "journal": "CVPR"}])[0]
+        self.assertEqual(r["status"], R.PASS, r["notes"])
+        self.assertEqual(r["notes"], ["链接页面上有题目、第一作者和年份"])
 
     def test_books_are_checked_by_isbn(self):
         book = {"text": "McKinney W. Python for Data Analysis[M]. 2017.", "isbn": "978-1-4919-5766-0",
                 "title": "Python for data analysis", "year": 2017}
+        # The ISBN record has another title language: the printed line still names the same title.
         record = {"title": "Python for Data Analysis: Data Wrangling with Pandas, NumPy, and IPython", "publish_date": "Oct 20, 2017"}
         with patch("refcheck.fetch", return_value=record):
             self.assertEqual(R.check_all([book])[0]["status"], R.PASS)
             self.assertEqual(R.check_all([{**book, "year": 2012}])[0]["status"], R.FIX)
-            cn = {**book, "title": "数据结构(C语言版)"}
+            cn = {**book, "title": "数据结构(C语言版)", "text": "严蔚敏. 数据结构(C语言版)[M]. 2017."}
             self.assertEqual(R.check_all([cn])[0]["status"], R.PENDING)
         with patch("refcheck.fetch", return_value=None):
             self.assertEqual(R.check_all([book])[0]["status"], R.DROP)
@@ -187,6 +199,35 @@ class CheckEntry(unittest.TestCase):
         with patch("refcheck.fetch", side_effect=R.Offline("timed out")) as fetch:
             R.check_all([GOOD, other])
         self.assertEqual(fetch.call_count, 2)
+
+    def test_printed_line_must_match_the_checked_fields(self):
+        cases = {
+            "Deep residual learning for image recognition[C]. CVPR, 2016.": "作者",
+            "HE K, ZHANG X. Deep residual learning[C]. CVPR, 2016.": "题目",
+            "HE K, ZHANG X. Deep residual learning for image recognition[C]. CVPR, 2015.": "年份",
+            "HE K, ZHANG X. Deep residual learning for image recognition[C]. CVPR, 2016. DOI: 10.1109/CVPR.2016.91": "DOI",
+        }
+        for text, word in cases.items():
+            with self.subTest(text=text):
+                r = self.check({**GOOD, "text": text})
+                self.assertEqual(r["status"], R.FIX)
+                self.assertIn(word, " ".join(r["notes"]))
+
+    def test_every_written_author_is_compared_with_the_record(self):
+        three = {**CSL_RECORD, "author": [{"family": "He"}, {"family": "Zhang"}, {"family": "Ren"}, {"family": "Sun"}]}
+        r = self.check({**GOOD, "authors": ["He K", "Wang X"]}, csl=three)
+        self.assertEqual(r["status"], R.FIX)
+        self.assertIn("第 2 位作者", " ".join(r["notes"]))
+        r = self.check({**GOOD, "authors": ["He K"]}, csl=three)
+        self.assertIn("作者少写了", " ".join(r["notes"]))
+        r = self.check({**GOOD, "authors": ["He K", "Zhang X", "Ren S"]}, csl=three)
+        self.assertEqual(r["status"], R.PASS, r["notes"])
+
+    def test_unreachable_service_is_flagged_apart_from_blocking_sites(self):
+        with patch("refcheck.fetch", side_effect=R.Offline("no route", down=True)):
+            r = R.check_all([GOOD])[0]
+        self.assertEqual(r["status"], R.PENDING)
+        self.assertTrue(r.get("unreachable"))
 
     def test_duplicates_are_dropped(self):
         with network():

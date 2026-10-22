@@ -89,6 +89,8 @@ HINTS = {
     "CELL_IMAGE_WIDTH": ("表格里的图片比单元格宽。", "请用户把这张图改小，或从表格里移出来。"),
     "CELL_IMAGE_SPACING": ("表格里的图片留白会撑出边界。", "确认 format_tables 是 true 后重新 run。"),
     "IMAGE_WIDTH": ("图片比版心宽。", "content.json 的图片会自动缩放；已有 Word 时确认这一段 role 是 figure。"),
+    "LINE_TOO_TIGHT": ("固定行距比字号还小，打印出来上下两行会叠在一起。", "改 job.json 里这一角色的 styles：把 line 调到不小于字号（固定行距 line = 磅数×20，例如五号 10.5 磅至少 210），或改用 \"line_rule\": \"auto\"；用户确实要这么挤就先告诉用户会重叠。"),
+    "PAGE_NUMBERING": ("某一节的页码格式或起始页和规范不一致（摘要、目录用罗马数字从 I 开始；正文用阿拉伯数字从 1 开始，参考文献接着正文）。", "重新 run（脚本会按规范重设）；已有 Word 时确认 mapping 的 mode 是 paper，摘要、目录、正文的 role 标对。"),
     "OBJECT_HEIGHT": ("大图片放在固定行距的段落里，会被裁掉。", "把这一段的 role 改成 figure。"),
     "PART_MISSING": ("完整论文结构缺了一部分（摘要、目录、正文或参考文献）。", "写作时补上缺的部分；只排版就把 mode 改成 \"document\"，不要替用户补写。"),
     "PART_ORDER": ("各部分顺序和版式不一致。", "删掉 format.parts（用默认顺序），或按用户要求核对它的写法。"),
@@ -133,7 +135,8 @@ HINTS = {
     "COVER_FOOTER_VISIBLE": ("封面上出现了页脚或页码。", "重新 run；仍出现就是原稿封面自带页脚，请用户删掉后再给。"),
     "PAGE_NUMBER_MISSING": ("用户要页码，但渲染结果里页脚没有页码。", "确认 job.json 写了 \"footer_page_numbers\": true；换办公软件再 run 一次排除渲染差异。"),
     "FOOTER_UNEXPECTED": ("页脚应该空白，渲染结果里有文字。", "用户没要页码时删掉 footer_page_numbers；原稿自带页脚文字时请用户删掉。"),
-    "TEXT_OVERLAP": ("两行文字在页面上叠在一起：常见于过小的固定行距、负的段前段后，或浮动对象。", "打开这一页的页图确认；是真的重叠就检查 job.json 里 line/before/after 的写法（固定行距不能小于字号）。"),
+    "TEXT_OVERLAP": ("两行文字在页面上叠在一起：常见于过小的固定行距、负的段前段后，或浮动对象。", "打开这一页的页图看是哪两行；检查 job.json 里这类段落的 line/line_rule（固定行距磅数×20 不能小于字号×20）和 size；原稿有浮动对象就请用户改成嵌入式。"),
+    "PAGE_NUMBER_SEQUENCE": ("页码跳号、重复，或在不该重新开始的地方重新从 1 开始：通常是原稿自带的分节页码设置。", "已有 Word 时确认 mapping 的 mode 是 paper（脚本会重设各节页码）；document 模式下原稿分节自带的页码重启会保留，请用户确认要不要连续编号。"),
     "FONT_SUBSTITUTED": ("渲染机器上没有文档要求的字体。", "不用改文档。在 review.json 的 warnings 里写明页图是用替代字体看的，交付时告诉用户分页以装有这些字体的 Word 为准。"),
 }
 
@@ -244,6 +247,59 @@ def from_render(audit, root=None):
                 item[key] = e[key]
         issues.append(item)
     return issues
+
+
+# Input errors raised while laying out (ValueError text) -> cause and fix.
+_MESSAGE_HINTS = (
+    (r"放不下一个五号汉字|列太多|太窄", "表格列太多或某几列太窄，按版心缩放后一列连一个汉字都放不下。",
+     "content.json 里给这个表格写 widths（各列宽度比例，长文字列给大、编号列给小），或减少列数、缩短表头、把表拆成两个；"
+     "已有 Word 里的表格：请用户减少列数或拆表。用户要求横向页面时脚本做不到，按 references/special-cases.md 的“脚本做不到的要求”处理。"),
+    (r"隐藏文字", "原稿里有隐藏文字，脚本不会擅自显示或删除。", "问用户这段隐藏文字要不要：要就在 Word 里取消隐藏后重新给，不要就经用户同意把那段 role 设为 delete。"),
+    (r"关键词", "关键词段的写法脚本读不懂，或这一段的 role 标成了关键词但其实不是。",
+     "核对 mapping.json 里这一段的 role（只有以“关键词：”/“Key words:”开头的段落才是 keywords_zh/keywords_en）；"
+     "content.json 用 keywords_zh/keywords_en 列表写关键词，每项一个词。"),
+    (r"摘要和目录要排在正文之前|parts", "job.json 的 format.parts 顺序或内容不合规。",
+     "删掉 format.parts 用默认顺序；用户要的顺序脚本不支持时，在 content.json 用 mode=document 自己安排并告诉用户。"),
+    (r"未标记角色|未映射|role", "mapping.json 里有段落没有可用的 role。", "按 references/content.md 的“已有 Word”一节给这一段写 role。"),
+    (r"英文摘要", "原稿有没有英文摘要和本次版式设置不一致。", "问用户：要英文摘要就在 job.json 的 format 写 \"english_abstract\": true（缺的用 mapping.json 的 add 补译文）；不要就经用户同意把那些段落设为 delete。"),
+    (r"内容控件|文本框|修订|批注|嵌入", "原稿里有脚本不能安全排版的对象。", "按 references/special-cases.md 的“输入文件”一节处理，请用户先改成普通文字/嵌入式图片或接受修订。"),
+)
+
+
+def from_message(message, root=None, stage="排版"):
+    """A layout ValueError -> one located issue, so it is counted and fixed like any other failure."""
+    cause, fix = "排版脚本拒绝了这份输入。", "按上面的说明改 job.json / content.json / mapping.json 后重新 run。"
+    for pattern, c, f in _MESSAGE_HINTS:
+        if re.search(pattern, message):
+            cause, fix = c, f
+            break
+    item = {"code": "INPUT_REJECTED", "stage": stage, "message": message, "cause": cause, "fix": fix}
+    where = {}
+    block = re.search(r"blocks\[(\d+)\]", message)
+    label = re.search(r"\b(p\d+|t\d+)\b", message)
+    quoted = re.search(r"[“《](.{2,20}?)[”》]", message)
+    if block:
+        where["edit"] = f"content.json 的 blocks[{block.group(1)}]"
+    elif label:
+        where["location"] = label.group(1)
+        hint = _input_hint(root, quoted.group(1)) if quoted else None
+        where["edit"] = hint or f"mapping.json 里 id 为 {label.group(1)} 的段落"
+    if quoted:
+        where["text"] = quoted.group(1)
+    if where:
+        item["where"] = where
+    return [item]
+
+
+def warning_key(w):
+    """Key for review.json "warnings": the code, plus the page when the warning has one."""
+    return f"{w['code']}（第{w['page']}页）" if w.get("page") else w["code"]
+
+
+def warning_text(w):
+    """One line for the agent: code, page/where, message."""
+    place = "，".join(x for x in (f"第{w['page']}页" if w.get("page") else "", str(w.get("where") or "")) if x)
+    return w["code"] + (f"（{place}）" if place else "") + f"：{w['message']}"
 
 
 def render_text(issues, limit=12):

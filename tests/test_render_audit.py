@@ -136,10 +136,33 @@ class RenderAudit(unittest.TestCase):
         result = audit(self.docx(), self.pdf([self.cover(), self.body() + [("text", 560, 300, "出界出界出界出界")]]))
         self.assertIn("OFF_PAGE", self.codes(result))
 
-    def test_overlapping_lines_are_a_warning(self):
+    def test_overlapping_lines_block_delivery(self):
         result = audit(self.docx(), self.pdf([self.cover(), [("text", 90, 200, "第一行文字"), ("text", 92, 202, "第二行文字")]]))
-        self.assertTrue(result["passed"])
-        self.assertIn("TEXT_OVERLAP", self.codes(result, "warnings"))
+        self.assertFalse(result["passed"])
+        overlap = [e for e in result["errors"] if e["code"] == "TEXT_OVERLAP"]
+        self.assertEqual(overlap[0]["page"], 2)
+        self.assertIn("第一行文字", overlap[0]["where"])
+
+    def test_lines_one_line_apart_do_not_overlap(self):
+        result = audit(self.docx(), self.pdf([self.cover(), [("text", 90, 200, "第一行文字"), ("text", 90, 216, "第二行文字")]]))
+        self.assertTrue(result["passed"], result["errors"])
+
+    def numbered(self, *labels):
+        doc = self.docx(patch={"footer_page_numbers": True})
+        return audit(doc, self.pdf([self.cover()] + [self.body() + [("text", 295, 830, n)] for n in labels]))
+
+    def test_page_numbers_roman_front_then_arabic_from_one(self):
+        result = self.numbered("I", "II", "1", "2", "3")
+        self.assertTrue(result["passed"], result["errors"])
+
+    def test_page_number_restart_skip_and_bad_start(self):
+        cases = {("I", "1", "1"): 4, ("1", "2", "4"): 4, ("I", "II", "2"): 4, ("2", "3"): 2, ("1", "II"): 3}
+        for labels, page in cases.items():
+            with self.subTest(labels=labels):
+                result = self.numbered(*labels)
+                wrong = [e for e in result["errors"] if e["code"] == "PAGE_NUMBER_SEQUENCE"]
+                self.assertEqual([e["page"] for e in wrong], [page], result["errors"])
+                self.assertIn("expected", wrong[0])
 
     def test_cover_may_use_its_own_measure_but_not_the_page_edge(self):
         ok = audit(self.docx(), self.pdf([[("text", 90, 300, "《很长的课程名称在封面上居中》")], self.body()]))
@@ -187,6 +210,81 @@ class RenderAuditRealOffice(unittest.TestCase):
             export_pdf(out, pdf)
             result = audit(out, pdf)
             self.assertIn("BLANK_PAGE", [e["code"] for e in result["errors"]])
+
+
+    def test_hand_edited_copy_is_accepted_only_through_adopt(self):
+        """A requirement the scripts cannot meet: edit a copy, adopt re-runs every check, the user is told."""
+        import contextlib, io
+        import xaufe as X
+        from docx import Document
+        from docx.shared import RGBColor
+
+        def call(*args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                code = X.main([str(a) for a in args])
+            return code, out.getvalue()
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            source = folder / "原稿.txt"
+            source.write_text("一、引言\n\n这是合成正文。", encoding="utf-8")
+            code, out = call("new", "--out", folder / "成品.docx", "--source", source)
+            work = Path(out.split("WORK = ")[1].splitlines()[0].strip())
+            job = {"task": "format", "template": "B", "cover": False, "info": {}}
+            (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+            content = {"mode": "document", "metadata": {}, "blocks": [
+                {"type": "heading", "level": 1, "text": "一、引言"}, {"type": "paragraph", "text": "这是合成正文。"}]}
+            (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+            code, out = call("run", "--work", work)
+            self.assertEqual(code, 0, out)
+
+            edited = folder / "手工.docx"
+            doc = Document(work / "final.docx")
+            body = [p for p in doc.paragraphs if p.text == "这是合成正文。"][0]
+            body.runs[0].font.color.rgb = RGBColor(0x00, 0x55, 0xAA)
+            doc.save(edited)
+            code, out = call("adopt", "--work", work, "--docx", edited, "--note", "正文按用户要求改成蓝色")
+            self.assertEqual(code, 0, out)
+            self.assertIn("MANUAL_DEVIATION_FONT_COLOR", out)
+            review = json.loads((work / "review.json").read_text(encoding="utf-8"))
+            self.assertIn("MANUAL_EDIT", review["warnings"])
+            review.update(vision=True, pages={k: "单元测试合成记录：正文为蓝色" for k in review["pages"]},
+                          content_check="单元测试合成记录：已核对", layout_check="单元测试合成记录：已核对",
+                          delivery_check="单元测试合成记录：已核对",
+                          warnings={k: "单元测试合成记录：已处理" for k in review["warnings"]})
+            (work / "review.json").write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+            code, out = call("finish", "--work", work)
+            self.assertEqual(code, 0, out)
+            self.assertIn("正文按用户要求改成蓝色", out)
+            self.assertIn("和模板默认格式不同", out)
+
+    def test_adopt_refuses_changed_text(self):
+        import contextlib, io
+        import xaufe as X
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            source = folder / "原稿.txt"
+            source.write_text("这是合成正文。", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                X.main(["new", "--out", str(folder / "成品.docx"), "--source", str(source)])
+            work = Path(out.getvalue().split("WORK = ")[1].splitlines()[0].strip())
+            (work / "job.json").write_text(json.dumps({"task": "format", "template": "B", "cover": False}), encoding="utf-8")
+            (work / "content.json").write_text(json.dumps({"mode": "document", "metadata": {}, "blocks": [
+                {"type": "paragraph", "text": "这是合成正文。"}]}, ensure_ascii=False), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(X.main(["run", "--work", str(work)]), 0)
+            doc = Document(work / "final.docx")
+            doc.add_paragraph("手工加的一句。")
+            doc.save(folder / "手工.docx")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = X.main(["adopt", "--work", str(work), "--docx", str(folder / "手工.docx"), "--note", "合成测试"])
+            self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+            self.assertIn("MANUAL_TEXT_CHANGED", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -8,9 +8,10 @@ Everything else is measured on the PDF a real office suite produced, so a
 wrong assumption in the generator cannot hide a visible defect here.
 
 Errors are things a person would see as broken: content outside the page or
-the text column, a page with nothing in the text area, missing or unexpected
-header/footer text.  Warnings need a human or model look: overlapping lines
-and fonts the renderer substituted.
+the text column, a page with nothing in the text area, lines printed on top of
+each other, missing or unexpected header/footer text, page numbers that skip
+or restart in the wrong place.  The one warning is a font the renderer had to
+substitute, which changes the page images but not the Word file.
 """
 
 from __future__ import annotations
@@ -150,6 +151,46 @@ def _overlaps(a, b):
     return height > 0.5 * smaller_h and width > 0.3 * smaller_w
 
 
+ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100}
+
+
+def _page_number(text):
+    """("decimal", 3) / ("roman", 3) for a footer like "3", "- 3 -", "第3页", "III"; None otherwise."""
+    core = re.sub(r"[\s\-—第页]", "", text)
+    if core.isdigit():
+        return "decimal", int(core)
+    if core and re.fullmatch(r"[IVXLC]+|[ivxlc]+", core):
+        values = [ROMAN[c] for c in core.upper()]
+        return "roman", sum(-v if i + 1 < len(values) and v < values[i + 1] else v for i, v in enumerate(values))
+    return None
+
+
+def _number_sequence(numbers):
+    """Front matter I, II, ...; body 1, 2, ... to the end: no skip, repeat or stray restart."""
+    errors, last = [], None
+    for page, text in numbers:
+        value = _page_number(text)
+        if value is None:  # already reported as PAGE_NUMBER_MISSING; keep counting past it
+            last = (last[0], last[1] + 1, text) if last else None
+            continue
+        kind, n = value
+        first = "1" if kind == "decimal" else "I"
+        if last is None and n != 1:
+            errors.append(_issue("error", "PAGE_NUMBER_SEQUENCE", page, "第一个显示页码的页面没有从 1 开始。",
+                                 expected=first, actual=text))
+        elif last is not None and last[0] != kind and kind == "roman":
+            errors.append(_issue("error", "PAGE_NUMBER_SEQUENCE", page, "正文之后又出现了罗马数字页码。",
+                                 expected="阿拉伯数字，接着上一页", actual=text))
+        elif last is not None and last[0] != kind and n != 1:
+            errors.append(_issue("error", "PAGE_NUMBER_SEQUENCE", page, "换成阿拉伯数字页码时没有从 1 开始。",
+                                 expected=first, actual=text))
+        elif last is not None and last[0] == kind and n != last[1] + 1:
+            errors.append(_issue("error", "PAGE_NUMBER_SEQUENCE", page, "页码不连续（跳号、重复或中途重新开始）。",
+                                 expected=f"接着上一页（{last[2]}）往下数", actual=text))
+        last = (kind, n, text)
+    return errors
+
+
 def audit(docx, pdf):
     """Return {"errors": [...], "warnings": [...], "pages": n, "fonts": {...}} for one rendered PDF."""
     import pymupdf as fitz
@@ -160,6 +201,7 @@ def audit(docx, pdf):
     errors, warnings = [], []
     used = set()
     previous = ""
+    numbers = []
     with fitz.open(pdf) as rendered:
         pages = len(rendered)
         for index, page in enumerate(rendered, 1):
@@ -237,12 +279,15 @@ def audit(docx, pdf):
                     errors.append(_issue("error", "FOOTER_UNEXPECTED", index, "页脚应该是空白，渲染结果里有文字。", where=texts[:30]))
 
             for i, a in enumerate(lines):
-                for b in lines[i + 1 :]:
-                    if _overlaps(a["bbox"], b["bbox"]):
-                        warnings.append(_issue("warning", "TEXT_OVERLAP", index, "两行文字在页面上叠在一起，打开这一页的页图确认。",
-                                               where=a["spans"][0]["text"][:20] + " / " + b["spans"][0]["text"][:20],
-                                               bbox=a["bbox"]))
-                        break
+                hit = next((b for b in lines[i + 1 :] if _overlaps(a["bbox"], b["bbox"])), None)
+                if hit:
+                    errors.append(_issue("error", "TEXT_OVERLAP", index, "两行文字在页面上叠在一起。",
+                                         where=a["spans"][0]["text"][:20] + " / " + hit["spans"][0]["text"][:20],
+                                         bbox=a["bbox"]))
+                    break
+            if want["page_numbers"] and not cover:
+                numbers.append((index, "".join(l["spans"][0]["text"] for l in foot).strip()))
+    errors += _number_sequence(numbers)
     wanted = requested_fonts(doc)
     missing = [f for f in wanted if not _font_present(f, used)]
     if missing:
@@ -259,18 +304,11 @@ def audit(docx, pdf):
                 actual="、".join(sorted(used))[:200],
             )
         )
-    # Collapse repeated overlap reports to one per page.
-    seen, unique = set(), []
-    for w in warnings:
-        key = (w["code"], w["page"])
-        if key not in seen:
-            seen.add(key)
-            unique.append(w)
     return {
         "passed": not errors,
         "pages": pages,
         "errors": errors,
-        "warnings": unique,
+        "warnings": warnings,
         "fonts": {"requested": wanted, "missing": missing, "rendered": sorted(used)},
     }
 

@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import xaufe as X
 import delivery as D
 import intake as I
+from run_acceptance import original_text
 
 JOB_B = {
     "task": "format",
@@ -77,6 +78,9 @@ class CLI(unittest.TestCase):
 
     def new(self, job=None, content=None, sources=()):
         extra = []
+        if content is not None and not sources and (job or {}).get("task", "format") == "format":
+            sources = [self.d / f"原稿-{len(list(self.d.glob('原稿-*')))}.txt"]
+            sources[0].write_text(original_text(content), encoding="utf-8")
         for s in sources:
             extra += ["--source", s]
         with patch("tempfile.gettempdir", return_value=str(self.d)):
@@ -300,13 +304,57 @@ class CLI(unittest.TestCase):
         mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
         mapping["paragraphs"][9]["role"] = "delete"
         (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        # Format only: deleting original text needs the user's word, recorded in job.json.
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("SOURCE_MISSING", out)
+        self.assertIn("英文摘要待删除", out)
+        job = {**JOB_B, "approved_changes": [{"text": "英文摘要待删除", "why": "用户说不要英文摘要"}]}
+        (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
         code, out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, 0, err)
         self.assertIn("删除了 1 段", out)
         text = "\n".join(p.text for p in Document(work / "final.docx").paragraphs)
         self.assertNotIn("英文摘要待删除", text)
         self.assertIn("正文内容很长", text)
-        self.assertIn("SOURCE_DIFFERENCES", out)
+
+    def test_format_only_blocks_rewritten_or_added_text_and_needs_an_original(self):
+        content = json.loads(json.dumps(CONTENT))
+        work = self.new(JOB_B, content)
+        content["blocks"][1]["text"] = "这是改写过的合成正文。"
+        (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("SOURCE_ADDED", out)
+        self.assertIn("这是改写过的合成正文", out)
+        bare = self.new(JOB_B, CONTENT, sources=[])
+        D.load(bare)  # a workspace without a registered original
+        state = D.load(bare)[1]
+        state["source_documents"] = []
+        D.write_json(bare / D.MARKER, state)
+        code, out, err = self.call("run", "--work", bare, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("SOURCE_REQUIRED", out)
+
+    def test_unreachable_reference_service_needs_the_users_consent(self):
+        entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "pandas 常用于数据清洗[1]。"})
+        work = self.new({**JOB_B, "task": "write"}, content)
+        (work / "refs.json").write_text(json.dumps([entry], ensure_ascii=False), encoding="utf-8")
+        import refcheck as R
+
+        with patch("refcheck.fetch", side_effect=R.Offline("no route", down=True)):
+            self.call("refs", "--work", work)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("accept_unverified_refs", out)
+        job = {**JOB_B, "task": "write", "accept_unverified_refs": True}
+        (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, err)
 
     def paper_run(self, template, add=None, edit=None):
         info = dict(JOB_B["info"])
@@ -349,8 +397,8 @@ class CLI(unittest.TestCase):
     def test_existing_paper_a_needs_english_abstract_decision(self):
         work, inspect_out, code, out, err = self.paper_run("A")
         self.assertIn("先问用户", inspect_out)
-        self.assertEqual(code, 2)
-        self.assertIn("english_abstract", err)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("english_abstract", out)
 
     def test_existing_paper_a_with_translated_english_abstract(self):
         add = {"title_en": "Comparison of Sorting Algorithms", "abstract_en": "A synthetic English abstract.", "keywords_en": ["sorting", "algorithms"]}
@@ -374,7 +422,7 @@ class CLI(unittest.TestCase):
         code, out, err = self.call("inspect", "--work", work, "--docx", source)
         self.assertEqual(code, 0, err)
         roles = [r["role"] for r in json.loads((work / "mapping.json").read_text(encoding="utf-8"))["paragraphs"]]
-        self.assertEqual(roles[4:7], ["delete", "delete", "delete"])
+        self.assertEqual(roles[4:7], ["old_toc", "old_toc", "old_toc"])
         self.assertIn("旧目录", out)
         code, run_out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, 0, err)
@@ -420,10 +468,10 @@ class CLI(unittest.TestCase):
         ]
         work = self.written(content)
         code, out, err = self.call("run", "--work", work, "--office", "none")
-        self.assertEqual(code, 2)
-        self.assertIn("参考文献还没有核对", err)
-        self.assertIn("710 元", err)
-        self.assertIn("标题编号不连续", err)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("参考文献还没有核对", out)
+        self.assertIn("710 元", out)
+        self.assertIn("标题编号不连续", out)
         self.assertFalse((work / "draft.docx").exists())
 
     def test_writing_mode_passes_and_finish_prints_checklist(self):
@@ -456,9 +504,9 @@ class CLI(unittest.TestCase):
         content["blocks"].append({"type": "paragraph", "text": "这里引用了不存在的第三条[3]。"})
         work = self.written(content, [entry])
         code, out, err = self.call("run", "--work", work, "--office", "none")
-        self.assertEqual(code, 2)
-        self.assertIn("正文引用了 [3]，但参考文献只有 1 条", err)
-        self.assertIn("第 1 条在正文里没有被引用", err)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("正文引用了 [3]，但参考文献只有 1 条", out)
+        self.assertIn("第 1 条在正文里没有被引用", out)
 
     def test_citation_order_follows_first_citation(self):
         content = {"blocks": [{"type": "paragraph", "text": "先引第二条[2]，再引第一条[1]，范围[1-2]。"}], "references": ["甲", "乙"]}
@@ -491,7 +539,8 @@ class CLI(unittest.TestCase):
         import shutil
 
         for template in ("A", "B"):
-            code, out, err = self.call("new", "--out", self.d / f"example-{template}.docx")
+            code, out, err = self.call("new", "--out", self.d / f"example-{template}.docx",
+                                       "--source", ROOT / "examples" / template / "原稿.txt")
             self.assertEqual(code, 0, err)
             work = Path(out.split("WORK = ")[1].splitlines()[0].strip())
             for name in ("job.json", "content.json"):
@@ -507,8 +556,8 @@ class CLI(unittest.TestCase):
         content["references"] = ["编造作者. 编造的书[M]. 2020."]
         work = self.written(content, [entry])
         code, out, err = self.call("run", "--work", work, "--office", "none")
-        self.assertEqual(code, 2)
-        self.assertIn("参考文献第 1 条不在 refs 核对可用的条目里", err)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("参考文献第 1 条不在 refs 核对可用的条目里", out)
 
     def test_existing_paper_keyword_spaces_normalized(self):
         work, _, code, out, err = self.paper_run("B")

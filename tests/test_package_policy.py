@@ -73,8 +73,10 @@ class PackagePolicy(unittest.TestCase):
             "layout-test.png",
             "A/job.json",
             "A/content.json",
+            "A/原稿.txt",
             "B/job.json",
             "B/content.json",
+            "B/原稿.txt",
         }
         actual = {
             p.relative_to(ROOT / "examples").as_posix()

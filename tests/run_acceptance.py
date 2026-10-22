@@ -137,6 +137,34 @@ def complex_paper(path):
     return path
 
 
+def original_text(content):
+    """The user's original material behind a format-only content.json (synthetic)."""
+    lines = [content.get("metadata", {}).get("title_zh", ""), content.get("abstract_zh", ""),
+             "关键词：" + "；".join(content["keywords_zh"]) if content.get("keywords_zh") else "",
+             content.get("metadata", {}).get("title_en", "") or content.get("title_en", ""),
+             content.get("abstract_en", ""), "Key words: " + "; ".join(content["keywords_en"]) if content.get("keywords_en") else ""]
+    for b in content.get("blocks", []):
+        lines += [b.get("caption", ""), b.get("text", ""), "".join(r.get("text", "") for r in b.get("runs", []))]
+        lines += [" | ".join(row) for row in [b.get("header") or []] + (b.get("rows") or [])]
+    lines += content.get("references", [])
+    return "\n\n".join(x for x in lines if x and x.strip())
+
+
+def blank_page_paper(path):
+    """A plain document whose author left two page breaks in a row (an empty page in the middle)."""
+    from docx import Document
+    from docx.enum.text import WD_BREAK
+
+    doc = Document()
+    doc.add_paragraph("空白页合成文档")
+    doc.add_paragraph("第一页的合成正文。")
+    for _ in range(2):
+        doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+    doc.add_paragraph("空白页之后的合成正文。")
+    doc.save(path)
+    return path
+
+
 def call(*args):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -144,9 +172,14 @@ def call(*args):
     return code, out.getvalue(), err.getvalue()
 
 
-def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, office=None):
+def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, office=None, expect=None):
+    """Run one case; with ``expect`` the case is a defect that must be refused with that code."""
     target = out_dir / name
     target.mkdir()
+    if docx is None and job.get("task") == "format":
+        # Format only: the content came from the user's material, registered as the original.
+        docx = target / "原稿.txt"
+        docx.write_text(original_text(content), encoding="utf-8")
     code, text, err = call("new", "--out", target / "成品.docx", *(["--source", docx] if docx else []))
     if code:
         raise RuntimeError(err)
@@ -165,6 +198,12 @@ def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, off
                 (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
         code, text, err = call("run", "--work", work, *(["--office", office] if office else []))
         (target / "run-output.txt").write_text(text + err, encoding="utf-8")
+        if expect:
+            if code != X.EXIT_NOT_ACCEPTED or expect not in text:
+                raise RuntimeError(f"{name}: 应被 {expect} 拦下，实际退出码 {code}：{(err or text)[-800:]}")
+            row = {"case": name, "refused": expect}
+            print(json.dumps(row, ensure_ascii=False), flush=True)
+            return row
         if code:
             raise RuntimeError(err or text)
         shutil.copy2(work / "final.docx", target / "final.docx")
@@ -229,7 +268,18 @@ def main():
     job, _ = example("B")
     job["info"]["title_zh"] = "复杂表格合成论文"
     rows.append(run_case(out, "10-B-existing-complex-tables", job, docx=complex_docx))
+    # Defects that must never be delivered.
+    job, content = example("B")
+    job["format"] = {"styles": {"body": {"size": 15, "line": 200, "line_rule": "exact"}}}
+    rows.append(run_case(out, "11-defect-lines-overlap", job, content, expect="LINE_TOO_TIGHT"))
+    rows.append(run_case(out, "12-defect-blank-page", *example("B")[:1], docx=blank_page_paper(out / "blank-page.docx"),
+                         expect="BLANK_PAGE"))
     (out / "summary.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    bad = [r for r in rows if "refused" not in r and (
+        r["render_audit"] != ("not-run" if r["case"].startswith("07-") else "passed")
+        or r["scope"] != ("static-only" if r["case"].startswith("07-") else "full"))]
+    if bad:
+        raise SystemExit("这些用例没有完成完整验收：" + json.dumps(bad, ensure_ascii=False))
     print("页图和成品已复制到", out, "；请逐页查看。工作区已全部清理。")
 
 

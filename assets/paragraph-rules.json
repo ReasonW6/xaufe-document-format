@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "note": "排版器唯一段落参数入口。来源见 references/parameter-provenance.md；检查器另用独立固定基准。",
+  "note": "排版器唯一段落参数入口。数值来源见 references/format-spec.md 的“来源和优先级”；检查器另用 assets/checks/audit-baseline.json 的独立固定基准。",
   "styles": {
     "XAUFE Body": {
       "first": 420,

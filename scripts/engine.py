@@ -582,6 +582,38 @@ def safe_out(input_path, output, force=False):
     return output
 
 
+FRONT_ROLES = {"title_zh", "title_en", "abstract_label_zh", "abstract_label_en", "abstract_zh", "abstract_en",
+               "keywords_zh", "keywords_en", "toc_title", "toc1", "toc2", "toc3", "toc4"}
+MAIN_ROLES = {"preface", "h1", "h2", "h3", "h4", "body", "reference_title", "reference"}
+
+
+def number_sections(doc):
+    """Front matter (abstracts, TOC) numbered I, II, ...; body from 1, continuing to the end."""
+    names = {name: role for role, name in ROLES.items()}
+    current, front_seen, main_seen = set(), False, False
+    for el in doc.element.body:
+        if el.tag == qn("w:p"):
+            current.add(names.get(Paragraph(el, doc._body).style.name))
+            sect = el.find(qn("w:pPr") + "/" + qn("w:sectPr"))
+        else:
+            sect = el if el.tag == qn("w:sectPr") else None
+        if sect is None:
+            continue
+        if main_seen or current & MAIN_ROLES:
+            page = element(sect, "w:pgNumType", fmt="decimal")
+            page.attrib.pop(qn("w:start"), None)
+            if not main_seen:
+                page.set(qn("w:start"), "1")
+            main_seen = True
+        elif current & FRONT_ROLES:
+            page = element(sect, "w:pgNumType", fmt="upperRoman")
+            page.attrib.pop(qn("w:start"), None)
+            if not front_seen:
+                page.set(qn("w:start"), "1")
+            front_seen = True
+        current = set()
+
+
 def finalize(doc, out, meta, has_cover, mode, state=None):
     if state and "include_cover" in state and state["include_cover"] != bool(has_cover):
         fail(
@@ -589,6 +621,8 @@ def finalize(doc, out, meta, has_cover, mode, state=None):
         )
     set_page(doc)
     headers_footers(doc, meta, has_cover)
+    if mode == "paper":
+        number_sections(doc)
     if has_cover:
         apply_cover(doc, SPEC)
         position_cover_date(doc, SPEC)
@@ -816,60 +850,68 @@ def column_widths(rows, total, ratios=None):
 
 def add_blocks(doc, blocks, base, entries):
     heading_iter = iter([e for e in entries if e[0] != "_xaufe_references"])
-    for b in blocks:
-        typ = b["type"]
-        if typ == "heading":
-            role = "preface" if b.get("preface") else "h" + str(b["level"])
-            p = doc.add_paragraph(b["text"], ROLES[role])
-            name, _, _ = next(heading_iter)
-            bookmark(p, name, int(name.rsplit("_", 1)[-1]) + 10)
-        elif typ in ("paragraph", "code", "equation"):
-            p = doc.add_paragraph(style=ROLES["body" if typ == "paragraph" else typ])
-            add_text(p, b)
-        elif typ == "image":
-            f = (base / b["path"]).resolve()
-            if not f.is_file():
-                fail(f"图片缺失：{f}。禁止用占位图替代。")
-            if b.get("caption") and not isinstance(b["caption"], str):
-                fail("图题必须是字符串。")
-            p = doc.add_paragraph(style=ROLES["figure"])
-            r = p.add_run()
-            width = Cm(b.get("width_cm", WIDTH / 1440 * 2.54))
-            if width > Twips(WIDTH):
-                fail("图片宽度超过版心，必须等比缩小。")
-            shape = r.add_picture(str(f), width=width)
-            for key in ("distT", "distB", "distL", "distR"):
-                shape._inline.set(key, "0")
-            maxheight = Pt(580)
-            if shape.height > maxheight:
-                ratio = maxheight / shape.height
-                shape.width = int(shape.width * ratio)
-                shape.height = int(maxheight)
-            shape._inline.docPr.set("descr", b.get("alt", b.get("caption", "文档插图")))
-            if b.get("caption"):
-                doc.add_paragraph(b["caption"], ROLES["caption"])
-            else:
-                p.paragraph_format.keep_with_next = False
-        elif typ == "table":
-            if b.get("caption"):
-                p = doc.add_paragraph(b["caption"], ROLES["caption"])
-                p.paragraph_format.keep_with_next = True
-            rows = [b["header"]] + b["rows"]
-            n = len(rows[0])
-            t = doc.add_table(rows=len(rows), cols=n)
-            t.style = "Table Grid"
-            for col, width in zip(t.columns, column_widths(rows, WIDTH, b.get("widths"))):
-                col.width = Twips(width)
-            for ri, row in enumerate(rows):
-                for ci, value in enumerate(row):
-                    t.cell(ri, ci).text = value
-            format_table(t, repeat_header=True)
-        elif typ == "page_break":
-            p = doc.add_paragraph(style=ROLES["spacer"])
-            p.paragraph_format.line_spacing = Pt(1)
-            p.add_run().add_break(WD_BREAK.PAGE)
+    for index, b in enumerate(blocks):
+        try:
+            _add_block(doc, b, base, heading_iter)
+        except ValueError as exc:
+            what = str(b.get("caption") or b.get("text") or "")[:15]
+            raise ValueError(f"content.json 的 blocks[{index}]（{b.get('type')}{'“' + what + '”' if what else ''}）：{exc}") from exc
+
+
+def _add_block(doc, b, base, heading_iter):
+    typ = b["type"]
+    if typ == "heading":
+        role = "preface" if b.get("preface") else "h" + str(b["level"])
+        p = doc.add_paragraph(b["text"], ROLES[role])
+        name, _, _ = next(heading_iter)
+        bookmark(p, name, int(name.rsplit("_", 1)[-1]) + 10)
+    elif typ in ("paragraph", "code", "equation"):
+        p = doc.add_paragraph(style=ROLES["body" if typ == "paragraph" else typ])
+        add_text(p, b)
+    elif typ == "image":
+        f = (base / b["path"]).resolve()
+        if not f.is_file():
+            fail(f"图片缺失：{f}。禁止用占位图替代。")
+        if b.get("caption") and not isinstance(b["caption"], str):
+            fail("图题必须是字符串。")
+        p = doc.add_paragraph(style=ROLES["figure"])
+        r = p.add_run()
+        width = Cm(b.get("width_cm", WIDTH / 1440 * 2.54))
+        if width > Twips(WIDTH):
+            fail("图片宽度超过版心，必须等比缩小。")
+        shape = r.add_picture(str(f), width=width)
+        for key in ("distT", "distB", "distL", "distR"):
+            shape._inline.set(key, "0")
+        maxheight = Pt(580)
+        if shape.height > maxheight:
+            ratio = maxheight / shape.height
+            shape.width = int(shape.width * ratio)
+            shape.height = int(maxheight)
+        shape._inline.docPr.set("descr", b.get("alt", b.get("caption", "文档插图")))
+        if b.get("caption"):
+            doc.add_paragraph(b["caption"], ROLES["caption"])
         else:
-            fail(f"未实现的块类型：{typ}")
+            p.paragraph_format.keep_with_next = False
+    elif typ == "table":
+        if b.get("caption"):
+            p = doc.add_paragraph(b["caption"], ROLES["caption"])
+            p.paragraph_format.keep_with_next = True
+        rows = [b["header"]] + b["rows"]
+        n = len(rows[0])
+        t = doc.add_table(rows=len(rows), cols=n)
+        t.style = "Table Grid"
+        for col, width in zip(t.columns, column_widths(rows, WIDTH, b.get("widths"))):
+            col.width = Twips(width)
+        for ri, row in enumerate(rows):
+            for ci, value in enumerate(row):
+                t.cell(ri, ci).text = value
+        format_table(t, repeat_header=True)
+    elif typ == "page_break":
+        p = doc.add_paragraph(style=ROLES["spacer"])
+        p.paragraph_format.line_spacing = Pt(1)
+        p.add_run().add_break(WD_BREAK.PAGE)
+    else:
+        fail(f"未实现的块类型：{typ}")
 
 
 def validate_data(data):
@@ -1294,9 +1336,10 @@ def structure_paper(doc, has_cover, meta, additions):
 
 
 def _delete_marked(doc, roles, mapping):
-    """Remove paragraphs the user agreed to delete (role "delete"); renumber the rest."""
+    """Remove paragraphs the user agreed to delete (role "delete") and the old TOC the
+    template replaces (role "old_toc"); renumber the rest."""
     old = list(doc.paragraphs)
-    marked = [p for i, p in enumerate(old) if roles.get(f"p{i}") == "delete"]
+    marked = [p for i, p in enumerate(old) if roles.get(f"p{i}") in ("delete", "old_toc")]
     if not marked:
         return roles, []
     body = list(doc.element.body)
@@ -1309,7 +1352,7 @@ def _delete_marked(doc, roles, mapping):
         if isinstance(end, int) and not isinstance(end, bool) and body.index(p._p) < end:
             shift += 1
         deleted.append(p.text[:60])
-    keep = [(i, p) for i, p in enumerate(old) if roles.get(f"p{i}") != "delete"]
+    keep = [(i, p) for i, p in enumerate(old) if roles.get(f"p{i}") not in ("delete", "old_toc")]
     for p in marked:
         p._p.getparent().remove(p._p)
     renumbered = {f"p{new}": roles[f"p{i}"] for new, (i, _) in enumerate(keep) if f"p{i}" in roles}
@@ -1353,7 +1396,10 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
     # Only this explicit formatting whitelist is allowed to change visible ASCII spaces.
     for i, p in enumerate(doc.paragraphs):
         if roles.get(f"p{i}", default) in ("keywords_zh", "keywords_en"):
-            change = normalize_keywords(p, m.get("keyword_items", {}).get(f"p{i}"))
+            try:
+                change = normalize_keywords(p, m.get("keyword_items", {}).get(f"p{i}"))
+            except ValueError as exc:
+                fail(f"原稿 p{i}“{p.text.strip()[:15]}”（role {roles.get(f'p{i}', default)}）：{exc}")
             if change:
                 spacing_changes.append(dict(change, paragraph=f"p{i}"))
     before = content_signature(doc)
@@ -1369,7 +1415,10 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
                 fail(f"p{i} 未标记角色：{p.text[:60]}。请查看 inventory 后补充映射。")
         if role == "preserve":
             continue
-        style_paragraph(p, role, preserve_num=bool(p._p.xpath("./w:pPr/w:numPr")))
+        try:
+            style_paragraph(p, role, preserve_num=bool(p._p.xpath("./w:pPr/w:numPr")))
+        except ValueError as exc:
+            fail(f"原稿 p{i}“{p.text.strip()[:15]}”（role {role}）：{exc}")
         if role == "figure":
             resize_inline(
                 p,
@@ -1393,8 +1442,12 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
             # a figure caption must not pull unrelated following prose along.
             p.paragraph_format.keep_with_next = nxt is not None and nxt.tag == qn("w:tbl")
     if m.get("format_tables", False):
-        for t in doc.tables:
-            format_table(t)
+        for ti, t in enumerate(doc.tables):
+            try:
+                format_table(t)
+            except ValueError as exc:
+                first = " | ".join(c.text.strip() for c in t.rows[0].cells)[:20] if t.rows else ""
+                fail(f"原稿第 {ti + 1} 个表格 t{ti}“{first}”：{exc}")
     if content_signature(doc) != before:
         fail("正文内容保真检查失败；未写入输出。")
     has_cover = m.get("has_cover", False)

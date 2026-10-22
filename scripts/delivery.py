@@ -18,7 +18,7 @@ from audit_helpers import toc_entries
 from toc_format import enforce
 from office_backend import OfficeUnavailable, OfficeExportFailed
 import render_availability as RF
-from feedback import AcceptanceFailed, explain, from_render
+from feedback import AcceptanceFailed, explain, from_render, warning_key
 from render_audit import audit as audit_rendered
 
 MAGIC = "xaufe-owned-document-job-v2"
@@ -103,20 +103,64 @@ def load(root):
     return root, state
 
 
+def _job(root):
+    try:
+        return read_json(Path(root) / "job.json")
+    except (OSError, ValueError):
+        return {}
+
+
 def compare_originals(root, state, result):
+    """Format-only (task "format"): any text added or dropped without the user's say blocks delivery.
+    Writing: the originals are material, so text not reused is only a review note."""
     originals = [x for x in state["source_documents"] if x.get("role") == "original"]
+    job = _job(root)
+    strict = job.get("task") == "format"
     if not originals:
+        if strict and job:
+            raise AcceptanceFailed("原文保全", [{
+                "code": "SOURCE_REQUIRED", "stage": "原文保全",
+                "message": "只排版（task 为 format）却没有登记原稿，没法证明原文一个字没改。",
+                "cause": "new 的时候没有用 --source 登记原稿，也没有用 inspect 读原稿。",
+                "fix": "用 new --out 成品.docx --source 原稿文件 重新开始（已有 Word 用 inspect 也会自动登记）；"
+                "用户是在对话里直接贴的文字，就先把原文原样存成 .txt 再用 --source 登记。",
+            }])
         return
     from source_compare import compare
 
-    report = compare(originals, root / "final.docx")
+    mapping = read_json(root / "mapping.json") if (root / "mapping.json").is_file() else {}
+    toc_line = re.compile(r"^\s*目\s*录\s*$|\d+\s*$")
+    old_toc = {r["id"] for r in mapping.get("paragraphs", []) if r.get("role") == "old_toc" and toc_line.search(r.get("text", ""))}
+    # Cover values from job.json also appear on the abstract page and in the header.
+    generated = list(require(root / "intake.json")["metadata"].values()) if (root / "intake.json").is_file() else []
+    for value in (mapping.get("add") or {}).values():
+        generated += [" ".join(map(str, value))] if isinstance(value, list) else [value]
+    approved = [c["text"] for c in job.get("approved_changes", []) if isinstance(c, dict) and c.get("text")]
+    report = compare(originals, root / "final.docx", approved=approved, generated=[str(g) for g in generated],
+                     replaced=mapping.get("replace_cover_before"), old_toc=old_toc)
     write_json(root / "source-comparison.json", report)
     gaps = [item for item in report["sources"] if item["status"] == "differences"]
+    if strict and (gaps or report["added"]):
+        fix = ("只排版不能删字也不能加字：已有 Word 时看 mapping.json 里这段是不是被设成了 delete，content.json 时照原文改回；"
+               "用户明确同意的增删，写进 job.json 的 approved_changes（{\"text\": \"那段文字\", \"why\": \"用户怎么说的\"}）。")
+        issues = [
+            {"code": "SOURCE_MISSING", "stage": "原文保全", "message": "原稿这段文字在成品里找不到。",
+             "where": {"location": f"{Path(g['source']).name} 的 {m['location']}", "text": m["text"][:40]},
+             "cause": "排版时漏掉、删掉或改写了原文。", "fix": fix}
+            for g in gaps for m in g["missing"]
+        ] + [
+            {"code": "SOURCE_ADDED", "stage": "原文保全", "message": "成品里这段文字在原稿里找不到。",
+             "where": {"location": a["location"], "text": a["text"][:40]},
+             "cause": "排版时改写或新加了文字（只排版不能改原文）。", "fix": fix}
+            for a in report["added"]
+        ]
+        raise AcceptanceFailed("原文保全", issues)
     if gaps:
         result["warnings"].append(
             {
                 "code": "SOURCE_DIFFERENCES",
-                "message": "原稿里有些文字在成品中没找到，打开 WORK/source-comparison.json 逐条核对：没经用户同意的遗漏要先补回；用户要求删改的，在 review.json 的 warnings 里写明。",
+                "message": "原稿里有些文字没有用进成品（写作模式下原稿是素材，这不算错）。打开 WORK/source-comparison.json 核对："
+                "用户要求保留的要补回；在 review.json 的 warnings 里写明怎么处理的。",
                 "sources": gaps,
             }
         )
@@ -178,7 +222,9 @@ def _reset_for_prepare(root, s, docx, intake_path):
         shutil.copy2(intake_path, local_intake)
     s["active_request_source"] = str(intake_path)
     s["stage"] = "preparing"
+    (root / "generated.docx").unlink(missing_ok=True)
     for key in (
+        "manual",
         "review",
         "validation_scope",
         "limited_validation_sha256",
@@ -251,7 +297,7 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
         render_audit_sha256=sha(root / "render-audit.json"),
         renderer=_renderer_name(root),
         pages=preview["pages"],
-        warning_codes=sorted({w["code"] for w in warnings}),
+        warning_codes=sorted({warning_key(w) for w in warnings}),
     )
     write_json(root / MARKER, s)
     return {
@@ -363,7 +409,7 @@ def _prepare_static_only(root, s, normalized, intake, evidence):
         render_report_sha256=None,
         pages=[],
         limited_validation_sha256=sha(root / "limited-validation.json"),
-        warning_codes=sorted({w["code"] for w in warnings}),
+        warning_codes=sorted({warning_key(w) for w in warnings}),
         skipped_steps=receipt["skipped_steps"],
         user_notice=receipt["user_notice"],
     )
@@ -424,6 +470,99 @@ def prepare(workspace, docx, intake_path, unavailable_note=None, office="auto"):
                 os.environ[key] = val
 
 
+def _toc_matches_pdf(docx, pdf):
+    """TOC page numbers printed in the Word file equal the pages the renderer put the headings on."""
+    from refresh_toc import pdf_positions
+
+    entries = toc_entries(Document(docx))
+    if not entries:
+        return True
+    try:
+        values, _, _ = pdf_positions(pdf, entries)
+    except ValueError:
+        return False
+    return [entry["cache"] for entry in entries] == list(map(str, values))
+
+
+def adopt(workspace, docx, note):
+    """Accept a hand-edited copy of the accepted output for a requirement the scripts cannot meet.
+
+    The text must stay identical; the rendered-page audit, TOC check and source
+    comparison run as for ``run``; every static check the edit now fails is
+    recorded as a deviation that the review must address and the user is told.
+    """
+    from source_compare import body_key
+
+    root, s = load(workspace)
+    if s.get("stage") not in ("awaiting_review", "ready") or s.get("validation_scope") != "full":
+        raise ValueError("先用 run 得到通过验收、有页图的成品，再在它的副本上手工处理；没有办公软件时不能验收手工修改。")
+    if not isinstance(note, str) or len(note.strip()) < 4:
+        raise ValueError("--note 要写清手工改了什么（这句话会告诉用户）。")
+    source = Path(docx).expanduser().resolve()
+    if source.suffix.lower() != ".docx" or not source.is_file():
+        raise ValueError("--docx 要指向手工改好的 .docx。")
+    base = root / "generated.docx"
+    if not base.is_file():
+        shutil.copy2(root / "final.docx", base)
+    if body_key(source) != body_key(base):
+        raise AcceptanceFailed("手工修改", [{
+            "code": "MANUAL_TEXT_CHANGED", "stage": "手工修改", "message": "手工处理的文件和脚本生成的成品文字不一样。",
+            "cause": "手工处理只能改格式，不能增删改文字（目录页码除外）。",
+            "fix": "从 WORK 里的 generated.docx 重新复制一份，只改用户要求的那一项格式；要改文字就改 content.json / mapping.json 后重新 run。",
+        }])
+    intake = root / "active-intake.json"
+    known = {(e["code"], e["message"]) for e in check(base, final=True, intake_path=intake)["errors"]}
+    final = root / "final.docx"
+    shutil.copy2(source, final)
+    try:
+        after = check(final, final=True, intake_path=intake)
+        deviations = [e for e in after["errors"] if (e["code"], e["message"]) not in known]
+        try:
+            preview = render(final, root / "preview")
+        except OfficeUnavailable as exc:
+            raise ValueError("没有可用的办公软件，手工修改做不了渲染后验收，不能交付：" + str(exc)) from exc
+        pdf = root / "preview" / "final.pdf"
+        rendered = audit_rendered(final, pdf)
+        write_json(root / "render-audit.json", rendered)
+        if not rendered["passed"]:
+            raise AcceptanceFailed("渲染后版面检查", from_render(rendered, root))
+        if not _toc_matches_pdf(final, pdf):
+            raise AcceptanceFailed("手工修改", [{
+                "code": "TOC_PROOF_STALE", "stage": "手工修改", "message": "目录页码和实际分页对不上。",
+                "cause": "手工修改改变了分页，目录没有更新。", "fix": "在 Word 里右键目录 →“更新域”→“更新整个目录”，保存后重新 adopt。",
+            }])
+        result = {"warnings": []}
+        compare_originals(root, s, result)
+    except Exception:
+        # The accepted output stays in place; the state still points at it.
+        shutil.copy2(base, final)
+        raise
+    warnings = rendered["warnings"] + result["warnings"] + [
+        {"code": "MANUAL_EDIT", "message": "手工处理：" + note.strip() + "（交付时会告诉用户）"}
+    ] + [
+        {"code": "MANUAL_DEVIATION_" + e["code"], "message": "手工处理后这项不再符合模板默认：" + e["message"]}
+        for e in deviations
+    ]
+    keys = sorted({warning_key(w) for w in warnings})
+    s.pop("review", None)
+    s.update(
+        stage="awaiting_review",
+        document_sha256=sha(final),
+        render_report_sha256=sha(root / "preview/render-report.json"),
+        render_audit_sha256=sha(root / "render-audit.json"),
+        pages=preview["pages"],
+        warning_codes=keys,
+        manual={"note": note.strip(), "deviations": [[e["code"], e["message"]] for e in deviations]},
+    )
+    write_json(root / MARKER, s)
+    return {
+        "workspace": str(root),
+        "validation_scope": "full",
+        "pages": [dict(p, path=str(root / "preview" / p["png"])) for p in preview["pages"]],
+        "warnings": warnings,
+    }
+
+
 def _real_text(value, minimum=4):
     return isinstance(value, str) and len(value.strip()) >= minimum and PLACEHOLDER not in value
 
@@ -476,7 +615,7 @@ def attest(workspace, review):
         visual = "skipped_no_vision"
     notes = review.get("warnings", {})
     if not isinstance(notes, dict):
-        raise ValueError("review.json 的 warnings 必须是 {\"警告代码\": \"怎么处理的\"}。")
+        raise ValueError("review.json 的 warnings 必须是 {\"提示（run 生成的 review.json 里已列好）\": \"怎么处理的\"}。")
     missing = [code for code in s.get("warning_codes", []) if not _real_text(notes.get(code))]
     if missing:
         raise ValueError("这些警告还没写处理说明：" + "、".join(missing))
@@ -504,7 +643,12 @@ def user_notice(s):
     review = s["review"]
     if s.get("validation_scope") == "static-only":
         return s["user_notice"]
-    fonts = FONT_NOTICE if "FONT_SUBSTITUTED" in s.get("warning_codes", []) else ""
+    fonts = FONT_NOTICE if any(c.startswith("FONT_SUBSTITUTED") for c in s.get("warning_codes", [])) else ""
+    manual = s.get("manual")
+    if manual:
+        fonts += "有一项是手工处理的：" + manual["note"].rstrip("。") + "。"
+        if manual["deviations"]:
+            fonts += "这样处理后，下面几项和模板默认格式不同：" + "；".join(m for _, m in manual["deviations"])[:300] + "。"
     if review["visual_review"] == "skipped_no_vision":
         return (
             "已完成排版、格式检查和实际分页；没有逐页看图检查，原因："
@@ -532,7 +676,11 @@ def publish(workspace):
                 raise ValueError("页图已变化，请重新运行 run。")
         if s.get("render_audit_sha256") and sha(root / "render-audit.json") != s["render_audit_sha256"]:
             raise ValueError("渲染后版面检查结果被改动，请重新运行 run。")
-        check_preview_toc(root)
+        if s.get("manual"):
+            if not _toc_matches_pdf(final, root / "preview" / "final.pdf"):
+                raise ValueError("目录页码和实际分页对不上，请更新目录后重新 adopt。")
+        else:
+            check_preview_toc(root)
     verify_originals(s)
     source = s.get("active_request_source")
     if source and require(source)["integrity"] != require(root / "active-intake.json")["integrity"]:
@@ -543,8 +691,10 @@ def publish(workspace):
         intake_path=root / "active-intake.json",
         validation_scope="static-only" if limited else "full",
     )
-    if not result["passed"]:
-        raise AcceptanceFailed("交付前复查", explain(result["errors"], final, root))
+    allowed = {tuple(d) for d in (s.get("manual") or {}).get("deviations", [])}
+    remaining = [e for e in result["errors"] if (e["code"], e["message"]) not in allowed]
+    if remaining:
+        raise AcceptanceFailed("交付前复查", explain(remaining, final, root))
     dest = Path(s["destination"])
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.is_relative_to(root) or dest.is_relative_to(E.ROOT):

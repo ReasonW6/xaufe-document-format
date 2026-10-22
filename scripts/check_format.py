@@ -69,6 +69,68 @@ def visible_part(part):
     )
 
 
+def line_check(p, label, err):
+    """A fixed line height below the font size prints lines on top of each other."""
+    try:
+        spacing = paragraph_properties(p, "spacing")
+        if spacing.get("lineRule") != "exact" or not str(spacing.get("line", "")).isdigit():
+            return
+        sizes = [
+            int(run_properties(p, r).get("sz") or 21)
+            for r in p._p.xpath(".//w:r")
+            if "".join(r.xpath("./w:t/text()")).strip()
+        ]
+    except ValueError:  # broken style chains are reported by paragraph_check
+        return
+    line = int(spacing["line"]) / 20
+    if sizes and line < max(sizes) / 2:
+        err(
+            "LINE_TOO_TIGHT",
+            f"{label}: 固定行距={line:g}磅，应为不小于字号{max(sizes) / 2:g}磅。",
+        )
+
+
+FRONT = {"title_zh", "title_en", "abstract_label_zh", "abstract_label_en", "abstract_zh", "abstract_en",
+         "keywords_zh", "keywords_en", "toc_title", "toc1", "toc2", "toc3", "toc4"}
+MAIN = {"preface", "h1", "h2", "h3", "h4", "body", "reference_title", "reference"}
+
+
+def numbering_check(doc, reverse, err):
+    """Front matter I, II, ... from I; body 1, 2, ... from 1 to the end (format-spec.md)."""
+    from docx.text.paragraph import Paragraph
+
+    roles, index, front, main = set(), 0, False, False
+    for el in doc.element.body:
+        if el.tag == qn("w:p"):
+            roles.add(reverse.get(Paragraph(el, doc._body).style.name))
+            sect = el.find(qn("w:pPr") + "/" + qn("w:sectPr"))
+        else:
+            sect = el if el.tag == qn("w:sectPr") else None
+        if sect is None:
+            continue
+        index += 1
+        page = sect.find(qn("w:pgNumType"))
+        fmt = (page.get(qn("w:fmt")) if page is not None else None) or "decimal"
+        start = page.get(qn("w:start")) if page is not None else None
+        if main or roles & MAIN:
+            want = ("decimal", None if main else "1")
+            what = "正文" if not main else "正文之后"
+            main = True
+        elif roles & FRONT:
+            want = ("upperRoman", None if front else "1")
+            what = "摘要/目录"
+            front = True
+        else:
+            roles = set()
+            continue
+        if (fmt, start) != want:
+            show = lambda f, s: ("罗马数字" if f == "upperRoman" else "阿拉伯数字" if f == "decimal" else f) + (
+                f"从{s}开始" if s else "接着上一节"
+            )
+            err("PAGE_NUMBERING", f"第{index}节（{what}）页码格式={show(fmt, start)}，应为{show(*want)}。")
+        roles = set()
+
+
 def _check(path, final=False, intake_path=None, toc_report=None, validation_scope="full"):
     if validation_scope not in ("full", "static-only"):
         raise ValueError("未知验收范围。")
@@ -403,6 +465,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             rule["pPr"]["jc"]["val"] = "right" if label.endswith("/p1") else "left"
         paragraph_check(p, role, label, rule, err, warn)
         run_check(p, role, label, expected[role], err)
+        line_check(p, label, err)
         if p._p.xpath(".//wp:inline") and role != "figure":
             maxh = max((int(x.get("cy", "0")) for x in p._p.xpath(".//wp:extent")), default=0)
             if maxh > 254000 and paragraph_properties(p, "spacing").get("lineRule") == "exact":
@@ -491,6 +554,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             err("PART_MISSING", "缺少参考文献标题。")
         elif body is not None and roles.index("reference_title") <= body:
             err("PART_ORDER", "参考文献未排在正文之后。")
+        numbering_check(doc, reverse, err)
         minimum = (5 if spec["english_abstract"] else 4) - (0 if has_cover else 1)
         if len(doc.sections) < minimum:
             err("PART_BREAKS", "封面／摘要／目录／正文没有独立分节起页。")
@@ -507,10 +571,27 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             if not nonempty:
                 missing_content.append(role)
         if missing_content:
+            after = {"abstract_zh": "abstract_label_zh", "abstract_en": "abstract_label_en", "reference": "reference_title"}
+            prefix = {"keywords_zh": r"^\s*关键词", "keywords_en": r"^\s*key\s*words?"}
+            paragraphs = list(enumerate(doc.paragraphs))
+            candidates = []
+            for role in missing_content:
+                if role in after:
+                    starts = [i for i, q in paragraphs if reverse.get(q.style.name) == after[role]]
+                    found = [(i, q) for i, q in paragraphs[starts[0] + 1 : starts[0] + 4] if q.text.strip()] if starts else []
+                else:
+                    found = [(i, q) for i, q in paragraphs if re.match(prefix[role], q.text, re.I)]
+                candidates += [f"p{i}“{q.text.strip()[:15]}”（现在是 {reverse.get(q.style.name) or q.style.name}）" for i, q in found[:2]]
+            labels = {"abstract_zh": "中文摘要", "keywords_zh": "中文关键词", "reference": "参考文献条目",
+                      "abstract_en": "英文摘要", "keywords_en": "英文关键词"}
             warn(
                 "EMPTY_CONTENT",
-                "以下部分是空的：用户要求写作就补写；只排版就在 review.json 说明这是原稿本来就空的："
-                + ",".join(missing_content),
+                "这些部分在成品里是空的："
+                + "、".join(labels[r] for r in missing_content)
+                + "。先排除角色标错：已有 Word 时打开 mapping.json，看原稿里对应的文字是不是被标成了 body 或别的角色"
+                "（例如摘要正文应为 abstract_zh，参考文献条目应为 reference），改对后重新 run。"
+                + ("可能是这几段：" + "；".join(candidates) + "。" if candidates else "")
+                + "原稿本来就没有这部分时：写作模式补写；只排版模式不补，在 review.json 说明原稿就是空的。",
             )
     for i, img in enumerate(doc.inline_shapes):
         if i == 0 and has_cover:
