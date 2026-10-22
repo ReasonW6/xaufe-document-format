@@ -231,6 +231,10 @@ def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, off
             print(json.dumps(row, ensure_ascii=False), flush=True)
             return row
         if code:
+            # Keep what the renderer produced so a failure on another system can be looked at.
+            for kept in ("preview/final.pdf", "final.docx", "render-audit.json"):
+                if (work / kept).is_file():
+                    shutil.copy2(work / kept, target / ("failed-" + Path(kept).name))
             raise RuntimeError(err or text)
         shutil.copy2(work / "final.docx", target / "final.docx")
         for page in sorted((work / "preview").glob("page-*.png")) if (work / "preview").exists() else []:

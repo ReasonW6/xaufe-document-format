@@ -46,7 +46,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install LibreOffice (and CJK fonts on Linux)
+      - name: Install LibreOffice and the same Noto CJK fonts on Linux and macOS
         run: |
           case "$RUNNER_OS" in
             Linux)
@@ -55,7 +55,7 @@ jobs:
             Windows)
               choco install libreoffice-fresh -y --no-progress ;;
             macOS)
-              brew install --cask libreoffice ;;
+              brew install --cask libreoffice font-noto-serif-cjk-sc font-noto-sans-cjk-sc ;;
           esac
       - run: python -m pip install -r requirements.txt
       - name: Unit tests including the real-render audit tests

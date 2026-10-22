@@ -11,7 +11,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CoverOverflow(ValueError):
-    """The rendered cover does not fit on page 1 (date moved, squeezed or split)."""
+    """The rendered cover does not fit on page 1 (date moved, squeezed or split).
+
+    missing_fonts lists requested families the renderer did not have; a wider or
+    taller substitute can push the cover over by itself, so the advice differs.
+    """
+
+    missing_fonts: list = []
+    rendered_fonts: list = []
 
 
 def baseline(template, request=None):
@@ -96,6 +103,16 @@ def visible_lines(page):
 
 def verify_pdf(docx, pdf_path):
     """Read rendered coordinates, not a cached assertion. Raises on cover overflow."""
+    try:
+        return _verify_pdf(docx, pdf_path)
+    except CoverOverflow as exc:
+        from render_audit import font_gap
+
+        exc.missing_fonts, exc.rendered_fonts = font_gap(Document(docx), pdf_path)
+        raise
+
+
+def _verify_pdf(docx, pdf_path):
     import pymupdf as fitz
 
     doc = Document(docx)

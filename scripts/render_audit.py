@@ -82,6 +82,17 @@ def _font_present(family, used):
     return any(alias and any(used_key.startswith(alias) for used_key in used) for alias in aliases)
 
 
+def font_gap(doc, pdf_path):
+    """(missing, rendered): requested families absent from the PDF, and what it used."""
+    import pymupdf as fitz
+
+    used = set()
+    with fitz.open(pdf_path) as pdf:
+        for page in pdf:
+            used |= {_key(font[3]) for font in page.get_fonts()}
+    return [f for f in requested_fonts(doc) if not _font_present(f, used)], sorted(used)
+
+
 def _expectations(doc):
     vv = {e.get(qn("w:name")): e.get(qn("w:val")) for e in doc.settings.element.xpath("./w:docVars/w:docVar")}
     header = footer = None

@@ -645,6 +645,15 @@ def cmd_run(args):
             return _not_accepted(root, exc)
         except CoverOverflow as exc:
             used = int(E.get_vars(docx.Document(draft)).get("XAUFE_COVER_FIT", "0"))
+            if used >= MAX_LEVEL and exc.missing_fonts:
+                raise ValueError(
+                    "封面在这台机器上放不下（" + str(exc) + "），但渲染时缺少文档要求的字体（"
+                    + "、".join(exc.missing_fonts) + "），用的是替代字体（"
+                    + "、".join(exc.rendered_fonts)[:120] + "）。替代字体的字宽和行高不同，"
+                    "封面挤出第一页很可能是字体造成的，不是内容太长。请先装上这些字体，"
+                    "或换装有这些字体的 Word/WPS 渲染（run --office word / wps），再重新 run；"
+                    "装好字体后仍放不下，才需要问用户缩短封面内容。Word 文件本身的字体设置没有变。"
+                ) from exc
             if used >= MAX_LEVEL:
                 values = {I.LABELS.get(k, k): str(v) for k, v in state.get("metadata", {}).items() if k != "date" and v}
                 longest = sorted(values.items(), key=lambda kv: -len(kv[1]))[:2]

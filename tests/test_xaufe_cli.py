@@ -244,6 +244,23 @@ class CLI(unittest.TestCase):
         self.assertEqual(levels, [0, 1])
         self.assertIn("自动收紧封面空白", out)
 
+    def test_cover_overflow_with_substituted_fonts_blames_the_fonts(self):
+        from cover_date_audit import CoverOverflow
+
+        work = self.new(JOB_B, CONTENT)
+
+        def prepare(*args, **kwargs):
+            exc = CoverOverflow("合成：学号挤到第二页")
+            exc.missing_fonts, exc.rendered_fonts = ["宋体", "黑体"], ["hiraginosansgb"]
+            raise exc
+
+        with patch("delivery.prepare", side_effect=prepare):
+            code, out, err = self.call("run", "--work", work)
+        self.assertEqual(code, 2)
+        self.assertIn("缺少文档要求的字体（宋体、黑体）", err)
+        self.assertIn("装好字体后仍放不下，才需要问用户缩短", err)
+        self.assertNotIn("同意缩小封面字号", err)
+
     def test_both_content_and_mapping_is_refused(self):
         work = self.new(JOB_B, CONTENT)
         (work / "mapping.json").write_text("{}", encoding="utf-8")
