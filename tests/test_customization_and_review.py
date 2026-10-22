@@ -548,6 +548,24 @@ class WPSTests(Fixture):
         self.assertEqual(result["engine"], "wps")
         self.assertTrue(target.is_file())
 
+    def test_libreoffice_keeps_home_so_user_fonts_are_found(self):
+        # ~/Library/Fonts (macOS) and ~/.fonts (Linux) are reached through HOME.
+        seen = {}
+
+        def run(cmd, **kw):
+            seen.update(kw["env"])
+            out = Path(cmd[cmd.index("--outdir") + 1])
+            (out / "a.pdf").write_bytes(b"%PDF-1.4 synthetic")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        source = self.root / "a.docx"
+        Document().save(source)
+        with tempfile.TemporaryDirectory(dir=self.root) as tmp, patch("office_backend.subprocess.run", side_effect=run):
+            B._lo(source, self.root / "a.pdf", {"path": "soffice"}, Path(tmp))
+        self.assertEqual(seen.get("HOME"), os.environ.get("HOME"))
+        self.assertNotIn(str(self.root), seen.get("XDG_CONFIG_HOME", ""))
+        self.assertTrue((self.root / "a.pdf").is_file())
+
     def test_invalid_pdf_backend_rejected(self):
         source = self.root / "a.docx"
         Document().save(source)

@@ -40,11 +40,12 @@ def _lo(docx, pdf, candidate, tmp):
         str(docx),
     ]
     env = os.environ.copy()
-    # Do not change Windows user identity/profile; LO gets its own explicit profile.
+    # LO gets its own explicit profile above. HOME stays as it is: fonts the user
+    # installed for themselves (~/Library/Fonts on macOS, ~/.fonts or
+    # ~/.local/share/fonts on Linux, often where 宋体/黑体 live) are found through
+    # it, and hiding them made LibreOffice substitute fonts and misjudge the cover.
     if os.name != "nt":
-        env.update(
-            HOME=str(tmp), XDG_CONFIG_HOME=str(tmp / "config"), XDG_CACHE_HOME=str(tmp / "cache")
-        )
+        env.update(XDG_CACHE_HOME=str(tmp / "cache"))
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
     produced = od / (docx.stem + ".pdf")
     if not produced.is_file() or not produced.stat().st_size:
