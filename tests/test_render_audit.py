@@ -58,6 +58,11 @@ class RenderAudit(unittest.TestCase):
             for kind, x, y, payload in items:
                 if kind == "text":
                     page.insert_text((x, y), payload, fontname="china-s", fontsize=10.5)
+                elif kind == "small":
+                    page.insert_text((x, y), payload, fontname="china-s", fontsize=6)
+                elif kind == "tall":
+                    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 4, 4), 0)
+                    page.insert_image(fitz.Rect(x, y, x + 200, y + payload), pixmap=pix)
                 elif kind == "image":
                     pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 4, 4), 0)
                     page.insert_image(fitz.Rect(x, y, x + payload, y + 40), pixmap=pix)
@@ -147,6 +152,69 @@ class RenderAudit(unittest.TestCase):
         result = audit(self.docx(), self.pdf([self.cover(), [("text", 90, 200, "第一行文字"), ("text", 90, 216, "第二行文字")]]))
         self.assertTrue(result["passed"], result["errors"])
 
+    def test_overlap_is_judged_against_the_font_size(self):
+        # 10.5 pt text: baselines 8 pt apart print into each other, 10 pt apart only look tight.
+        tight = audit(self.docx(), self.pdf([self.cover(), [("text", 90, 200, "第一行文字"), ("text", 90, 208, "第二行文字")]]))
+        overlap = [e for e in tight["errors"] if e["code"] == "TEXT_OVERLAP"]
+        self.assertTrue(overlap, tight["errors"])
+        self.assertIn("0.9", overlap[0]["expected"])
+        self.assertEqual(overlap[0]["actual"], "8.0pt")
+        snug = audit(self.docx(), self.pdf([self.cover(), [("text", 90, 200, "第一行文字"), ("text", 90, 210, "第二行文字")]]))
+        self.assertTrue(snug["passed"], snug["errors"])
+
+    def test_superscript_beside_a_word_is_not_an_overlap(self):
+        result = audit(self.docx(), self.pdf([self.cover(), [("text", 90, 200, "引用文字"), ("small", 132.5, 195, "[1]"),
+                                                            ("text", 145, 200, "后文")]]))
+        self.assertTrue(result["passed"], result["errors"])
+
+    def test_text_printed_on_an_image(self):
+        result = audit(self.docx(), self.pdf([self.cover(), self.body() + [("image", 150, 300, 200), ("text", 160, 320, "压在图上的字")]]))
+        hit = [e for e in result["errors"] if e["code"] == "TEXT_OVER_IMAGE"]
+        self.assertEqual(hit[0]["page"], 2)
+        self.assertIn("压在图上的字", hit[0]["where"])
+        clear = audit(self.docx(), self.pdf([self.cover(), self.body() + [("image", 150, 300, 200), ("text", 160, 360, "图下的图题")]]))
+        self.assertTrue(clear["passed"], clear["errors"])
+
+    def test_image_taller_than_the_text_area(self):
+        result = audit(self.docx(), self.pdf([self.cover(), self.body() + [("tall", 150, 100, 720)]]))
+        tall = [e for e in result["errors"] if e["code"] == "IMAGE_OUTSIDE_MARGINS"]
+        self.assertTrue(tall and "上下" in tall[0]["message"], result["errors"])
+
+    def test_header_wrapping_into_the_text_area(self):
+        # A: top margin 72 pt.  The header text ("测试") wraps to a third line that ends below it.
+        doc = self.docx("A")
+        header = [("text", 95, 50, "测试"), ("text", 95, 62.5, "测试")]
+        ok = audit(doc, self.pdf([self.cover(), header + [("text", 95, 200, "正文")]]))
+        self.assertNotIn("HEADER_OVERFLOW", self.codes(ok))
+        bad = audit(doc, self.pdf([self.cover(), header + [("text", 95, 75, "测试"), ("text", 95, 200, "正文")]]))
+        spill = [e for e in bad["errors"] if e["code"] == "HEADER_OVERFLOW"]
+        self.assertEqual(spill[0]["page"], 2)
+        self.assertIn("72.0pt", spill[0]["expected"])
+        self.assertIn("format.header", F.HINTS["HEADER_OVERFLOW"][1].replace("\"header\"", "format.header"))
+
+    def test_page_with_only_a_drawing_is_not_blank(self):
+        result = audit(self.docx(), self.pdf([self.cover(), [("line", 100, 300, 300)]]))
+        self.assertNotIn("BLANK_PAGE", self.codes(result))
+
+    def test_repeated_issues_are_shown_once_with_their_pages(self):
+        result = audit(self.docx(), self.pdf([self.cover()] + [self.body() + [("text", 90, 50, "多余页眉")] for _ in range(3)]))
+        issues = F.from_render(result)
+        self.assertEqual(len(issues), 3)
+        text = F.render_text(issues)
+        self.assertEqual(text.count("[HEADER_UNEXPECTED]"), 1)
+        self.assertIn("第2页、第3页、第4页（共 3 处）", text)
+
+    def test_stop_rule_counts_runs_without_progress(self):
+        def issue(page):
+            return {"code": "BLANK_PAGE", "where": {"page": page}}
+
+        rounds = [F.record_round(self.folder, [issue(3), issue(5)])]
+        rounds.append(F.record_round(self.folder, [issue(5)]))  # one fixed: progress
+        rounds += [F.record_round(self.folder, [issue(5)]) for _ in range(F.MAX_STALLED)]
+        self.assertEqual([r[1] for r in rounds], [0, 0] + list(range(1, F.MAX_STALLED + 1)))
+        self.assertTrue(rounds[-1][2])
+        self.assertEqual(F.record_round(self.folder, []), (0, 0, False))
+
     def numbered(self, *labels):
         doc = self.docx(patch={"footer_page_numbers": True})
         return audit(doc, self.pdf([self.cover()] + [self.body() + [("text", 295, 830, n)] for n in labels]))
@@ -212,6 +280,35 @@ class RenderAuditRealOffice(unittest.TestCase):
             self.assertIn("BLANK_PAGE", [e["code"] for e in result["errors"]])
 
 
+    def test_lowered_text_overlaps_although_the_static_rules_pass(self):
+        """A run moved down by w:position keeps every style rule but prints into the next line."""
+        from office_backend import export_pdf
+        from docx import Document
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        import check_format as C
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            case = RenderAudit("test_clean_pages_pass")
+            case.folder = folder
+            out = case.docx(cover=False)
+            doc = Document(out)
+            first = doc.add_paragraph("", style=E.ROLES["body"])
+            run = first.add_run("这一行的文字被整体降低了十二磅，落到下一行上。")
+            position = OxmlElement("w:position")
+            position.set(qn("w:val"), "-24")
+            run._r.get_or_add_rPr().append(position)
+            doc.add_paragraph("下一行正常的正文文字，用来检验两行是否叠在一起。", style=E.ROLES["body"])
+            doc.save(out)
+            static = [e["code"] for e in C.check(out)["errors"]]
+            self.assertNotIn("AUDIT_ABORTED", static)
+            self.assertNotIn("LINE_TOO_TIGHT", static)
+            pdf = folder / "real.pdf"
+            export_pdf(out, pdf)
+            result = audit(out, pdf)
+            self.assertIn("TEXT_OVERLAP", [e["code"] for e in result["errors"]], result["errors"])
+
     def test_hand_edited_copy_is_accepted_only_through_adopt(self):
         """A requirement the scripts cannot meet: edit a copy, adopt re-runs every check, the user is told."""
         import contextlib, io
@@ -247,6 +344,8 @@ class RenderAuditRealOffice(unittest.TestCase):
             code, out = call("adopt", "--work", work, "--docx", edited, "--note", "正文按用户要求改成蓝色")
             self.assertEqual(code, 0, out)
             self.assertIn("MANUAL_DEVIATION_FONT_COLOR", out)
+            self.assertIn("“这是合成正文。”的文字颜色和模板默认不同", out)
+            self.assertNotIn("TOC_PROOF_STALE", out)
             review = json.loads((work / "review.json").read_text(encoding="utf-8"))
             self.assertIn("MANUAL_EDIT", review["warnings"])
             review.update(vision=True, pages={k: "单元测试合成记录：正文为蓝色" for k in review["pages"]},
@@ -258,6 +357,42 @@ class RenderAuditRealOffice(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertIn("正文按用户要求改成蓝色", out)
             self.assertIn("和模板默认格式不同", out)
+
+    def test_adopt_refuses_a_hand_edit_that_breaks_the_layout(self):
+        import contextlib, io
+        import xaufe as X
+        from docx import Document
+        from docx.shared import Pt
+        from docx.enum.text import WD_LINE_SPACING
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            source = folder / "原稿.txt"
+            source.write_text("这是合成正文。", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                X.main(["new", "--out", str(folder / "成品.docx"), "--source", str(source)])
+            work = Path(out.getvalue().split("WORK = ")[1].splitlines()[0].strip())
+            (work / "job.json").write_text(json.dumps({"task": "format", "template": "B", "cover": False}), encoding="utf-8")
+            (work / "content.json").write_text(json.dumps({"mode": "document", "metadata": {}, "blocks": [
+                {"type": "paragraph", "text": "这是合成正文。"}]}, ensure_ascii=False), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(X.main(["run", "--work", str(work)]), 0)
+            accepted = (work / "final.docx").read_bytes()
+            doc = Document(work / "final.docx")
+            body = [p for p in doc.paragraphs if p.text == "这是合成正文。"][0]
+            body.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+            body.paragraph_format.line_spacing = Pt(5)
+            doc.save(folder / "手工.docx")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = X.main(["adopt", "--work", str(work), "--docx", str(folder / "手工.docx"), "--note", "合成测试：行距改小"])
+            self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out.getvalue())
+            self.assertIn("LINE_TOO_TIGHT", out.getvalue())
+            self.assertIn("adopt 不放行", out.getvalue())
+            self.assertEqual((work / "final.docx").read_bytes(), accepted)
+            with contextlib.redirect_stdout(io.StringIO()):
+                X.main(["cancel", "--work", str(work)])
 
     def test_adopt_refuses_changed_text(self):
         import contextlib, io
@@ -285,6 +420,8 @@ class RenderAuditRealOffice(unittest.TestCase):
                 code = X.main(["adopt", "--work", str(work), "--docx", str(folder / "手工.docx"), "--note", "合成测试"])
             self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
             self.assertIn("MANUAL_TEXT_CHANGED", out.getvalue())
+            with contextlib.redirect_stdout(io.StringIO()):
+                X.main(["cancel", "--work", str(work)])
 
 
 if __name__ == "__main__":

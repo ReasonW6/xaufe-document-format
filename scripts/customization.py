@@ -98,7 +98,62 @@ def number(value, lo, hi, name, integer=False):
         raise ValueError(f"{name}须是{lo}至{hi}之间的" + ("整数。" if integer else "数值。"))
 
 
-def validate_style(patch, *, cover=False):
+def unknown_key(path, key, allowed):
+    """“不认识的项” with the JSON path and the nearest valid key."""
+    import difflib
+
+    close = difflib.get_close_matches(str(key), sorted(allowed), n=1, cutoff=0.5)
+    return ValueError(
+        f"job.json 的 {path} 里有不认识的项“{key}”" + (f"，是不是想写“{close[0]}”？" if close else "。")
+        + "可用的项：" + "、".join(sorted(allowed)) + "。写法见 references/job.md；"
+        "脚本确实不支持的要求按 references/special-cases.md 处理，不能忽略用户要求。"
+    )
+
+
+FONT_KEYS = {"cn", "latin", "size", "bold", "italic", "color", "underline"}
+
+
+def locate_format(request):
+    """Check the shape of job.json "format" first, so every error names its path (format.styles.h1.size)."""
+    if not isinstance(request, dict):
+        raise ValueError("job.json 的 format 必须是 JSON 对象（没有特别要求就写 {}）。")
+    for key in request:
+        if key not in TOP_KEYS:
+            raise unknown_key("format", key, TOP_KEYS)
+    sections = {
+        "styles": set(ROLE_STYLES) - {"cover"},
+        "header": {"enabled", "left", "right", "border"},
+        "page_twips": set(load_profile("A")["page_twips"]),
+        "cover_fonts": {"label", "title", "fields", "date", "course"},
+        "keyword_labels": {"zh", "en"},
+    }
+    for key, allowed in sections.items():
+        section = request.get(key)
+        if section is None:
+            continue
+        if not isinstance(section, dict):
+            raise ValueError(f"job.json 的 format.{key} 必须是 JSON 对象。")
+        for name, value in section.items():
+            if name not in allowed:
+                raise unknown_key(f"format.{key}", name, allowed)
+            if key in ("styles", "cover_fonts", "keyword_labels") and value is not None:
+                path = f"format.{key}.{name}"
+                if not isinstance(value, dict):
+                    raise ValueError(f"job.json 的 {path} 必须是 JSON 对象，例如 {{\"size\": 12}}。")
+                keys = STYLE_KEYS if key == "styles" else FONT_KEYS
+                for k in value:
+                    if k not in keys:
+                        raise unknown_key(path, k, keys)
+                try:
+                    validate_style({k: v for k, v in value.items() if v is not None}, cover=key != "styles", path=path)
+                except ValueError as exc:
+                    message = str(exc)
+                    raise ValueError(message if path in message else f"job.json 的 {path}：{message}") from exc
+            elif key == "page_twips" and value is not None:
+                number(value, 0, 50000, f"job.json 的 format.page_twips.{name}（单位 twip，1 厘米 = 567）", True)
+
+
+def validate_style(patch, *, cover=False, path=""):
     if not isinstance(patch, dict) or set(patch) - (
         {"cn", "latin", "size", "bold", "italic", "color", "underline"} if cover else STYLE_KEYS
     ):
@@ -128,9 +183,9 @@ def validate_style(patch, *, cover=False):
             if val not in ("auto", "exact", "atLeast"):
                 raise ValueError("行距类型无效。")
         elif key == "size":
-            number(val, 1, 96, key)
+            number(val, 1, 96, f"job.json 的 {path}.size（磅）" if path else key)
         else:
-            number(val, 0, 50000, key, True)
+            number(val, 0, 50000, f"job.json 的 {path}.{key}" if path else key, True)
     if "first" in patch and "chars" in patch:
         raise ValueError("首行缩进不能同时指定绝对值和字符值。")
     if "left" in patch and "left_chars" in patch:
@@ -144,6 +199,7 @@ def validate_style(patch, *, cover=False):
 def effective_profile(template, request=None):
     spec = load_profile(template)
     request = deepcopy({} if request is None else request)
+    locate_format(request)
     if not isinstance(request, dict) or set(request) - TOP_KEYS:
         raise ValueError(
             "format 里有不认识的字段；只能用 references/job.md 列出的字段。脚本不支持的要求见 references/special-cases.md，不能忽略用户要求。"
@@ -408,6 +464,7 @@ def merge_request(current, patch):
     """
     if not isinstance(current, dict) or not isinstance(patch, dict):
         raise ValueError("格式差异必须为JSON对象。")
+    locate_format({k: v for k, v in patch.items() if v is not None})
     if set(patch) - TOP_KEYS:
         raise ValueError("未知格式差异字段。")
     dictionaries = {

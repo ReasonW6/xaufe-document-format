@@ -473,13 +473,11 @@ def from_job(job, path, now=None):
     """
     if not isinstance(job, dict):
         raise ValueError("job.json 必须是一个 JSON 对象。")
-    unknown = set(job) - JOB_KEYS
+    unknown = sorted(set(job) - JOB_KEYS)
     if unknown:
-        raise ValueError(
-            "job.json 有不认识的项："
-            + "、".join(sorted(unknown))
-            + "。只能用 task、template、logo、cover、info、blank、format、timezone、approved_changes、accept_unverified_refs。"
-        )
+        from customization import unknown_key
+
+        raise unknown_key("顶层", unknown[0], JOB_KEYS)
     changes = job.get("approved_changes", [])
     if not isinstance(changes, list) or any(
         not isinstance(c, dict) or set(c) != {"text", "why"} or not all(isinstance(v, str) and v.strip() for v in c.values())
@@ -528,10 +526,16 @@ def from_job(job, path, now=None):
     labels = "、".join(f"{k}（{LABELS[k]}）" for k in fields)
     for key in list(info) + blank:
         if key not in fields:
+            import difflib
+
             hint = ""
             if key == "supervisor":
                 hint = "B 版默认没有指导教师栏；用户要加就在 format 里写 \"cover_supervisor\": true。"
-            raise ValueError(f"{key} 不是当前版式的封面字段。{hint}当前可用字段：{labels}。")
+            else:
+                close = difflib.get_close_matches(key, fields, n=1, cutoff=0.5)
+                hint = f"是不是想写“{close[0]}”？" if close else ""
+            where = "info" if key in info else "blank"
+            raise ValueError(f"job.json 的 {where} 里的 {key} 不是当前版式的封面字段。{hint}当前可用字段：{labels}。")
     both = [k for k in blank if info.get(k, "").strip()]
     if both:
         raise ValueError("同一项不能既填写又留空：" + "、".join(both))

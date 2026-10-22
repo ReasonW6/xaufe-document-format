@@ -134,34 +134,46 @@ def compare_originals(root, state, result):
     # Cover values from job.json also appear on the abstract page and in the header.
     generated = list(require(root / "intake.json")["metadata"].values()) if (root / "intake.json").is_file() else []
     for value in (mapping.get("add") or {}).values():
-        generated += [" ".join(map(str, value))] if isinstance(value, list) else [value]
+        if isinstance(value, list):  # keywords: the template prints them after its own label
+            generated += ["Key words: " + "; ".join(map(str, value)), "关键词：" + "；".join(map(str, value))]
+        else:
+            generated.append(value)
     approved = [c["text"] for c in job.get("approved_changes", []) if isinstance(c, dict) and c.get("text")]
     report = compare(originals, root / "final.docx", approved=approved, generated=[str(g) for g in generated],
                      replaced=mapping.get("replace_cover_before"), old_toc=old_toc)
     write_json(root / "source-comparison.json", report)
-    gaps = [item for item in report["sources"] if item["status"] == "differences"]
-    if strict and (gaps or report["added"]):
-        fix = ("只排版不能删字也不能加字：已有 Word 时看 mapping.json 里这段是不是被设成了 delete，content.json 时照原文改回；"
-               "用户明确同意的增删，写进 job.json 的 approved_changes（{\"text\": \"那段文字\", \"why\": \"用户怎么说的\"}）。")
-        issues = [
-            {"code": "SOURCE_MISSING", "stage": "原文保全", "message": "原稿这段文字在成品里找不到。",
-             "where": {"location": f"{Path(g['source']).name} 的 {m['location']}", "text": m["text"][:40]},
-             "cause": "排版时漏掉、删掉或改写了原文。", "fix": fix}
-            for g in gaps for m in g["missing"]
-        ] + [
-            {"code": "SOURCE_ADDED", "stage": "原文保全", "message": "成品里这段文字在原稿里找不到。",
-             "where": {"location": a["location"], "text": a["text"][:40]},
-             "cause": "排版时改写或新加了文字（只排版不能改原文）。", "fix": fix}
-            for a in report["added"]
-        ]
+    found = report["differences"]
+    if strict and found:
+        fix = ("只排版不能改原文：已有 Word 时看 mapping.json 里这段的 role（delete 会删掉整段）；content.json 时照原稿逐字改回，"
+               "数字、标点、大小写、段落顺序都要一样。用户明确同意的增删，把改动的完整文字写进 job.json 的 approved_changes"
+               "（{\"text\": \"完整的那段文字\", \"why\": \"用户怎么说的\"}；图片、表格等对象写明“图片”“表格”）。")
+        what = {"changed": ("SOURCE_CHANGED", "原稿这段文字在成品里被改了。"),
+                "missing": ("SOURCE_MISSING", "原稿这段文字在成品里找不到。"),
+                "added": ("SOURCE_ADDED", "成品里这段文字在原稿里没有。"),
+                "moved": ("SOURCE_MOVED", "原稿这段文字在成品里换了位置。"),
+                "objects": ("SOURCE_OBJECTS", "成品里的图片/表格/公式/链接和原稿对不上。")}
+        issues = []
+        for d in found:
+            code, message = what[d["kind"]]
+            item = {"code": code, "stage": "原文保全", "message": message, "where": {"location": d["location"]},
+                    "cause": "排版时漏掉、改写、挪动或新加了内容。", "fix": fix}
+            if d["kind"] == "objects":
+                item["fix"] = ("把原稿里的对象原样带上：content.json 里图片用 image 块、表格用 table 块（行列和原稿一样）、"
+                               "链接写在 runs 的 link 里；已有 Word 时看 mapping.json 里图片、公式所在段落是不是被设成了 delete。"
+                               "用户同意去掉的，在 job.json 的 approved_changes 里写明（text 里写“图片”“表格”等字样）。")
+            if "original" in d:
+                item["expected"] = d["original"]
+            if "output" in d:
+                item["actual"] = d["output"]
+            issues.append(item)
         raise AcceptanceFailed("原文保全", issues)
-    if gaps:
+    missing = [d for d in found if d["kind"] == "missing"]
+    if missing:
         result["warnings"].append(
             {
                 "code": "SOURCE_DIFFERENCES",
-                "message": "原稿里有些文字没有用进成品（写作模式下原稿是素材，这不算错）。打开 WORK/source-comparison.json 核对："
+                "message": f"原稿里有 {len(missing)} 段文字没有用进成品（写作模式下原稿是素材，这不算错）。打开 WORK/source-comparison.json 核对："
                 "用户要求保留的要补回；在 review.json 的 warnings 里写明怎么处理的。",
-                "sources": gaps,
             }
         )
 
@@ -484,12 +496,37 @@ def _toc_matches_pdf(docx, pdf):
     return [entry["cache"] for entry in entries] == list(map(str, values))
 
 
+# What a hand edit may change: how text looks.  Anything else it breaks
+# (line spacing, objects past the margins, hidden text, page numbers, the
+# cover, tables) blocks delivery exactly as it does for ``run``.
+ADOPTABLE = {
+    "FONT_SIZE": "字号", "FONT_CN": "中文字体", "FONT_EN": "西文字体", "FONT_BOLD": "加粗", "FONT_COLOR": "文字颜色",
+    "FONT_ITALIC": "倾斜", "FONT_UNDERLINE": "下划线", "PARAGRAPH": "段落格式（对齐、缩进、段前段后或行距）",
+    "PARAGRAPH_EXTRA": "段落格式（对齐、缩进、段前段后或行距）", "STYLE_INHERITANCE": "段落样式",
+    "TOC_FONT": "目录字体", "TOC_FONT_SIZE": "目录字号", "TOC_EMPHASIS": "目录加粗", "TOC_COLOR": "目录颜色",
+    "HEADER_TEXT": "页眉文字", "HEADER_BORDER": "页眉横线", "COVER_FONT": "封面字体", "COVER_EFFECTIVE_FONT": "封面字体",
+    "LOGO_SIZE": "校徽大小", "LOGO_ALIGN": "校徽对齐",
+}
+# Proved again from the rendered PDF by adopt itself (the stored proof belongs to the generated copy).
+REPROVED = {"TOC_PROOF_STALE", "TOC_UNRESOLVED"}
+
+
+def _plain_deviation(issue):
+    where = issue.get("where") or {}
+    place = f"“{where['text']}”" if where.get("text") else (where.get("location") or "")
+    what = ADOPTABLE.get(issue["code"], issue["code"])
+    detail = f"（模板：{issue['expected']}；现在：{issue['actual']}）" if "expected" in issue and "actual" in issue else ""
+    return (f"{place}的{what}" if place else what) + "和模板默认不同" + detail
+
+
 def adopt(workspace, docx, note):
     """Accept a hand-edited copy of the accepted output for a requirement the scripts cannot meet.
 
     The text must stay identical; the rendered-page audit, TOC check and source
     comparison run as for ``run``; every static check the edit now fails is
-    recorded as a deviation that the review must address and the user is told.
+    recorded as a deviation that the review must address and the user is told,
+    as long as it is a change of how text looks (``ADOPTABLE``); any other new
+    static error is refused like a failed ``run``.
     """
     from source_compare import body_key
 
@@ -516,7 +553,17 @@ def adopt(workspace, docx, note):
     shutil.copy2(source, final)
     try:
         after = check(final, final=True, intake_path=intake)
-        deviations = [e for e in after["errors"] if (e["code"], e["message"]) not in known]
+        new = [e for e in after["errors"] if (e["code"], e["message"]) not in known]
+        tolerated = [e for e in new if e["code"] in REPROVED]
+        deviations = [e for e in new if e["code"] in ADOPTABLE]
+        blocking = [e for e in new if e not in tolerated and e not in deviations]
+        if blocking:
+            issues = explain(blocking, final, root, stage="手工修改")
+            for item in issues:
+                item["cause"] = ("手工处理只能改文字的外观（字体、字号、颜色、加粗、对齐、缩进、间距等）；"
+                                 "这一项是会让版面出错的问题，adopt 不放行。" + (" " + item["cause"] if item["cause"] else ""))
+            raise AcceptanceFailed("手工修改", issues)
+        explained = explain(deviations, final, root, stage="手工修改")
         try:
             preview = render(final, root / "preview")
         except OfficeUnavailable as exc:
@@ -540,8 +587,8 @@ def adopt(workspace, docx, note):
     warnings = rendered["warnings"] + result["warnings"] + [
         {"code": "MANUAL_EDIT", "message": "手工处理：" + note.strip() + "（交付时会告诉用户）"}
     ] + [
-        {"code": "MANUAL_DEVIATION_" + e["code"], "message": "手工处理后这项不再符合模板默认：" + e["message"]}
-        for e in deviations
+        {"code": "MANUAL_DEVIATION_" + e["code"], "message": "手工处理后" + _plain_deviation(e) + "。"}
+        for e in explained
     ]
     keys = sorted({warning_key(w) for w in warnings})
     s.pop("review", None)
@@ -552,7 +599,9 @@ def adopt(workspace, docx, note):
         render_audit_sha256=sha(root / "render-audit.json"),
         pages=preview["pages"],
         warning_codes=keys,
-        manual={"note": note.strip(), "deviations": [[e["code"], e["message"]] for e in deviations]},
+        manual={"note": note.strip(),
+                "deviations": [[e["code"], e["message"], _plain_deviation(x)] for e, x in zip(deviations, explained)],
+                "tolerated": [[e["code"], e["message"]] for e in tolerated]},
     )
     write_json(root / MARKER, s)
     return {
@@ -648,7 +697,7 @@ def user_notice(s):
     if manual:
         fonts += "有一项是手工处理的：" + manual["note"].rstrip("。") + "。"
         if manual["deviations"]:
-            fonts += "这样处理后，下面几项和模板默认格式不同：" + "；".join(m for _, m in manual["deviations"])[:300] + "。"
+            fonts += "这样处理后，下面几项和模板默认格式不同：" + "；".join(d[-1] for d in manual["deviations"])[:300] + "。"
     if review["visual_review"] == "skipped_no_vision":
         return (
             "已完成排版、格式检查和实际分页；没有逐页看图检查，原因："
@@ -691,7 +740,8 @@ def publish(workspace):
         intake_path=root / "active-intake.json",
         validation_scope="static-only" if limited else "full",
     )
-    allowed = {tuple(d) for d in (s.get("manual") or {}).get("deviations", [])}
+    manual = s.get("manual") or {}
+    allowed = {tuple(d[:2]) for d in manual.get("deviations", []) + manual.get("tolerated", [])}
     remaining = [e for e in result["errors"] if (e["code"], e["message"]) not in allowed]
     if remaining:
         raise AcceptanceFailed("交付前复查", explain(remaining, final, root))

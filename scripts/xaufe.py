@@ -120,6 +120,12 @@ def _ref_key(text):
     return re.sub(r"\s+", "", re.sub(r"^\s*[\[［]\d+[\]］]", "", str(text)))
 
 
+def _sentences(text):
+    """Sentences of a paragraph; a citation right after the full stop belongs to the sentence before it."""
+    parts = re.findall(r"[^。！？!?；;]+(?:[。！？!?；;]\s*(?:\[[\d,，\-–—\s]+\])?|$)", str(text))
+    return [p for p in parts if p.strip()]
+
+
 def _cited_numbers(text):
     """[1] / [1,3] / [2-4] -> [1] / [1, 3] / [2, 3, 4], in reading order."""
     numbers = []
@@ -195,16 +201,15 @@ def _writing_problems(root, content):
     for block in content.get("blocks", []):
         if block.get("type") == "paragraph":
             runs = block.get("runs") or []
-            text = block.get("text") or "".join(r.get("text", "") for r in runs)
-            cited = CITE.search(text) or any(r.get("superscript") and CITE.search(r.get("text", "")) for r in runs)
+            # Each sentence with a figure needs its own citation; one [n] elsewhere in the paragraph is not enough.
+            for sentence in _sentences(block.get("text") or "".join(r.get("text", "") for r in runs)):
+                if NUMBER.search(sentence) and not CITE.search(sentence):
+                    problems.append(f"这句话有具体数字但没有标出处（删掉数字，或在这句末尾标上核对过的文献序号）：{sentence.strip()[:40]}")
         elif block.get("type") == "table":
             cells = [str(c) for row in [block.get("header") or []] + (block.get("rows") or []) for c in row]
             text = " ".join(cells)
-            cited = CITE.search(str(block.get("caption") or ""))
-        else:
-            continue
-        if NUMBER.search(text) and not cited:
-            problems.append(f"有具体数字但没有标出处（删掉数字，或在句末标上核对过的文献序号）：{text[:40]}")
+            if NUMBER.search(text) and not CITE.search(str(block.get("caption") or "")):
+                problems.append(f"表格里有具体数字但表题没有标出处（在表题末尾标上核对过的文献序号）：{text[:40]}")
     problems += _citation_problems(content)
     counters = {1: 0, 2: 0, 3: 0}
     for block in content.get("blocks", []):
@@ -221,6 +226,35 @@ def _writing_problems(root, content):
         for deeper in range(level + 1, 4):
             counters[deeper] = 0
     return problems
+
+
+def _readable(text):
+    return re.sub(r"^\s*[\[［]\d+[\]］]\s*", "", str(text)).strip()
+
+
+def _document_references(root):
+    """Reference lines of the document being laid out: content.json references or mapping rows."""
+    if (root / "content.json").is_file():
+        return [str(r) for r in _read(root / "content.json", "content.json").get("references") or []]
+    if (root / "mapping.json").is_file():
+        rows = _read(root / "mapping.json", "mapping.json").get("paragraphs", [])
+        return [r.get("text", "") for r in rows if r.get("role") == "reference" and r.get("text", "").strip()]
+    return []
+
+
+def _original_reference_report(root):
+    """Format only: what the refs check found about the user's own references (nothing was changed)."""
+    import refcheck as R
+
+    if not (root / "refs-result.json").is_file():
+        return None
+    saved = _read(root / "refs-result.json", "refs-result.json")
+    lines = ["| 序号 | 文献（原文） | 核对结果 | 说明 |", "|---|---|---|---|"]
+    for index, r in enumerate(saved.get("results", []), 1):
+        reason = "" if r["status"] == R.PASS else R.plain_reason(r)[:80]
+        lines.append(f"| {index} | {_readable(r['text'])[:60]} | {r['status']} | {reason} |")
+    lines.append("这是只排版：原文的参考文献没有改动。“信息不一致”“排除”的条目建议你自己核对后再决定要不要改。")
+    return "\n".join(lines)
 
 
 def _reference_checklist(root):
@@ -241,12 +275,12 @@ def _reference_checklist(root):
             r = by_key.get(_ref_key(text), {})
             status = {R.PASS: "已验证", R.USER: "你提供的（未自动核实）"}.get(r.get("status"))
             if status is None:
-                status = "无法验证：" + "；".join(r.get("notes", []))[:40]
+                status = "无法验证：" + R.plain_reason(r)[:40]
             supports = r.get("supports") or ""
             if supports and r.get("relevance") == "中":
                 supports += "（弱支撑）"
             backing = r.get("support") or R.NO_QUOTE
-            lines.append(f"| [{index}] | {_ref_key(text)[:50]} | {status} | {supports} | {backing} |")
+            lines.append(f"| [{index}] | {_readable(text)[:60]} | {status} | {supports} | {backing} |")
         lines.append("“真实性”只说明文献存在、信息对得上；“观点支撑”才说明你引用的那句话在原文里找到了依据。")
     else:
         lines.append("这次没有找到能核实的参考文献，请提供你读过的文献。")
@@ -623,17 +657,18 @@ def cmd_run(args):
 def _not_accepted(root, exc):
     """Print located, actionable issues; count rounds so the agent knows when to stop."""
     _write(root / "issues.json", {"stage": exc.stage, "issues": exc.issues})
-    rounds, repeated = F.record_round(root, exc.issues)
+    rounds, stalled, repeated = F.record_round(root, exc.issues)
     print(f"{exc.stage}没通过，共 {len(exc.issues)} 个问题（完整列表：{root / 'issues.json'}）：\n")
     print(F.render_text(exc.issues))
     print("\n→ 改 job.json / content.json / mapping.json 后重新 run；不要直接改 WORK 里的 Word，也不要为了通过检查改动用户原文。")
-    if rounds >= F.MAX_ROUNDS:
+    if stalled >= F.MAX_STALLED or rounds >= F.MAX_ROUNDS:
+        why = f"连续 {stalled} 次修改都没有解决任何一个问题" if stalled >= F.MAX_STALLED else f"已经连续 {rounds} 次没通过"
         print(
-            f"\n已经连续 {rounds} 次没通过。停止自动重试：把上面还没解决的问题如实告诉用户"
+            f"\n{why}。停止自动重试：把上面还没解决的问题如实告诉用户"
             "（哪一页、哪一段、差在哪里、你试过什么），问用户怎么处理；不要交付没通过检查的文件。"
         )
     elif repeated:
-        print(f"\n注意：和上一次是同样的问题（第 {rounds} 次）。换一种改法；连续 {F.MAX_ROUNDS} 次不过就停下来报告用户。")
+        print(f"\n注意：问题和上一次完全一样（这次修改没有效果）。换一种改法；连续 {F.MAX_STALLED} 次没有进展就停下来报告用户。")
     return EXIT_NOT_ACCEPTED
 
 
@@ -643,7 +678,8 @@ def cmd_finish(args):
 
     root, _ = _work(args.work)
     D.attest(root, _read(root / "review.json", "review.json"))
-    checklist = _reference_checklist(root) if _task(root) == "write" else None
+    task = _task(root)
+    checklist = _reference_checklist(root) if task == "write" else _original_reference_report(root)
     result = D.publish(root)
     print("已交付：" + result["output"])
     print("工作区已清理。")
@@ -651,8 +687,10 @@ def cmd_finish(args):
         print("\n必须在给用户的回复里说明：" + result["user_notice"])
     else:
         print("\n已完成排版、分页和逐页检查。")
-    if checklist:
+    if checklist and task == "write":
         print("\n必须在给用户的回复里附上这张参考文献核实清单（原样照抄）：\n" + checklist)
+    elif checklist:
+        print("\n必须在给用户的回复里附上原文参考文献的核对结果（原样照抄）：\n" + checklist)
     return 0
 
 
@@ -660,6 +698,14 @@ def cmd_refs(args):
     import refcheck as R
 
     root, _ = _work(args.work)
+    if args.from_document:
+        if (root / "refs.json").exists():
+            raise ValueError("WORK 里已经有 refs.json：要从文档重新生成就先删掉它，否则去掉 --from-document 直接核对。")
+        lines = _document_references(root)
+        if not lines:
+            raise ValueError("文档里没有参考文献条目：content.json 的 references 为空，或 mapping.json 里没有 role 为 reference 的段落。")
+        _write(root / "refs.json", [R.parse_line(line) for line in lines])
+        print(f"已按文档里的 {len(lines)} 条参考文献生成 {root / 'refs.json'}（字段是从原文猜的，text 是原文原样）。\n")
     entries = _read(root / "refs.json", "refs.json")
     if not isinstance(entries, list):
         raise ValueError("refs.json 应该是一个列表：[{...}, {...}]，写法见 references/citations.md")
@@ -672,7 +718,8 @@ def cmd_refs(args):
         root / "refs-result.json",
         {"refs_sha256": hashlib.sha256((root / "refs.json").read_bytes()).hexdigest(), "min": args.min, "results": results},
     )
-    print(R.report(results, entries, args.min))
+    only_report = (root / "job.json").is_file() and _task(root) == "format"
+    print(R.report(results, entries, args.min, report_only=only_report))
     return 0
 
 
@@ -808,6 +855,8 @@ def main(argv=None):
     a = sub.add_parser("refs", help="核对 WORK/refs.json 里的参考文献（需要联网）")
     a.add_argument("--work", required=True)
     a.add_argument("--min", type=int, default=6, help="至少几篇；用户另有要求时填用户的数")
+    a.add_argument("--from-document", action="store_true",
+                   help="按文档里已有的参考文献生成 refs.json 再核对（只排版时用：只报告，不改原文）")
     args = parser.parse_args(argv)
     handler = {
         "adopt": cmd_adopt,
@@ -836,4 +885,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # Without -X utf8 a GBK/ASCII console must not crash on a character it cannot show.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     sys.exit(main())

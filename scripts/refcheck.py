@@ -32,6 +32,7 @@ CROSSREF_URL = "https://api.crossref.org/works/"
 CROSSREF_SEARCH = "https://api.crossref.org/works?rows=5&query.bibliographic="
 OPENALEX_URL = "https://api.openalex.org/works/doi:"
 ISBN_URL = "https://openlibrary.org/isbn/"
+OPENLIBRARY = "https://openlibrary.org"
 RECENT_YEARS = 5
 DEFAULT_MIN = 6
 
@@ -271,7 +272,37 @@ def _isbn_check(entry, result):
     if year and result["year"] and year != result["year"]:
         result["status"] = FIX
         result["notes"].append(f"出版年份对不上：记录里是 {year}，你写的是 {result['year']}（版次不同就写你用的那一版的 ISBN）")
+    _book_authors(entry, book, result)
     return result
+
+
+def _book_authors(entry, book, result):
+    """The first author written for a book must be on the Open Library record."""
+    authors = entry.get("authors") or []
+    first = str(authors[0] if isinstance(authors, list) and authors else authors or "").strip()
+    names = [str(book.get("by_statement") or "")]
+    for ref in (book.get("authors") or [])[:3]:
+        key = str((ref or {}).get("key") or "")
+        if re.fullmatch(r"/authors/OL\w+", key):
+            try:
+                names.append(str((fetch(OPENLIBRARY + key + ".json") or {}).get("name") or ""))
+            except (Offline, Unsupported):
+                pass
+    names = [n for n in names if n.strip()]
+    if not first:
+        result["status"] = FIX if result["status"] == PASS else result["status"]
+        result["notes"].append("refs.json 里没写作者" + (f"：记录里是 {names[-1]}" if names else ""))
+    elif not names:
+        if result["status"] == PASS:
+            result["status"] = PENDING
+        result["notes"].append("书目记录里没有作者，作者没法自动核对")
+    elif _cjk(first) != _cjk(" ".join(names)):
+        if result["status"] == PASS:
+            result["status"] = PENDING
+        result["notes"].append(f"记录里作者写作 {names[-1]}（拼音或外文），和你写的 {first} 没法自动比对；请核对后再告诉用户")
+    elif not any(_contains_word(n, _surname(first)) or _norm(_surname(first)) in _norm(n) for n in names):
+        result["status"] = FIX if result["status"] != DROP else DROP
+        result["notes"].append(f"第一作者对不上：书目记录里是 {names[-1]}，你写的是 {first}")
 
 
 def _norm(text):
@@ -376,21 +407,54 @@ def text_problems(entry):
     if year and year not in text:
         problems.append(f"text 里没有年份 {year}")
     journal = str(entry.get("journal") or "")
-    words = [w for w in re.findall(r"[a-z]{4,}", journal.lower()) if w not in ("proceedings", "conference", "journal", "international")]
-    if _cjk(journal):
-        named = _norm(journal) in flat
-    else:  # venues are often abbreviated in the printed line; most distinctive words must be there
-        short = re.findall(r"\(([A-Za-z]{2,10})\)", journal)  # "... Recognition (CVPR)" printed as "CVPR"
-        named = not words or sum(w in text.lower() for w in words) >= 0.6 * len(words) or any(
-            _contains_word(text, a) for a in short
-        )
-    if journal and not named:
+    if journal and not _venue_named(text, journal):
         problems.append(f"text 里没有刊名/会议名“{journal[:30]}”")
     written = re.search(r"10\.\d{4,9}/\S+", text)
     doi = clean_doi(entry.get("doi"))
     if written and doi and written.group(0).rstrip(".,;，。").lower() != doi.lower():
         problems.append(f"text 里的 DOI {written.group(0)} 和 doi 字段 {doi} 不一样")
     return problems
+
+
+def _venue_named(text, venue):
+    """Does the printed line name this journal or conference (abbreviations allowed)?"""
+    if _cjk(venue):
+        return _norm(venue) in _norm(text)
+    # Venues are often abbreviated in the printed line; most distinctive words must be there.
+    words = [w for w in re.findall(r"[a-z]{4,}", venue.lower()) if w not in ("proceedings", "conference", "journal", "international")]
+    short = re.findall(r"\(([A-Za-z]{2,10})\)", venue)  # "... Recognition (CVPR)" printed as "CVPR"
+    return not words or sum(w in text.lower() for w in words) >= 0.6 * len(words) or any(_contains_word(text, a) for a in short)
+
+
+GBT = re.compile(r"(?P<authors>[^.．]+?)[.．]\s*(?P<title>.+?)\s*\[(?P<kind>[A-Z]{1,2})(?:/OL)?\]\s*[.．]?\s*(?P<rest>.*)")
+
+
+def parse_line(line):
+    """refs.json fields guessed from a printed reference line (GB/T 7714 style); ``text`` is kept as is."""
+    text = str(line or "").strip()
+    body = re.sub(r"^\s*[\[［]\d+[\]］]\s*", "", text)
+    entry = {"text": text}
+    doi = re.search(r"10\.\d{4,9}/[^\s，。；;]+", body)
+    if doi:
+        entry["doi"] = doi.group(0).rstrip(".,")
+    url = re.search(r"https?://[^\s，。；;]+", body)
+    if url and not doi:
+        entry["url"] = url.group(0).rstrip(".,")
+    isbn = re.search(r"ISBN[:：\s]*([\dXx-]{10,17})", body)
+    if isbn:
+        entry["isbn"] = isbn.group(1)
+    year = re.search(r"(?<!\d)(?:19|20)\d{2}(?!\d)", re.sub(r"10\.\d{4,9}/\S+|https?://\S+", "", body))
+    if year:
+        entry["year"] = int(year.group(0))
+    m = GBT.match(body)
+    if m:
+        names = [a.strip() for a in re.split(r"[,，、;；]", m.group("authors")) if a.strip()]
+        entry["authors"] = [a for a in names if a not in ("等", "et al", "et al.")]
+        entry["title"] = m.group("title").strip()
+        venue = re.split(r"[,，.．]", m.group("rest"), maxsplit=1)[0].strip()
+        if m.group("kind") in ("J", "C") and venue and not re.match(r"\d", venue):
+            entry["journal"] = venue
+    return entry
 
 
 def _first_author(csl):
@@ -514,7 +578,10 @@ def check_entry(entry, this_year):
     authors = entry.get("authors") or []
     given_first = authors[0] if isinstance(authors, list) and authors else str(authors or "")
     if record_author and _cjk(record_author) != _cjk(given_first):
-        result["notes"].append(f"记录里第一作者写作 {record_author}，和中文名没法自动比对，自己核对")
+        if result["status"] == PASS:
+            result["status"] = PENDING
+        result["notes"].append(f"记录里第一作者写作 {record_author}（拼音或外文），和你写的 {given_first} 没法自动比对，"
+                               "所以标为无法验证；请核对后再告诉用户")
     elif record_author and _norm(record_author) not in _norm(given_first):
         result["status"] = FIX
         result["notes"].append(f"第一作者对不上：记录里是 {record_author}，你写的是 {given_first or '（空）'}")
@@ -535,10 +602,16 @@ def check_entry(entry, this_year):
         str(_first(crossref.get("container-title"))),
         str(((openalex.get("primary_location") or {}).get("source") or {}).get("display_name") or ""),
     ]
-    containers = [c for c in containers if c and _cjk(c) == _cjk(journal)]
-    if journal and containers and not any(_similar(journal, c) for c in containers):
-        result["status"] = FIX
-        result["notes"].append(f"刊名/会议名和记录不一样：记录里是 {containers[0]}，确认后按记录写")
+    if journal:
+        containers = [c for c in containers if c and _cjk(c) == _cjk(journal)]
+        if containers and not any(_similar(journal, c) or _venue_named(journal, c) for c in containers):
+            result["status"] = FIX
+            result["notes"].append(f"刊名/会议名和记录不一样：记录里是 {containers[0]}，确认后按记录写")
+    else:  # no journal field: the printed line itself must name the record's venue
+        containers = [c for c in containers if c and _cjk(c) == _cjk(title or text) and _norm(c) != "arxiv"]
+        if containers and not any(_venue_named(text, c) for c in containers):
+            result["status"] = FIX
+            result["notes"].append(f"text 里的刊名/会议名和记录对不上：记录里是 {containers[0]}，按记录写进 text 和 journal")
 
     if (
         doi.lower().startswith("10.48550/")
@@ -574,7 +647,8 @@ def check_all(entries, this_year=None):
         if offline and clean_doi(entry.get("doi")) and not entry.get("from_user"):
             results.append(
                 {"text": str(entry.get("text") or ""), "status": PENDING, "notes": [offline], "year": _int(entry.get("year")),
-                 "per_year": None, "unreachable": True}
+                 "per_year": None, "unreachable": True,
+                 "support": UNCHECKED if str(entry.get("quote") or "").strip() else NO_QUOTE}
             )
             continue
         try:
@@ -591,14 +665,26 @@ def check_all(entries, this_year=None):
                 offline = note
             results.append(
                 {"text": str(entry.get("text") or ""), "status": PENDING, "notes": [note], "year": _int(entry.get("year")),
-                 "per_year": None, "unreachable": True}
+                 "per_year": None, "unreachable": True,
+                 "support": UNCHECKED if str(entry.get("quote") or "").strip() else NO_QUOTE}
             )
     return results
 
 
-def report(results, entries, minimum=DEFAULT_MIN, this_year=None):
+def plain_reason(result):
+    """Why an entry is not 已验证, in words a user understands (no HTTP codes or proxy errors)."""
+    if result.get("unreachable"):
+        return "核对时连不上文献数据库，没有核对"
+    note = "；".join(result.get("notes") or [])
+    note = re.sub(r"（[^（）]*(?:HTTP|Errno|Tunnel|timed out|SSL|URLError|urlopen|Forbidden|proxy)[^（）]*）", "", note, flags=re.I)
+    return note or result.get("status", "")
+
+
+def report(results, entries, minimum=DEFAULT_MIN, this_year=None, report_only=False):
     this_year = this_year or dt.date.today().year
     lines = []
+    if report_only:
+        lines += ["只排版：下面的核对只报告给用户，不改原文的参考文献。", ""]
     for index, r in enumerate(results, 1):
         extra = f"，年均引用 {r['per_year']}" if r["per_year"] is not None else ""
         lines.append(f"第 {index} 条：{r['status']}{extra}  {r['text'][:60]}")
@@ -612,6 +698,13 @@ def report(results, entries, minimum=DEFAULT_MIN, this_year=None):
         if isinstance(entries[i], dict) and not entries[i].get("classic") and results[i]["year"]
     ]
     recent = sum(1 for y in counted if this_year - y < RECENT_YEARS)
+    if report_only:
+        lines.append("")
+        lines.append("→ 下一步：")
+        lines.append("  refs.json 的字段（authors/title/year/journal/doi）是脚本从原文猜的；结论是“缺 title”、作者或刊名对不上这类时，"
+                     "先对照原文把字段补对（text 保持原样），再运行 refs。")
+        lines.append("  不要删改用户原文里的文献。finish 会生成核对清单，原样附在给用户的回复里，由用户决定要不要改。")
+        return "\n".join(lines)
     lines.append("")
     lines.append(f"可用 {len(usable)} 条（不含“排除”），本次至少要 {minimum} 条（用户另有要求按用户的）。")
     if counted:

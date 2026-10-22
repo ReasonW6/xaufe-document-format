@@ -95,15 +95,13 @@ def _expectations(doc):
     return {"has_cover": vv.get("XAUFE_HAS_COVER") == "1", "header": header, "page_numbers": footer}
 
 
-def _margins(doc):
-    s = doc.sections[-1]
+def _margins(sections):
+    """Page box and text column; when sections differ, the most generous edge of each."""
+    get = lambda s, name: getattr(s, name).twips / PT
     return {
-        "width": s.page_width.twips / PT,
-        "height": s.page_height.twips / PT,
-        "left": s.left_margin.twips / PT,
-        "right": s.right_margin.twips / PT,
-        "top": s.top_margin.twips / PT,
-        "bottom": s.bottom_margin.twips / PT,
+        "width": max(get(s, "page_width") for s in sections),
+        "height": max(get(s, "page_height") for s in sections),
+        **{k: min(get(s, k + "_margin") for s in sections) for k in ("left", "right", "top", "bottom")},
     }
 
 
@@ -125,7 +123,7 @@ def _lines(page):
     result = []
     for block in page.get_text("rawdict")["blocks"]:
         for line in block.get("lines", []):
-            chars = [c for span in line["spans"] for c in span["chars"] if c["c"].strip()]
+            chars = [dict(c, size=span["size"]) for span in line["spans"] for c in span["chars"] if c["c"].strip()]
             if not chars:
                 continue
             boxes = [c["bbox"] for c in chars]
@@ -136,19 +134,75 @@ def _lines(page):
                     "bbox": (min(b[0] for b in boxes), min(b[1] for b in boxes),
                              max(b[2] for b in boxes), max(b[3] for b in boxes)),
                     "ink_right": max(c["bbox"][2] for c in body),
+                    "chars": [(c["bbox"][0], c["bbox"][2], c["origin"][1], c["size"]) for c in chars],
                 }
             )
     return result
 
 
-def _overlaps(a, b):
-    width = min(a[2], b[2]) - max(a[0], b[0])
-    height = min(a[3], b[3]) - max(a[1], b[1])
-    if width <= 0 or height <= 0:
-        return False
-    smaller_h = min(a[3] - a[1], b[3] - b[1])
-    smaller_w = min(a[2] - a[0], b[2] - b[0])
-    return height > 0.5 * smaller_h and width > 0.3 * smaller_w
+def _ink(char):
+    """Where a glyph actually puts ink: about 0.8 em above the baseline to 0.1 em below it."""
+    x0, x1, base, size = char
+    return x0, base - 0.8 * size, x1, base + 0.1 * size
+
+
+def _line_clash(a, b):
+    """Baseline gap of the closest pair of glyphs printed over each other, or None.
+
+    Two glyphs clash when they share at least 30% of the narrower one's width and
+    their baselines are closer than 0.9 of the larger size: a reader sees one line
+    printed into the other.  Superscripts beside a word never share its width.
+    """
+    if a["bbox"][1] > b["bbox"][3] + 40 or b["bbox"][1] > a["bbox"][3] + 40:
+        return None
+    worst = None
+    for x0, x1, base, size in a["chars"]:
+        for u0, u1, ubase, usize in b["chars"]:
+            narrow = min(x1 - x0, u1 - u0)
+            if narrow <= 0 or min(x1, u1) - max(x0, u0) < 0.3 * narrow:
+                continue
+            gap, limit = abs(base - ubase), 0.9 * max(size, usize)
+            if gap < limit and (worst is None or gap < worst[0]):
+                worst = (gap, max(size, usize))
+    return worst
+
+
+def _covers(box, ink, share=0.2):
+    width = min(box[2], ink[2]) - max(box[0], ink[0])
+    height = min(box[3], ink[3]) - max(box[1], ink[1])
+    area = (ink[2] - ink[0]) * (ink[3] - ink[1])
+    return width > 0 and height > 0 and area > 0 and width * height > share * area
+
+
+def _header_texts(doc):
+    texts = set()
+    for s in doc.sections:
+        for part in (s.header, s.even_page_header):
+            for p in part.paragraphs:
+                t = re.sub(r"\s+", "", p.text)
+                if t:
+                    texts.add(t)
+    return texts
+
+
+def _header_overflow(lines, top, texts):
+    """The last header line when the header wrapped past the top margin into the text area."""
+    if not texts:
+        return None
+    chain = [l for l in lines if l["bbox"][3] <= top + 1]
+    if not chain:
+        return None
+    last = max(chain, key=lambda l: l["bbox"][3])
+    for line in sorted(lines, key=lambda l: l["bbox"][1]):
+        if line in chain or line["bbox"][1] < last["bbox"][1]:
+            continue
+        height = last["bbox"][3] - last["bbox"][1]
+        text = re.sub(r"\s+", "", line["spans"][0]["text"])
+        if line["bbox"][1] - last["bbox"][3] < 0.6 * height and text and any(text in t for t in texts):
+            last = line
+        else:
+            break
+    return last if last["bbox"][3] > top + 1 else None
 
 
 ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100}
@@ -197,7 +251,10 @@ def audit(docx, pdf):
 
     doc = Document(docx)
     want = _expectations(doc)
-    m = _margins(doc)
+    sections = list(doc.sections)
+    body_margins = _margins(sections[1:] if want["has_cover"] and len(sections) > 1 else sections)
+    cover_margins = _margins(sections[:1])
+    header_texts = _header_texts(doc)
     errors, warnings = [], []
     used = set()
     previous = ""
@@ -207,6 +264,8 @@ def audit(docx, pdf):
         for index, page in enumerate(rendered, 1):
             for font in page.get_fonts():
                 used.add(_key(font[3]))
+            cover = want["has_cover"] and index == 1
+            m = cover_margins if cover else body_margins
             w, h = page.rect.width, page.rect.height
             if abs(w - m["width"]) > 2 or abs(h - m["height"]) > 2:
                 errors.append(
@@ -218,7 +277,6 @@ def audit(docx, pdf):
             lines = _lines(page)
             images = [i["bbox"] for i in page.get_image_info() if i["bbox"][2] > i["bbox"][0]]
             drawings = [d["rect"] for d in page.get_drawings() if d["rect"].width > 0 or d["rect"].height > 0]
-            cover = want["has_cover"] and index == 1
 
             for line in lines:
                 x0, y0, x1, y1 = line["bbox"]
@@ -242,6 +300,15 @@ def audit(docx, pdf):
                 elif x0 < left - EDGE_TOLERANCE or x1 > right + EDGE_TOLERANCE:
                     errors.append(_issue("error", "IMAGE_OUTSIDE_MARGINS", index, "图片伸出了左右页边距。",
                                          expected=f"{left:.1f}–{right:.1f}pt", actual=f"{x0:.1f}–{x1:.1f}pt", bbox=box))
+                elif not cover and (y0 < top - EDGE_TOLERANCE or y1 > bottom + EDGE_TOLERANCE):
+                    errors.append(_issue("error", "IMAGE_OUTSIDE_MARGINS", index, "图片伸进了上下页边距（压到页眉页脚区）。",
+                                         expected=f"{top:.1f}–{bottom:.1f}pt", actual=f"{y0:.1f}–{y1:.1f}pt", bbox=box))
+                else:
+                    text = next((l["spans"][0]["text"] for l in lines
+                                 if any(_covers(box, _ink(c)) for c in l["chars"])), None)
+                    if text:
+                        errors.append(_issue("error", "TEXT_OVER_IMAGE", index, "文字压在图片上。",
+                                             where=text[:30], bbox=box))
             for rect in drawings:
                 if rect.x0 < left - EDGE_TOLERANCE or rect.x1 > right + EDGE_TOLERANCE:
                     errors.append(_issue("error", "TABLE_OUTSIDE_MARGINS", index, "表格框线或图形伸出了左右页边距。",
@@ -250,7 +317,9 @@ def audit(docx, pdf):
                     break
 
             body = [l for l in lines if l["bbox"][3] > top and l["bbox"][1] < bottom]
-            body_objects = [b for b in images if b[3] > top and b[1] < bottom]
+            # Rules, table borders and shapes count as content too; a lone header rule does not.
+            body_objects = [b for b in images if b[3] > top and b[1] < bottom] + [
+                r for r in drawings if r.y1 > top + 2 and r.y0 < bottom - 2 and (r.height > 2 or r.y0 > top + 30)]
             if not body and not body_objects:
                 errors.append(_issue("error", "BLANK_PAGE", index, "这一页正文区什么都没有（多余的空白页）。",
                                      where=("紧跟在“" + previous + "”之后") if previous else None))
@@ -265,6 +334,12 @@ def audit(docx, pdf):
                                          where=head[0]["spans"][0]["text"][:30]))
                 elif not cover and want["header"] and not head:
                     errors.append(_issue("error", "HEADER_MISSING", index, "这一页应该有页眉，渲染结果里没有。"))
+                elif not cover and want["header"]:
+                    spill = _header_overflow(lines, top, header_texts)
+                    if spill:
+                        errors.append(_issue("error", "HEADER_OVERFLOW", index, "页眉文字折成多行，伸出上边距压进了正文区。",
+                                             where=spill["spans"][0]["text"][:30], expected=f"页眉在 {top:.1f}pt 以上",
+                                             actual=f"页眉底边 {spill['bbox'][3]:.1f}pt", bbox=spill["bbox"]))
                 elif not cover and not want["header"] and head:
                     errors.append(_issue("error", "HEADER_UNEXPECTED", index, "这一页不应该有页眉，渲染结果里有。",
                                          where=head[0]["spans"][0]["text"][:30]))
@@ -278,13 +353,14 @@ def audit(docx, pdf):
                 elif not cover and not want["page_numbers"] and texts:
                     errors.append(_issue("error", "FOOTER_UNEXPECTED", index, "页脚应该是空白，渲染结果里有文字。", where=texts[:30]))
 
-            for i, a in enumerate(lines):
-                hit = next((b for b in lines[i + 1 :] if _overlaps(a["bbox"], b["bbox"])), None)
-                if hit:
-                    errors.append(_issue("error", "TEXT_OVERLAP", index, "两行文字在页面上叠在一起。",
-                                         where=a["spans"][0]["text"][:20] + " / " + hit["spans"][0]["text"][:20],
-                                         bbox=a["bbox"]))
-                    break
+            clash = next(((a, b, gap) for i, a in enumerate(lines) for b in lines[i + 1 :]
+                          for gap in [_line_clash(a, b)] if gap), None)
+            if clash:
+                a, b, (gap, size) = clash
+                errors.append(_issue("error", "TEXT_OVERLAP", index, "两行文字在页面上叠在一起。",
+                                     where=a["spans"][0]["text"][:20] + " / " + b["spans"][0]["text"][:20],
+                                     expected=f"上下两行基线相距不小于字号的 0.9 倍（≥{0.9 * size:.1f}pt）",
+                                     actual=f"{gap:.1f}pt", bbox=a["bbox"]))
             if want["page_numbers"] and not cover:
                 numbers.append((index, "".join(l["spans"][0]["text"] for l in foot).strip()))
     errors += _number_sequence(numbers)

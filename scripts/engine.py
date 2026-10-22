@@ -725,6 +725,14 @@ def add_text(p, b):
     if "runs" in b:
         for item in b["runs"]:
             r = p.add_run(item["text"])
+            if item.get("link"):
+                # A real external hyperlink around the run; the run keeps the paragraph's formatting.
+                from docx.opc.constants import RELATIONSHIP_TYPE as RT
+
+                link = OxmlElement("w:hyperlink")
+                link.set(qn("r:id"), p.part.relate_to(item["link"], RT.HYPERLINK, is_external=True))
+                r._r.addprevious(link)
+                link.append(r._r)
             if item.get("superscript"):
                 r.font.superscript = True
             if item.get("subscript"):

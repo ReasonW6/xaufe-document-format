@@ -15,37 +15,53 @@ class SourceProseTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_missing_original_paragraph_is_reported(self):
-        source = self.root / "raw.md"
-        source.write_text("# 标题\n\n保留的第一段。\n\n转换中不能漏掉的第二段。", encoding="utf-8")
-        out = self.root / "output.docx"
+    def docx(self, *paragraphs):
+        out = self.root / f"out-{len(list(self.root.glob('out-*')))}.docx"
         doc = Document()
-        doc.add_paragraph("保留的第一段。")
-        doc.add_paragraph("这一段是排版时编出来的。")
+        for text in paragraphs:
+            doc.add_paragraph(text)
         doc.save(out)
-        report = S.compare([{"path": str(source)}], out)
-        self.assertEqual(
-            report["sources"][0]["missing"],
-            [{"location": "line 1", "text": "标题"}, {"location": "line 5", "text": "转换中不能漏掉的第二段。"}],
-        )
-        self.assertEqual([a["text"] for a in report["added"]], ["这一段是排版时编出来的。"])
-        approved = S.compare([{"path": str(source)}], out, approved=["转换中不能漏掉的第二段", "编出来的"])
-        self.assertEqual([m["text"] for m in approved["sources"][0]["missing"]], ["标题"])
-        self.assertEqual(approved["added"], [])
+        return out
 
-    def test_known_metadata_labels_do_not_create_false_omissions(self):
+    def diff(self, source_text, *paragraphs, **options):
         source = self.root / "raw.md"
-        source.write_text(
-            "English title: Room Reservation\n\nKey words: room reservation; data records\n\n保留**重点**和[链接名](https://example.com)。",
-            encoding="utf-8",
-        )
-        out = self.root / "out.docx"
-        doc = Document()
-        doc.add_paragraph("Room Reservation")
-        doc.add_paragraph("Key words：room reservation   data records")
-        doc.add_paragraph("保留重点和链接名。")
-        doc.save(out)
-        self.assertEqual(S.compare([{"path": str(source)}], out)["sources"][0]["missing"], [])
+        source.write_text(source_text, encoding="utf-8")
+        return S.compare([{"path": str(source)}], self.docx(*paragraphs), **options)["differences"]
+
+    def test_missing_added_and_approved_paragraphs(self):
+        text = "# 标题\n\n保留的第一段。\n\n转换中不能漏掉的第二段。"
+        found = self.diff(text, "保留的第一段。", "这一段是排版时编出来的。")
+        self.assertEqual(sorted(d.get("original", "") for d in found if d["kind"] == "missing"), ["标题", "转换中不能漏掉的第二段。"])
+        self.assertEqual([d["output"] for d in found if d["kind"] == "added"], ["这一段是排版时编出来的。"])
+        approved = ["标题", "转换中不能漏掉的第二段。", "这一段是排版时编出来的。"]
+        self.assertEqual(self.diff(text, "保留的第一段。", "这一段是排版时编出来的。", approved=approved), [])
+        # A short snippet does not approve the whole paragraph.
+        self.assertTrue(self.diff(text, "保留的第一段。", "这一段是排版时编出来的。", approved=["标题", "编出来的"]))
+
+    def test_numbers_signs_punctuation_and_case_are_differences(self):
+        cases = [("增长了2.5%。", "增长了25%。"), ("结果为-5。", "结果为5。"), ("提高0.3个百分点。", "提高03个百分点。"),
+                 ("结论成立。", "结论成立！"), ("使用 Times New Roman 字体。", "使用 times new roman 字体。")]
+        for before, after in cases:
+            with self.subTest(before=before):
+                found = self.diff("第一段。\n\n" + before, "第一段。", after)
+                self.assertEqual([d["kind"] for d in found], ["changed"])
+                self.assertNotEqual(found[0]["original"], found[0]["output"])
+
+    def test_spacing_full_width_and_keyword_separators_are_not_differences(self):
+        found = self.diff("English title: Room Reservation\n\nKey words: room reservation; data records\n\n保留**重点**,好。",
+                          "Room Reservation", "Key words：room reservation   data records", "保留 重点，好。")
+        self.assertEqual(found, [])
+
+    def test_moved_and_duplicated_paragraphs(self):
+        text = "甲段落内容。\n\n乙段落内容。\n\n丙段落内容。"
+        self.assertEqual([d["kind"] for d in self.diff(text, "乙段落内容。", "甲段落内容。", "丙段落内容。")], ["moved"])
+        self.assertEqual([d["kind"] for d in self.diff(text, "甲段落内容。", "乙段落内容。", "乙段落内容。", "丙段落内容。")], ["added"])
+
+    def test_objects_are_counted(self):
+        found = self.diff("见[链接名](https://example.com)。\n\n![图](a.png)\n\n| 甲 | 乙 |\n|---|---|\n| 1 | 2 |", "见链接名。", "甲", "乙", "1", "2")
+        kinds = {d["location"]: d for d in found if d["kind"] == "objects"}
+        self.assertEqual(set(kinds), {"图片", "表格", "链接"})
+        self.assertEqual(kinds["链接"]["original"], "https://example.com")
 
     def test_create_registers_actual_original_file(self):
         source = self.root / "original.txt"

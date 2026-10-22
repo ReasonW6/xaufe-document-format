@@ -93,12 +93,47 @@ class CheckEntry(unittest.TestCase):
         cn = {**GOOD, "title": "图像分类的深度卷积神经网络模型综述", "authors": ["张珂"], "journal": "中国图象图形学报",
               "text": "张珂, 冯晓晗, 郭玉荣, 等. 图像分类的深度卷积神经网络模型综述[J]. 中国图象图形学报, 2016."}
         csl = {**CSL_RECORD, "title": cn["title"], "author": [{"family": "Ke", "given": "Zhang"}], "container-title": "Journal of Image and Graphics"}
+        # Same Chinese title, but the record spells the author in pinyin: exists, yet not verified.
         r = self.check(cn, csl=csl, crossref={"message": {}})
-        self.assertEqual(r["status"], R.PASS, r["notes"])
-        self.assertIn("自己核对", r["notes"][0])
+        self.assertEqual(r["status"], R.PENDING, r["notes"])
+        self.assertIn("无法验证", r["notes"][0])
         english_only = {**csl, "title": "A review of deep CNN models for image classification"}
         r = self.check(cn, csl=english_only, crossref={"message": {}}, openalex={})
         self.assertEqual(r["status"], R.PENDING)
+
+    def test_printed_venue_is_compared_with_the_record_without_a_journal_field(self):
+        entry = {k: v for k, v in GOOD.items() if k != "journal"}
+        self.assertEqual(self.check(entry)["status"], R.PASS)
+        wrong = self.check({**entry, "text": GOOD["text"].replace("CVPR", "Nature Communications")})
+        self.assertEqual(wrong["status"], R.FIX)
+        self.assertIn("记录里是 2016 IEEE Conference", " ".join(wrong["notes"]))
+
+    def test_book_author_names_come_from_the_open_library_record(self):
+        book = {"text": "McKinney W. Python for Data Analysis[M]. 2017.", "isbn": "9781491957660",
+                "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"]}
+
+        def fake(url, accept=None):
+            if url.endswith("/authors/OL1A.json"):
+                return {"name": "Wes McKinney"}
+            return {"title": "Python for Data Analysis", "publish_date": "2017", "authors": [{"key": "/authors/OL1A"}]}
+
+        with patch("refcheck.fetch", side_effect=fake):
+            self.assertEqual(R.check_all([book])[0]["status"], R.PASS)
+            self.assertEqual(R.check_all([{**book, "authors": ["Smith J"], "text": "Smith J. Python for Data Analysis[M]. 2017."}])[0]["status"], R.FIX)
+
+    def test_offline_entry_keeps_the_quote_state_and_a_plain_reason(self):
+        with patch("refcheck.fetch", side_effect=R.Offline("Tunnel connection failed: 403 Forbidden", down=True)):
+            r = R.check_all([{**GOOD, "quote": "We present a residual learning framework to ease training."}])[0]
+        self.assertEqual(r["support"], R.UNCHECKED)
+        self.assertNotIn("Tunnel", R.plain_reason(r))
+
+    def test_reference_lines_are_parsed_into_fields(self):
+        e = R.parse_line("[3] 张三, 李四, 等. 深度学习在交通中的应用[J]. 计算机学报, 2021, 44(3): 1-10. DOI:10.1234/abc.2021.1")
+        self.assertEqual(e["text"], "[3] 张三, 李四, 等. 深度学习在交通中的应用[J]. 计算机学报, 2021, 44(3): 1-10. DOI:10.1234/abc.2021.1")
+        self.assertEqual((e["authors"], e["title"], e["journal"], e["year"], e["doi"]),
+                         (["张三", "李四"], "深度学习在交通中的应用", "计算机学报", 2021, "10.1234/abc.2021.1"))
+        book = R.parse_line("McKinney W. Python for Data Analysis[M]. 2nd ed. 2017. ISBN 9781491957660.")
+        self.assertEqual((book["title"], book["isbn"], book["year"]), ("Python for Data Analysis", "9781491957660", 2017))
 
     def test_retraction_from_crossref_or_openalex_drops(self):
         retracted = {"message": {"updated-by": [{"type": "retraction"}]}}
@@ -165,13 +200,19 @@ class CheckEntry(unittest.TestCase):
 
     def test_books_are_checked_by_isbn(self):
         book = {"text": "McKinney W. Python for Data Analysis[M]. 2017.", "isbn": "978-1-4919-5766-0",
-                "title": "Python for data analysis", "year": 2017}
+                "title": "Python for data analysis", "year": 2017, "authors": ["McKinney W"]}
         # The ISBN record has another title language: the printed line still names the same title.
-        record = {"title": "Python for Data Analysis: Data Wrangling with Pandas, NumPy, and IPython", "publish_date": "Oct 20, 2017"}
+        record = {"title": "Python for Data Analysis: Data Wrangling with Pandas, NumPy, and IPython", "publish_date": "Oct 20, 2017",
+                  "by_statement": "Wes McKinney"}
         with patch("refcheck.fetch", return_value=record):
             self.assertEqual(R.check_all([book])[0]["status"], R.PASS)
             self.assertEqual(R.check_all([{**book, "year": 2012}])[0]["status"], R.FIX)
-            cn = {**book, "title": "数据结构(C语言版)", "text": "严蔚敏. 数据结构(C语言版)[M]. 2017."}
+            wrong = R.check_all([{**book, "authors": ["Smith J"], "text": "Smith J. Python for Data Analysis[M]. 2017."}])[0]
+            self.assertEqual(wrong["status"], R.FIX)
+            self.assertIn("第一作者对不上", " ".join(wrong["notes"]))
+            pinyin = R.check_all([{**book, "authors": ["麦金尼"], "text": "麦金尼. Python for Data Analysis[M]. 2017."}])[0]
+            self.assertEqual(pinyin["status"], R.PENDING)
+            cn = {**book, "title": "数据结构(C语言版)", "authors": ["严蔚敏"], "text": "严蔚敏. 数据结构(C语言版)[M]. 2017."}
             self.assertEqual(R.check_all([cn])[0]["status"], R.PENDING)
         with patch("refcheck.fetch", return_value=None):
             self.assertEqual(R.check_all([book])[0]["status"], R.DROP)
@@ -288,6 +329,32 @@ class Command(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("第 1 条：已验证", out.getvalue())
             self.assertIn("可用 1 条", out.getvalue())
+
+    def test_format_only_reports_on_the_users_own_references(self):
+        import delivery as D
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("tempfile.gettempdir", return_value=tmp):
+                job = D.create(Path(tmp) / "out" / "成品.docx")
+            work = Path(job["workspace"])
+            (work / "job.json").write_text(json.dumps({"task": "format", "template": "B"}), encoding="utf-8")
+            line = "He K, Zhang X. Deep residual learning for image recognition[C]. CVPR, 2016: 770-778. DOI:" + DOI
+            (work / "content.json").write_text(json.dumps({"mode": "document", "metadata": {}, "blocks": [],
+                                                           "references": [line]}, ensure_ascii=False), encoding="utf-8")
+            out = io.StringIO()
+            with network(), contextlib.redirect_stdout(out):
+                code = X.main(["refs", "--work", str(work), "--from-document"])
+            self.assertEqual(code, 0, out.getvalue())
+            self.assertIn("不改原文", out.getvalue())
+            self.assertIn("第 1 条：已验证", out.getvalue())
+            self.assertEqual(json.loads((work / "refs.json").read_text(encoding="utf-8"))[0]["text"], line)
+            table = X._original_reference_report(work)
+            self.assertIn("Deep residual learning", table)
+            self.assertIn("没有改动", table)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(X.main(["refs", "--work", str(work), "--from-document"]), 2)
+            self.assertIn("已经有 refs.json", err.getvalue())
 
 
 if __name__ == "__main__":

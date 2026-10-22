@@ -159,6 +159,10 @@
                     },
                     "bold": {
                       "type": "boolean"
+                    },
+                    "link": {
+                      "type": "string",
+                      "pattern": "^https?://"
                     }
                   }
                 }

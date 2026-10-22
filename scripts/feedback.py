@@ -9,7 +9,8 @@ from __future__ import annotations
 import json, re
 from pathlib import Path
 
-MAX_ROUNDS = 5  # consecutive failed runs before the agent must stop and report
+MAX_STALLED = 3  # failed runs in a row that fixed nothing: stop and report
+MAX_ROUNDS = 8  # failed runs in a row in total, even while some issues still get fixed
 
 
 class AcceptanceFailed(ValueError):
@@ -44,6 +45,7 @@ HINTS = {
     "FONT_UNDERLINE": _USER_STYLE,
     "FONT_GEOMETRY": _DIRECT,
     "HIDDEN_TEXT": ("原稿里有隐藏文字。", "问用户这段隐藏文字要不要；要就在 Word 里取消隐藏后重新给，不要就经用户同意把那段 role 设为 delete。"),
+    "ROLE_MISMATCH": ("这一段的角色标错了，格式检查会按错的角色放行，排出来却不对。", "改 mapping.json 里这一段的 role（正文 body、标题 h1/h2/h3、图表标题 caption、图片 figure、空行 spacer）；content.json 时把这一块的 type/level 改对。"),
     "UNKNOWN_STYLE": ("有段落没有分到任何角色。", "在 mapping.json 里给这一段一个 role（正文用 body）。"),
     "MISPLACED_COVER_STYLE": ("封面以外的段落用了封面样式。", "把 mapping.json 里这一段改成正确的 role。"),
     "HEADING_DEPTH": ("出现了第四级标题，但没有开启四级。", "用户要四级标题就在 job.json 写 \"heading_levels\": 4；否则把这一段改成三级以内。"),
@@ -93,7 +95,7 @@ HINTS = {
     "PAGE_NUMBERING": ("某一节的页码格式或起始页和规范不一致（摘要、目录用罗马数字从 I 开始；正文用阿拉伯数字从 1 开始，参考文献接着正文）。", "重新 run（脚本会按规范重设）；已有 Word 时确认 mapping 的 mode 是 paper，摘要、目录、正文的 role 标对。"),
     "OBJECT_HEIGHT": ("大图片放在固定行距的段落里，会被裁掉。", "把这一段的 role 改成 figure。"),
     "PART_MISSING": ("完整论文结构缺了一部分（摘要、目录、正文或参考文献）。", "写作时补上缺的部分；只排版就把 mode 改成 \"document\"，不要替用户补写。"),
-    "PART_ORDER": ("各部分顺序和版式不一致。", "删掉 format.parts（用默认顺序），或按用户要求核对它的写法。"),
+    "PART_ORDER": ("各部分顺序和版式不一致：多半是某一段的角色标错了（摘要或目录里的段落标成了正文/标题，或反过来），也可能是 format.parts 写错。", "看“位置”里那一段：已有 Word 就改 mapping.json 里这一段的 role；content.json 就检查 blocks 的顺序和 type。角色都对时，删掉 format.parts 用默认顺序，或按用户要求核对它的写法。"),
     "PART_BREAKS": ("封面、摘要、目录、正文没有各自起页。", "重新 run；mapping 的 mode 应为 paper。"),
     "PLACEHOLDER": ("模板里的说明或示例文字留在了成品里。", "从 content.json / 原稿里删掉这段占位文字（只排版时先问用户）。"),
     "TOC_SCOPE": ("目录条目和标题对不上。", "检查标题的 role/level 是否正确后重新 run。"),
@@ -123,10 +125,12 @@ HINTS = {
     "AUDIT_ABORTED": ("检查器读不懂文档结构。", "重新 run；仍失败就把错误原文告诉用户，不要绕过检查交付。"),
     # rendered-page audit
     "PAGE_SIZE": ("办公软件按别的纸张大小导出了。", "核对 job.json 的 page_twips；仍不对就换一个办公软件（--office word/wps/libreoffice）。"),
-    "OFF_PAGE": ("内容超出纸张，打印会被裁掉。", "通常是超宽表格、长网址或图片：拆表、给网址加空格断行，或缩小图片；改 content.json / 原稿后重新 run。"),
-    "TEXT_OUTSIDE_MARGINS": ("文字伸进了页边距：常见于不能断行的长英文、网址、公式或代码。", "在 content.json 里给长串加断行（代码块用 code 类型），或请用户同意缩短；封面就缩短这一项或问用户能否缩小封面字号。"),
+    "OFF_PAGE": ("内容超出纸张，打印会被裁掉：通常是超宽表格、长网址或图片；也可能是 job.json 的 page_twips 把纸张设得太小或页边距设成了负数/零。", "先核对 job.json 的 page_twips（单位 twip，1 厘米 = 567，A4 宽 11906、高 16838）；没问题就拆表、给网址加空格断行，或缩小图片，改 content.json / 原稿后重新 run。"),
+    "TEXT_OUTSIDE_MARGINS": ("文字伸进了页边距：常见于不能断行的长英文、网址、公式或代码，或 page_twips 的页边距设得太小。", "在 content.json 里给长串加断行（代码块用 code 类型），或请用户同意缩短；封面就缩短这一项或问用户能否缩小封面字号；改过 page_twips 就核对它（1 厘米 = 567）。"),
     "IMAGE_OFF_PAGE": ("图片超出纸张。", "把图片改小，或确认这一段 role 是 figure。"),
-    "IMAGE_OUTSIDE_MARGINS": ("图片比版心宽。", "把图片改小，或确认这一段 role 是 figure（脚本会按版心缩放）。"),
+    "IMAGE_OUTSIDE_MARGINS": ("图片比版心宽，或比一页的版心还高、伸进了上下页边距。", "把图片改小（太高的图请用户裁开或缩小），或确认这一段 role 是 figure（脚本会按版心缩放宽度）。"),
+    "TEXT_OVER_IMAGE": ("文字压在图片上：常见于原稿的浮动图片、环绕方式，或图片所在段落是固定行距。", "已有 Word 时把这张图所在段落的 role 设为 figure；仍压字就请用户把图片改成“嵌入型”后再给。"),
+    "HEADER_OVERFLOW": ("页眉文字太长，折成多行后伸出了上边距，把正文往下挤。A 版页眉右侧默认放论文题目，长题目最容易这样。", "在 job.json 的 format 里给页眉写一个短的题目：\"header\": {\"right\": \"简短题目\"}（先问用户用哪个简称；左侧太长就改 left）；或经用户同意缩小页眉字号（styles.header.size）。"),
     "TABLE_OUTSIDE_MARGINS": ("表格或图形伸出了版心。", "已有 Word 时确认 format_tables 是 true；列太多就请用户拆表；浮动图形请用户改成嵌入式。"),
     "BLANK_PAGE": ("出现了多余的空白页：常见于连续分页符、段落自带的“段前分页”，或分节后又手动分页。", "删掉 content.json 里多余的 page_break；已有 Word 时把那段空段落的 role 设为 spacer 或经用户同意设为 delete。"),
     "HEADER_MISSING": ("应有页眉的页面没有页眉。", "核对 job.json 的 format.header 和封面信息（A 版页眉要 major、title_zh）。"),
@@ -135,7 +139,7 @@ HINTS = {
     "COVER_FOOTER_VISIBLE": ("封面上出现了页脚或页码。", "重新 run；仍出现就是原稿封面自带页脚，请用户删掉后再给。"),
     "PAGE_NUMBER_MISSING": ("用户要页码，但渲染结果里页脚没有页码。", "确认 job.json 写了 \"footer_page_numbers\": true；换办公软件再 run 一次排除渲染差异。"),
     "FOOTER_UNEXPECTED": ("页脚应该空白，渲染结果里有文字。", "用户没要页码时删掉 footer_page_numbers；原稿自带页脚文字时请用户删掉。"),
-    "TEXT_OVERLAP": ("两行文字在页面上叠在一起：常见于过小的固定行距、负的段前段后，或浮动对象。", "打开这一页的页图看是哪两行；检查 job.json 里这类段落的 line/line_rule（固定行距磅数×20 不能小于字号×20）和 size；原稿有浮动对象就请用户改成嵌入式。"),
+    "TEXT_OVERLAP": ("两行文字在页面上叠在一起（上下两行的基线距离不到字号的 0.9 倍）：常见于过小的固定行距、文字位置被提升或降低、负的段前段后，或浮动对象。", "打开这一页的页图看是哪两行；检查 job.json 里这类段落的 line/line_rule（固定行距磅数×20 不能小于字号×20）和 size；原稿里文字设了“位置提升/降低”或有浮动对象，就把那一段 role 重新标对后再 run，仍重叠请用户在 Word 里取消这些设置。"),
     "PAGE_NUMBER_SEQUENCE": ("页码跳号、重复，或在不该重新开始的地方重新从 1 开始：通常是原稿自带的分节页码设置。", "已有 Word 时确认 mapping 的 mode 是 paper（脚本会重设各节页码）；document 模式下原稿分节自带的页码重启会保留，请用户确认要不要连续编号。"),
     "FONT_SUBSTITUTED": ("渲染机器上没有文档要求的字体。", "不用改文档。在 review.json 的 warnings 里写明页图是用替代字体看的，交付时告诉用户分页以装有这些字体的 Word 为准。"),
 }
@@ -302,15 +306,48 @@ def warning_text(w):
     return w["code"] + (f"（{place}）" if place else "") + f"：{w['message']}"
 
 
+def _same_kind(item):
+    """Issues that differ only in page or paragraph get one entry: same code, message, expected, actual."""
+    message = item.get("message", "")
+    m = _LABEL.match(message)
+    where = item.get("where") or {}
+    return (item["code"], m.group("rest") if m else message, item.get("expected"), item.get("actual"),
+            where.get("text") if where.get("page") else None)
+
+
+def group(issues):
+    """Merge repeats so a 30-page header problem reads as one problem on 30 pages."""
+    merged, order = {}, []
+    for item in issues:
+        key = _same_kind(item)
+        if key not in merged:
+            merged[key] = dict(item, where=dict(item.get("where") or {}), pages=[], locations=[])
+            order.append(key)
+        where = item.get("where") or {}
+        if where.get("page") and where["page"] not in merged[key]["pages"]:
+            merged[key]["pages"].append(where["page"])
+        if where.get("location"):
+            merged[key]["locations"].append(where["location"])
+    return [merged[k] for k in order]
+
+
+def _span(values, label, unit=""):
+    if len(values) <= 1:
+        return ""
+    shown = "、".join(f"{label}{v}{unit}" for v in values[:6])
+    return shown + (f" 等共 {len(values)} 处" if len(values) > 6 else f"（共 {len(values)} 处）")
+
+
 def render_text(issues, limit=12):
     """Readable summary for the agent; the full list is in WORK/issues.json."""
     lines = []
+    issues = group(issues)
     for n, item in enumerate(issues[:limit], 1):
         where = item.get("where") or {}
         place = "，".join(
             x for x in (
-                f"第{where['page']}页" if where.get("page") else "",
-                where.get("location", ""),
+                _span(item.get("pages", []), "第", "页") or (f"第{where['page']}页" if where.get("page") else ""),
+                _span(item.get("locations", []), "") or where.get("location", ""),
                 (where["text"] if "“" in where["text"] else f"“{where['text']}”") if where.get("text") else "",
             ) if x
         )
@@ -320,7 +357,7 @@ def render_text(issues, limit=12):
         if where.get("edit"):
             lines.append(f"   要改的输入：{where['edit']}")
         if "expected" in item or "actual" in item:
-            lines.append(f"   实际：{item.get('actual', '?')}；应为：{item.get('expected', '?')}")
+            lines.append(f"   实际：{item.get('actual', '（没有）')}；应为：{item.get('expected', '（不应有）')}")
         if item.get("cause"):
             lines.append(f"   可能原因：{item['cause']}")
         if item.get("fix"):
@@ -330,15 +367,29 @@ def render_text(issues, limit=12):
     return "\n".join(lines)
 
 
+def _fingerprint(item):
+    where = item.get("where") or {}
+    return "|".join(str(x) for x in (item["code"], where.get("page"), where.get("location"), where.get("text")))
+
+
 def record_round(root, issues):
-    """Count consecutive failed runs; returns (rounds, repeated) where repeated = same codes as last time."""
+    """Count failed runs in a row and how many of them fixed nothing.
+
+    Returns (rounds, stalled, repeated).  A run makes progress when at least one
+    issue of the previous run is gone; ``stalled`` counts runs in a row without
+    that, ``repeated`` means exactly the same issues as last time.
+    """
     path = Path(root) / "attempts.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
-    codes = sorted({i["code"] for i in issues})
+    now = sorted({_fingerprint(i) for i in issues})
+    before = data.get("last_issues")
     rounds = int(data.get("failed_rounds", 0)) + 1 if issues else 0
-    repeated = bool(issues) and codes == data.get("last_codes")
-    path.write_text(json.dumps({"failed_rounds": rounds, "last_codes": codes}, ensure_ascii=False), encoding="utf-8")
-    return rounds, repeated
+    progress = before is None or bool(set(before) - set(now))
+    stalled = 0 if not issues or progress else int(data.get("stalled", 0)) + 1
+    repeated = bool(issues) and now == before
+    path.write_text(json.dumps({"failed_rounds": rounds, "stalled": stalled, "last_issues": now}, ensure_ascii=False),
+                    encoding="utf-8")
+    return rounds, stalled, repeated

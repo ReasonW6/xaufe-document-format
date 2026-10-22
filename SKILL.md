@@ -48,7 +48,7 @@ metadata:
 | `new --out 成品路径.docx [--source 原稿]` | 建工作区，输出 `WORK = …`；成品不能和已有文件同名 |
 | `check --work WORK` | 检查 `WORK/job.json`，说还缺哪些封面信息 |
 | `inspect --work WORK --docx 原稿.docx` | 已有 Word：生成 `WORK/mapping.json`，每段猜一个角色供你核对 |
-| `refs --work WORK [--min 篇数]` | 核对 `WORK/refs.json` 里的文献（联网） |
+| `refs --work WORK [--min 篇数] [--from-document]` | 核对 `WORK/refs.json` 里的文献（联网）；只排版时加 `--from-document` 核对原文的文献，只报告不改 |
 | `run --work WORK` | 排版 → 静态检查 → 实际分页 → 渲染后检查 → 页图 |
 | `preview --work WORK --docx 文件` | 给任意 Word 出页图并做渲染后检查（只看，不交付） |
 | `adopt --work WORK --docx 文件 --note 改了什么` | 验收在成品副本上手工处理过格式的 Word，之后照常 `finish` |
@@ -62,7 +62,7 @@ metadata:
 ## 验收、修复、再验收
 
 - **没通过时**，`run` 会列出每个问题：哪一页、哪一段（以及该改 content.json 还是 mapping.json 的哪一项）、实际是什么、应该是什么、可能原因、怎么改；完整列表在 `WORK/issues.json`。改输入文件后重新 `run`，具体怎么改由你判断。
-- **连续 5 次没通过**，`run` 会提示停下：把没解决的问题（位置、差在哪、你试过什么）如实告诉用户，问怎么处理，不要交付。
+- **连续 3 次修改都没解决任何一个问题（或总共连续 8 次没通过）**，`run` 会提示停下：把没解决的问题（位置、差在哪、你试过什么）如实告诉用户，问怎么处理，不要交付。
 - **环境限制**（没有办公软件、软件调不起来）：`run` 自动改为静态交付，`finish` 会给出必须告诉用户的说明。常见情况见 [references/special-cases.md](references/special-cases.md)。
 - **通过后**，`run` 列出每页的页图并生成 `WORK/review.json`。脚本已经自动查了越界、空白页、页眉页脚、文字重叠和字体替代；你看图负责它查不出的：内容是否齐全、标题层级是否合理、封面和目录看起来是否正常。能看图就逐页打开查看页图，在 review.json 里每页写一句具体观察，把所有“请填写”换成实际检查结果，`warnings` 里写清每条提示怎么处理的（带页码的提示按页列出）；不能看图就写 `"vision": false` 和原因。然后运行 `finish`。
 

@@ -90,6 +90,28 @@ def line_check(p, label, err):
         )
 
 
+CAPTION = re.compile(r"^\s*(?:图|表|续表|Figure|Fig\.?|Table)\s*[\dA-Za-z一二三四五六七八九十]", re.I)
+ROLE_NAMES = {"spacer": "空行", "abstract_spacer": "空行", "figure": "图片段", "caption": "图表标题",
+              "h1": "一级标题", "h2": "二级标题", "h3": "三级标题", "h4": "四级标题", "preface": "序言标题"}
+
+
+def role_check(p, role, label, visible, err):
+    """Catch a paragraph whose role (from mapping.json or content.json) does not fit its content:
+    the formatting would then be "correct" for the wrong role and pass unnoticed."""
+    text = visible.strip()
+    problem = None
+    if role in ("spacer", "abstract_spacer") and text:
+        problem = "空行里有文字"
+    elif role == "figure" and text and not p._p.xpath(".//w:drawing|.//w:pict"):
+        problem = "图片段里没有图片，只有文字"
+    elif role == "caption" and text and not CAPTION.match(text):
+        problem = "图表标题应以“图1”“表2”“Figure 3”等开头"
+    elif role in ("h1", "h2", "h3", "h4", "preface") and (len(text) > 80 or re.search(r"[。；;]$", text)):
+        problem = "标题太长或以句号/分号结尾，像是一段正文"
+    if problem:
+        err("ROLE_MISMATCH", f"{label}: 这一段标成了{ROLE_NAMES[role]}（{role}），但{problem}：“{text[:20]}”。")
+
+
 FRONT = {"title_zh", "title_en", "abstract_label_zh", "abstract_label_en", "abstract_zh", "abstract_en",
          "keywords_zh", "keywords_en", "toc_title", "toc1", "toc2", "toc3", "toc4"}
 MAIN = {"preface", "h1", "h2", "h3", "h4", "body", "reference_title", "reference"}
@@ -466,6 +488,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         paragraph_check(p, role, label, rule, err, warn)
         run_check(p, role, label, expected[role], err)
         line_check(p, label, err)
+        role_check(p, role, label, visible, err)
         if p._p.xpath(".//wp:inline") and role != "figure":
             maxh = max((int(x.get("cy", "0")) for x in p._p.xpath(".//wp:extent")), default=0)
             if maxh > 254000 and paragraph_properties(p, "spacing").get("lineRule") == "exact":
@@ -534,14 +557,21 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
                 "abstract_en": ["title_en", "abstract_label_en"],
             }.get(part, [])
         roles = [reverse.get(p.style.name) for p in doc.paragraphs]
-        pos = []
+        names = {"toc_title": "“目录”标题", "title_zh": "中文摘要页的题目", "abstract_label_zh": "“摘要”标题",
+                 "title_en": "英文摘要页的题目", "abstract_label_en": "“Abstract”标题"}
+        quote = lambda i: "“" + doc.paragraphs[i].text.strip()[:20] + "”"
+        pos, found = [], []
         for role in front:
             if role not in roles:
-                err("PART_MISSING", f"缺少{role}部分。")
+                err("PART_MISSING", f"缺少{names.get(role, role)}（{role}）。")
             else:
                 pos.append(roles.index(role))
-        if pos != sorted(pos):
-            err("PART_ORDER", "前置部分顺序与用户所选模板不符。")
+                found.append(role)
+        for i in range(1, len(pos)):
+            if pos[i] < pos[i - 1]:
+                err("PART_ORDER", f"p{pos[i]}: {names[found[i]]}{quote(pos[i])}排在了{names[found[i - 1]]}"
+                    f"{quote(pos[i - 1])}（p{pos[i - 1]}）前面，和所选版式的前置部分顺序不一致。")
+                break
         body = next(
             (i for i, x in enumerate(roles) if x in ("preface", "h1", "h2", "h3", "h4", "body")),
             None,
@@ -549,11 +579,14 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         if body is None:
             err("PART_MISSING", "缺少正文。")
         elif pos and body <= max(pos):
-            err("PART_ORDER", "正文排在前置部分之前。")
+            last = max(pos)
+            err("PART_ORDER", f"p{body}: 正文段落{quote(body)}（{roles[body]}）排在了{names[roles[last]]}"
+                f"{quote(last)}（p{last}）前面：前置部分里有段落被标成了正文或标题。")
         if "reference_title" not in roles:
             err("PART_MISSING", "缺少参考文献标题。")
         elif body is not None and roles.index("reference_title") <= body:
-            err("PART_ORDER", "参考文献未排在正文之后。")
+            at = roles.index("reference_title")
+            err("PART_ORDER", f"p{at}: 参考文献标题{quote(at)}排在了第一段正文{quote(body)}（p{body}）前面。")
         numbering_check(doc, reverse, err)
         minimum = (5 if spec["english_abstract"] else 4) - (0 if has_cover else 1)
         if len(doc.sections) < minimum:

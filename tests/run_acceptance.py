@@ -145,7 +145,7 @@ def original_text(content):
              content.get("abstract_en", ""), "Key words: " + "; ".join(content["keywords_en"]) if content.get("keywords_en") else ""]
     for b in content.get("blocks", []):
         lines += [b.get("caption", ""), b.get("text", ""), "".join(r.get("text", "") for r in b.get("runs", []))]
-        lines += [" | ".join(row) for row in [b.get("header") or []] + (b.get("rows") or [])]
+        lines += ["| " + " | ".join(row) + " |" for row in [b.get("header") or []] + (b.get("rows") or []) if row]
     lines += content.get("references", [])
     return "\n\n".join(x for x in lines if x and x.strip())
 
@@ -172,8 +172,12 @@ def call(*args):
     return code, out.getvalue(), err.getvalue()
 
 
-def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, office=None, expect=None):
-    """Run one case; with ``expect`` the case is a defect that must be refused with that code."""
+def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, office=None, expect=None, retry=None):
+    """Run one case; with ``expect`` the case is a defect that must be refused with that code.
+
+    ``retry=(code, fix)``: the first run must be refused with ``code``; ``fix(job)`` then
+    applies the change the issue's hint asks for, and the second run must pass.
+    """
     target = out_dir / name
     target.mkdir()
     if docx is None and job.get("task") == "format":
@@ -198,6 +202,15 @@ def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, off
                 (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
         code, text, err = call("run", "--work", work, *(["--office", office] if office else []))
         (target / "run-output.txt").write_text(text + err, encoding="utf-8")
+        if retry:
+            if code != X.EXIT_NOT_ACCEPTED or retry[0] not in text:
+                raise RuntimeError(f"{name}: 第一次应被 {retry[0]} 拦下，实际退出码 {code}：{(err or text)[-800:]}")
+            retry[1](job)
+            (work / "job.json").write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+            code, text2, err = call("run", "--work", work, *(["--office", office] if office else []))
+            (target / "run-output.txt").write_text(text + "\n\n---- 按提示修改 job.json 后重新 run ----\n\n" + text2 + err,
+                                                   encoding="utf-8")
+            text = text2
         if expect:
             if code != X.EXIT_NOT_ACCEPTED or expect not in text:
                 raise RuntimeError(f"{name}: 应被 {expect} 拦下，实际退出码 {code}：{(err or text)[-800:]}")
@@ -212,6 +225,7 @@ def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, off
         state = D.load(work)[1]
         audit = json.loads((work / "render-audit.json").read_text(encoding="utf-8")) if (work / "render-audit.json").exists() else {}
         row = {"case": name, "pages": len(state.get("pages", [])), "scope": state["validation_scope"],
+               **({"fixed_after": retry[0]} if retry else {}),
                "render_audit": "passed" if audit.get("passed") else ("not-run" if not audit else "failed"),
                "render_warnings": sorted({w["code"] for w in audit.get("warnings", [])}),
                "cover_fit": __import__("engine").get_vars(__import__("docx").Document(work / "final.docx")).get("XAUFE_COVER_FIT")}
@@ -235,7 +249,11 @@ def main():
     job, content = example("B")
     rows.append(run_case(out, "02-B-green-logo-pagenum-blank-id", job, content))
     job, content = long_job("A", "red")
-    rows.append(run_case(out, "03-A-red-logo-long-cover", job, content))
+
+    def short_header(job):  # what the HEADER_OVERFLOW hint asks for (the user picks the short title)
+        job.setdefault("format", {})["header"] = {"right": "城市交通信号自适应协同控制研究"}
+
+    rows.append(run_case(out, "03-A-red-logo-long-cover", job, content, retry=("HEADER_OVERFLOW", short_header)))
     job, content = long_job("B")
     rows.append(run_case(out, "04-B-long-cover", job, content))
     job, content = example("B")

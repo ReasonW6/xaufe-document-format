@@ -309,7 +309,12 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
         self.assertIn("SOURCE_MISSING", out)
         self.assertIn("英文摘要待删除", out)
+        # A snippet does not approve a whole paragraph: the approved text must contain the change.
         job = {**JOB_B, "approved_changes": [{"text": "英文摘要待删除", "why": "用户说不要英文摘要"}]}
+        (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        job = {**JOB_B, "approved_changes": [{"text": "英文摘要待删除的合成段落", "why": "用户说不要英文摘要"}]}
         (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
         code, out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, 0, err)
@@ -325,8 +330,8 @@ class CLI(unittest.TestCase):
         (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
         code, out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
-        self.assertIn("SOURCE_ADDED", out)
-        self.assertIn("这是改写过的合成正文", out)
+        self.assertIn("SOURCE_CHANGED", out)
+        self.assertIn("实际：这是改写过的合成正文。；应为：这是合成正文。", out)
         bare = self.new(JOB_B, CONTENT, sources=[])
         D.load(bare)  # a workspace without a registered original
         state = D.load(bare)[1]
@@ -336,9 +341,38 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
         self.assertIn("SOURCE_REQUIRED", out)
 
+    def test_wrong_role_is_refused_not_silently_formatted(self):
+        work = self.new(JOB_B)
+        source = self.sample_docx()
+        self.call("inspect", "--work", work, "--docx", source)
+        mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
+        row = next(r for r in mapping["paragraphs"] if r["role"] == "body" and len(r["text"]) > 4)
+        row["role"] = "spacer"
+        (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("ROLE_MISMATCH", out)
+        self.assertIn(row["id"], out)
+
+    def test_format_only_keeps_links_and_figures_of_the_original(self):
+        source = self.d / "带链接.md"
+        source.write_text("# 一、引言\n\n详见[学校官网](https://www.example.edu.cn/a)。", encoding="utf-8")
+        content = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": [
+            {"type": "heading", "level": 1, "text": "一、引言"},
+            {"type": "paragraph", "runs": [{"text": "详见"}, {"text": "学校官网", "link": "https://www.example.edu.cn/a"}, {"text": "。"}]}]}
+        work = self.new(JOB_B, content, sources=[source])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        content["blocks"][1] = {"type": "paragraph", "text": "详见学校官网。"}
+        (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("SOURCE_OBJECTS", out)
+        self.assertIn("https://www.example.edu.cn/a", out)
+
     def test_unreachable_reference_service_needs_the_users_consent(self):
         entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
-                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017}
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"]}
         content = json.loads(json.dumps(CONTENT))
         content["references"] = [entry["text"]]
         content["blocks"].append({"type": "paragraph", "text": "pandas 常用于数据清洗[1]。"})
@@ -454,7 +488,7 @@ class CLI(unittest.TestCase):
         work = self.new({**JOB_B, "task": "write"}, content)
         if refs is not None:
             (work / "refs.json").write_text(json.dumps(refs, ensure_ascii=False), encoding="utf-8")
-            book = {"title": "Python for Data Analysis", "publish_date": "2017"}
+            book = {"title": "Python for Data Analysis", "publish_date": "2017", "by_statement": "Wes McKinney"}
             with patch("refcheck.fetch", return_value=book):
                 code, out, err = self.call("refs", "--work", work)
             self.assertEqual(code, 0, err)
@@ -476,7 +510,7 @@ class CLI(unittest.TestCase):
 
     def test_writing_mode_passes_and_finish_prints_checklist(self):
         entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
-                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017,
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"],
                  "supports": "pandas 适合做数据清洗", "relevance": "高"}
         content = json.loads(json.dumps(CONTENT))
         content["references"] = [entry["text"]]
@@ -498,7 +532,7 @@ class CLI(unittest.TestCase):
 
     def test_writing_mode_checks_citation_numbers_against_references(self):
         entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
-                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017}
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"]}
         content = json.loads(json.dumps(CONTENT))
         content["references"] = [entry["text"]]
         content["blocks"].append({"type": "paragraph", "text": "这里引用了不存在的第三条[3]。"})
@@ -516,6 +550,16 @@ class CLI(unittest.TestCase):
         ok = {"blocks": [{"type": "paragraph", "text": "引[1]，又引[2]。"}], "references": ["甲", "乙"]}
         self.assertEqual(X._citation_problems(ok), [])
 
+    def test_each_sentence_with_a_figure_needs_its_own_citation(self):
+        content = {"blocks": [{"type": "paragraph", "text": "市场规模增长了30%[1]。另有调查称用户超过5万人。"}], "references": []}
+        problems = X._writing_problems(self.d, content)
+        flagged = [p for p in problems if "具体数字" in p]
+        self.assertEqual(len(flagged), 1, problems)
+        self.assertIn("用户超过5万人", flagged[0])
+        cited = {"blocks": [{"type": "paragraph", "runs": [{"text": "用户超过5万人"}, {"text": "[1]", "superscript": True},
+                                                            {"text": "。"}]}], "references": []}
+        self.assertFalse([p for p in X._writing_problems(self.d, cited) if "具体数字" in p])
+
     def test_failed_acceptance_prints_located_fixable_issues_and_counts_rounds(self):
         import feedback as F
 
@@ -526,7 +570,7 @@ class CLI(unittest.TestCase):
              "where": "紧跟在“这是合成正文第二段。”之后"}]}
         with patch("delivery.render", side_effect=fake_render), patch("office_discovery.discover", return_value={}), \
                 patch("delivery.audit_rendered", return_value=failing):
-            for round_ in range(1, F.MAX_ROUNDS + 1):
+            for round_ in range(F.MAX_STALLED + 1):
                 code, out, err = self.call("run", "--work", work)
                 self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
         for word in ("第3页", "content.json 的 blocks", "可能原因", "怎么改", "停止自动重试"):
@@ -551,7 +595,7 @@ class CLI(unittest.TestCase):
             self.call("cancel", "--work", work)
 
     def test_writing_mode_rejects_reference_not_in_refs_json(self):
-        entry = {"text": "合成作者. 合成书[M]. 2017.", "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017}
+        entry = {"text": "合成作者. 合成书[M]. 2017.", "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"]}
         content = json.loads(json.dumps(CONTENT))
         content["references"] = ["编造作者. 编造的书[M]. 2020."]
         work = self.written(content, [entry])
