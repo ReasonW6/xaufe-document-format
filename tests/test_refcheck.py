@@ -117,11 +117,22 @@ class CheckEntry(unittest.TestCase):
             self.assertEqual(R.check_all([{**book, "title": ""}])[0]["status"], R.FIX)
             page.return_value = "数据 分析 方法 - 出版社"
             self.assertEqual(R.check_all([book])[0]["status"], R.PASS)
-            page.return_value = "某出版社首页"
+            page.return_value = "某出版社首页 " + "新书推荐 图书目录 联系我们 " * 30
             r = R.check_all([book])[0]
             self.assertEqual(r["status"], R.DROP)
             self.assertIn("不要编链接", r["notes"][0])
-            page.side_effect = R.Offline("HTTP 403")
+            # A captcha or login wall proves nothing either way: 无法验证, never 排除 or 已验证.
+            page.return_value = "安全验证 请输入验证码 " + "x" * 400
+            self.assertEqual(R.check_all([book])[0]["status"], R.PENDING)
+            blocked = R.Offline("HTTP 403")
+            blocked.code = 403
+            page.return_value, page.side_effect = None, blocked
+            r = R.check_all([book])[0]
+            self.assertEqual(r["status"], R.PENDING)
+            self.assertIn("拒绝自动访问", r["notes"][0])
+            gone = R.Offline("HTTP 404")
+            gone.code = 404
+            page.side_effect = gone
             fetch.return_value = [{"RA": "Crossref"}]
             self.assertEqual(R.check_all([book])[0]["status"], R.DROP)
             fetch.side_effect = R.Offline("no route", down=True)
@@ -184,6 +195,30 @@ class CheckEntry(unittest.TestCase):
         self.assertIn("重复", results[1]["notes"][0])
 
 
+class Support(unittest.TestCase):
+    """Existence and claim support are separate verdicts."""
+
+    ABSTRACT = {"abstract_inverted_index": {"Deeper": [0], "neural": [1], "networks": [2], "are": [3], "more": [4], "difficult": [5], "to": [6], "train.": [7]}}
+
+    def check(self, entry, openalex=None):
+        with network(openalex={**OPENALEX_RECORD, **(openalex or {})}):
+            return R.check_all([entry], this_year=2026)[0]
+
+    def test_quote_found_in_abstract(self):
+        r = self.check({**GOOD, "quote": "Deeper neural networks are more difficult to train."}, self.ABSTRACT)
+        self.assertEqual(r["status"], R.PASS)
+        self.assertEqual(r["support"], R.SUPPORTED)
+
+    def test_existing_paper_with_unsupported_quote_is_not_reported_as_supported(self):
+        r = self.check({**GOOD, "quote": "Residual networks always beat transformers on every task."}, self.ABSTRACT)
+        self.assertEqual(r["status"], R.PASS)
+        self.assertEqual(r["support"], R.NOT_FOUND)
+
+    def test_no_quote_or_no_source_text(self):
+        self.assertEqual(self.check(GOOD, self.ABSTRACT)["support"], R.NO_QUOTE)
+        self.assertEqual(self.check({**GOOD, "quote": "Deeper neural networks are more difficult to train."})["support"], R.UNCHECKED)
+
+
 class Report(unittest.TestCase):
     def test_counts_minimum_and_recent_share(self):
         entries = [
@@ -210,7 +245,7 @@ class Command(unittest.TestCase):
             with network(), contextlib.redirect_stdout(out):
                 code = X.main(["refs", "--work", str(work), "--min", "1"])
             self.assertEqual(code, 0)
-            self.assertIn("第 1 条：通过", out.getvalue())
+            self.assertIn("第 1 条：已验证", out.getvalue())
             self.assertIn("可用 1 条", out.getvalue())
 
 

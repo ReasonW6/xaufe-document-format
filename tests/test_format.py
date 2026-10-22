@@ -340,5 +340,25 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(check(out)["passed"])
 
 
+
+class ColumnWidths(unittest.TestCase):
+    def test_long_text_column_gets_the_room_and_total_is_exact(self):
+        import engine
+
+        rows = [["编号", "说明", "数值"]] + [[str(i), "一段较长的说明文字，需要更宽的列才不至于每行一个字。", "3.5"] for i in range(5)]
+        widths = engine.column_widths(rows, 8958)
+        self.assertEqual(sum(widths), 8958)
+        self.assertGreater(widths[1], 2 * max(widths[0], widths[2]))
+        self.assertTrue(all(w - 216 >= 210 for w in widths))
+
+    def test_explicit_ratios_and_short_tables(self):
+        import engine
+
+        self.assertEqual(engine.column_widths([["a", "b", "c"]], 9000, [1, 1, 2]), [2250, 2250, 4500])
+        even = engine.column_widths([["甲", "乙"], ["1", "2"]], 8958)
+        self.assertEqual(sum(even), 8958)
+        self.assertLessEqual(abs(even[0] - even[1]), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

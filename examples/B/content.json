@@ -103,7 +103,7 @@
     },
     {
       "type": "image",
-      "path": "../layout-test.png",
+      "path": "layout-test.png",
       "width_cm": 10.0,
       "caption": "图1 图形对象等比缩放测试",
       "alt": "三个依次排列的矩形，仅用于检测图片尺寸与图题分页。"

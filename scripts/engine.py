@@ -763,6 +763,57 @@ def format_table(table, *, repeat_header=False):
     )
 
 
+def _display_units(text):
+    """Width in half-em units at the body size: a CJK character is 2, a Latin letter 1."""
+    return sum(2 if ord(ch) > 0x2E80 else 1 for ch in str(text))
+
+
+def column_widths(rows, total, ratios=None):
+    """Split ``total`` twips between columns by content (or explicit ``widths`` ratios).
+
+    Short columns get what their longest cell needs; long text columns share the
+    rest, so a description column is not squeezed to one character per line while
+    a numeric column wastes space.  Cell margins (2 × 108 twips) are included.
+    """
+    n = len(rows[0])
+    if ratios:
+        weights = [float(x) for x in ratios]
+    else:
+        unit, margin = 105, 216  # half of a 10.5 pt character, default left+right cell margins
+        desired, minimum = [], []
+        for c in range(n):
+            cells = [str(row[c]) for row in rows]
+            longest = max(_display_units(x) for x in cells)
+            word = max((_display_units(w) for x in cells for w in re.findall(r"[A-Za-z0-9_.%-]+", x)), default=0)
+            desired.append(min(longest, 60) * unit + margin)
+            minimum.append(max(4, min(word, 16)) * unit + margin)
+        if sum(desired) <= total:
+            weights = desired
+        elif sum(minimum) >= total:
+            weights = minimum
+        else:
+            # Columns that fit in a fair share get their full width; long-text
+            # columns share what is left, never below their minimum.
+            weights, open_, remaining = [0.0] * n, set(range(n)), float(total)
+            while open_:
+                share = remaining / len(open_)
+                fixed = [c for c in open_ if desired[c] <= share]
+                if not fixed:
+                    break
+                for c in fixed:
+                    weights[c] = desired[c]
+                    remaining -= desired[c]
+                    open_.discard(c)
+            if open_:
+                need = sum(desired[c] for c in open_)
+                for c in open_:
+                    weights[c] = max(minimum[c], remaining * desired[c] / need)
+    scale = total / sum(weights)
+    widths = [int(w * scale) for w in weights]
+    widths[-1] += total - sum(widths)
+    return widths
+
+
 def add_blocks(doc, blocks, base, entries):
     heading_iter = iter([e for e in entries if e[0] != "_xaufe_references"])
     for b in blocks:
@@ -807,8 +858,8 @@ def add_blocks(doc, blocks, base, entries):
             n = len(rows[0])
             t = doc.add_table(rows=len(rows), cols=n)
             t.style = "Table Grid"
-            for col in t.columns:
-                col.width = Twips(WIDTH // n)
+            for col, width in zip(t.columns, column_widths(rows, WIDTH, b.get("widths"))):
+                col.width = Twips(width)
             for ri, row in enumerate(rows):
                 for ci, value in enumerate(row):
                     t.cell(ri, ci).text = value
@@ -862,6 +913,8 @@ def validate_data(data):
             fail("序言必须使用level=1，不能生成不一致的目录层级。")
         if b["type"] == "table" and any(len(row) != len(b["header"]) for row in b["rows"]):
             fail("表格行列数不一致。")
+        if b["type"] == "table" and b.get("widths") is not None and len(b["widths"]) != len(b["header"]):
+            fail("表格 widths 的个数要和列数相同（每列一个比例数字）。")
     if any(re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", str(x)) for x in data["metadata"].values()):
         fail("元数据包含无效控制字符。")
 

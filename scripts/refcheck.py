@@ -1,8 +1,15 @@
 """Check reference entries against public DOI records (doi.org, Crossref, OpenAlex).
 
 The agent writes WORK/refs.json; ``xaufe.py refs`` prints one verdict per entry
-plus the totals that references/citations.md asks for.  Only metadata is
-checked here; relevance and quality are judged by the agent.
+plus the totals that references/citations.md asks for.
+
+Two questions are answered separately, so "the paper exists" is never read as
+"the citation is right":
+
+* ``status``  - does the work exist and do author/title/year/venue/DOI/ISBN match
+  the public record (已验证 / 信息不一致 / 无法验证 / 排除 / 用户提供);
+* ``support`` - does the excerpt the agent quotes for its claim actually occur in
+  source text the script could read (abstract or the linked page).
 """
 
 from __future__ import annotations
@@ -31,7 +38,14 @@ DEFAULT_MIN = 6
 # Registration agencies whose records doi.org can return as CSL JSON.
 NEGOTIABLE = {"crossref", "datacite", "medra", "jalc", "kisti"}
 
-PASS, FIX, DROP, PENDING, USER = "通过", "需改正", "排除", "待核实", "用户提供"
+# 已验证: matches the public record.  信息不一致: same work, some field differs - fix
+# before use.  无法验证: could not be checked (blocked site, no network, other-language
+# record) - usable but never shown as verified.  排除: does not exist, is retracted,
+# or is another work - never use.  用户提供: from the user, not checked by the script.
+PASS, FIX, DROP, PENDING, USER = "已验证", "信息不一致", "排除", "无法验证", "用户提供"
+SUPPORTED, NOT_FOUND, UNCHECKED, NO_QUOTE = "摘录已在原文中找到", "摘录在能读到的原文里没找到", "取不到原文，未能对照", "没有提供原文摘录"
+BLOCKED_HTTP = {401, 402, 403, 405, 406, 418, 429, 451, 500, 502, 503, 504}
+BLOCKED_PAGE = re.compile(r"验证码|安全验证|人机验证|请登录|登录后|captcha|access denied|are you a robot|enable javascript|cloudflare", re.I)
 
 
 class Offline(Exception):
@@ -79,7 +93,9 @@ def fetch_page(url):
             raw = response.read(4_000_000)
             charset = response.headers.get_content_charset()
     except urllib.error.HTTPError as exc:
-        raise Offline(f"HTTP {exc.code}") from exc
+        error = Offline(f"HTTP {exc.code}")
+        error.code = exc.code
+        raise error from exc
     except (urllib.error.URLError, OSError) as exc:
         raise Offline(str(getattr(exc, "reason", exc))) from exc
     meta = re.search(rb"charset=[\"']?([\w-]+)", raw[:4000])
@@ -104,7 +120,12 @@ def _online():
 
 
 def _page_check(entry, result, why=""):
-    """Entries without a usable DOI record: the linked page must show the title."""
+    """Entries without a usable DOI record: the linked page must show the title.
+
+    A page that refuses automated access (403/429, captcha, login wall) cannot
+    be checked either way, so the entry is 无法验证, not 排除; only a page that
+    loads and lacks the title, or a dead link, is evidence against the entry.
+    """
     url = str(entry.get("url") or "").strip()
     title = str(entry.get("title") or "").strip()
     if not url:
@@ -115,18 +136,58 @@ def _page_check(entry, result, why=""):
         try:
             page = fetch_page(url)
         except Offline as exc:
+            code = getattr(exc, "code", None)
+            if code in BLOCKED_HTTP or (code is None and re.search(r"timed? ?out|超时", str(exc), re.I)):
+                result.update(status=PENDING, notes=[why + f"网站拒绝自动访问或超时（{exc}），无法验证；请用户自己打开链接核对"])
+                return result
             if not _online():
                 raise Offline(str(exc), down=True) from exc
             result.update(status=DROP, notes=[f"链接打不开（{exc}）：换一个能打开的原文页面链接，或用 DOI"])
             return result
         if _norm(title) in _norm(page):
             result["notes"].append("链接页面上有这个题目")
+            result["_source_text"] = page
+        elif BLOCKED_PAGE.search(page[:20000]) or len(_norm(page)) < 200:
+            result.update(status=PENDING, notes=[why + "链接打开的是验证码、登录页或空白页，无法验证；请用户自己打开链接核对"])
         else:
             result.update(
                 status=DROP,
                 notes=["链接页面上找不到这个题目：链接要指向这篇文献本身（不是网站首页），不要编链接"],
             )
     return result
+
+
+def _abstract(crossref, openalex):
+    """Abstract text from Crossref (JATS) or OpenAlex (inverted index); '' when neither has one."""
+    index = openalex.get("abstract_inverted_index") if isinstance(openalex, dict) else None
+    if isinstance(index, dict) and index:
+        words = sorted((pos, word) for word, positions in index.items() for pos in positions)
+        return " ".join(word for _, word in words)
+    text = (crossref or {}).get("abstract") or ""
+    return html.unescape(re.sub(r"<[^>]+>", " ", str(text)))
+
+
+def _quote_key(text):
+    return re.sub(r"[\W_]+", "", str(text or "").lower())
+
+
+def support(entry, source_text):
+    """Does the excerpt quoted for the claim occur in source text we could read?"""
+    quote = str(entry.get("quote") or "").strip()
+    if not quote:
+        return {"support": NO_QUOTE}
+    key = _quote_key(quote)
+    if len(key) < 8:
+        return {"support": NO_QUOTE, "support_note": "摘录太短，至少写一整句原文"}
+    if not source_text:
+        return {"support": UNCHECKED}
+    haystack = _quote_key(source_text)
+    if key in haystack:
+        return {"support": SUPPORTED}
+    match = difflib.SequenceMatcher(None, key, haystack, autojunk=False).find_longest_match(0, len(key), 0, len(haystack))
+    if match.size >= 0.9 * len(key):
+        return {"support": SUPPORTED}
+    return {"support": NOT_FOUND, "support_note": "摘录可能来自全文；能读到的只有摘要或页面。确认摘录是原文原句，不是自己的概括"}
 
 
 def clean_isbn(value):
@@ -385,6 +446,7 @@ def check_entry(entry, this_year):
     ):
         result["notes"].append("预印本（质量分 1）：查有没有正式发表的版本，有就换成正式版")
 
+    result["_source_text"] = _abstract(crossref, openalex)
     if "cited_by_count" in openalex and record_year:
         result["per_year"] = round(openalex["cited_by_count"] / max(1, this_year - record_year), 1)
     result["year"] = record_year
@@ -413,7 +475,9 @@ def check_all(entries, this_year=None):
             )
             continue
         try:
-            results.append(check_entry(entry, this_year))
+            verdict = check_entry(entry, this_year)
+            verdict.update(support(entry, verdict.pop("_source_text", "")))
+            results.append(verdict)
         except Offline as exc:
             note = f"连不上核对服务（{exc}），这条没核对"
             if exc.down:
@@ -431,6 +495,8 @@ def report(results, entries, minimum=DEFAULT_MIN, this_year=None):
         extra = f"，年均引用 {r['per_year']}" if r["per_year"] is not None else ""
         lines.append(f"第 {index} 条：{r['status']}{extra}  {r['text'][:60]}")
         lines.extend("    - " + note for note in r["notes"])
+        if r.get("support") and r["status"] != DROP:
+            lines.append(f"    - 观点支撑：{r['support']}" + (f"（{r['support_note']}）" if r.get("support_note") else ""))
     usable = [i for i, r in enumerate(results) if r["status"] != DROP]
     counted = [
         results[i]["year"]
@@ -448,8 +514,9 @@ def report(results, entries, minimum=DEFAULT_MIN, this_year=None):
     lines.append("")
     lines.append("→ 下一步：")
     lines.append("  排除：从 refs.json 删掉，另找一篇；不要把它改成查到的那篇。")
-    lines.append("  需改正：确认是同一篇后，按提示同时改 refs.json 里的字段和 text，再运行 refs。")
-    lines.append("  待核实：可以照常用；finish 会把它列进给用户的清单。")
+    lines.append("  信息不一致：确认是同一篇后，按提示同时改 refs.json 里的字段和 text，再运行 refs；不改不能用。")
+    lines.append("  无法验证：可以用，但不能说成已验证；finish 会把原因列进给用户的清单。")
+    lines.append("  观点支撑：给每条写 quote（支撑你那句话的原文原句）；没找到或没对照的会在清单里如实标出。")
     if len(usable) < minimum:
         lines.append(f"  可用的不够 {minimum} 条：继续检索；实在找不到就如实告诉用户还差 {minimum - len(usable)} 条，不要凑数。")
     lines.append("  都处理好后，把要用的条目的 text 按正文第一次引用的顺序写进 content.json 的 references。")

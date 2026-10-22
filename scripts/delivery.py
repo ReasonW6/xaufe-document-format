@@ -18,6 +18,8 @@ from audit_helpers import toc_entries
 from toc_format import enforce
 from office_backend import OfficeUnavailable, OfficeExportFailed
 import render_availability as RF
+from feedback import AcceptanceFailed, explain, from_render
+from render_audit import audit as audit_rendered
 
 MAGIC = "xaufe-owned-document-job-v2"
 MARKER = ".xaufe-session.json"
@@ -194,21 +196,8 @@ def _reset_for_prepare(root, s, docx, intake_path):
     before = check(normalized, intake_path=local_intake)
     write_json(root / "initial-check.json", before)
     if not before["passed"]:
-        paragraphs = doc.paragraphs
-
-        def describe(error):
-            index = re.match(r"p(\d+)\b", error["message"])
-            if index and int(index.group(1)) < len(paragraphs):
-                text = paragraphs[int(index.group(1))].text.strip()[:30]
-                return f"{error['message']}（这一段是：“{text}”）"
-            return error["message"]
-
-        raise ValueError(
-            "格式初查未通过：\n  - "
-            + "\n  - ".join(describe(e) for e in before["errors"])
-            + "\n多半是 mapping.json 里某段的 role 标错了（例如英文题目标成了 body），或 content.json 缺了某一部分。"
-            "改好后重新 run；不要换成另一种做法，也不要加 --office none 绕过。"
-        )
+        # Usually a wrong role in mapping.json or a missing part in content.json.
+        raise AcceptanceFailed("格式初查", explain(before["errors"], normalized, root))
     return doc, normalized, local_intake
 
 
@@ -238,15 +227,20 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
         result = check(final, final=True, intake_path=local_intake)
         write_json(root / "final-check.json", result)
         if not result["passed"]:
-            raise ValueError("格式终查未通过：" + json.dumps(result["errors"], ensure_ascii=False))
+            raise AcceptanceFailed("格式终查", explain(result["errors"], final, root))
         preview = render(final, root / "preview")
         write_json(root / "preview-toc-check.json", check_preview_toc(root))
+        rendered = audit_rendered(final, root / "preview" / "final.pdf")
+        write_json(root / "render-audit.json", rendered)
+        if not rendered["passed"]:
+            raise AcceptanceFailed("渲染后版面检查", from_render(rendered, root))
     except OfficeUnavailable as exc:
         evidence = _renderer_unavailable(root, exc, probe, unavailable_note)
         return _prepare_static_only(root, s, normalized, local_intake, evidence)
     if sha(final) != result["document_sha256"]:
         raise ValueError("预览时成品发生变化，请重新运行 run。")
     compare_originals(root, s, result)
+    result["warnings"].extend(rendered["warnings"])
     write_json(root / "final-check.json", result)
     warnings = [w for w in result["warnings"] if w["code"] != "VISUAL_REQUIRED"]
     s.update(
@@ -254,6 +248,8 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
         stage="awaiting_review",
         document_sha256=sha(final),
         render_report_sha256=sha(root / "preview/render-report.json"),
+        render_audit_sha256=sha(root / "render-audit.json"),
+        renderer=_renderer_name(root),
         pages=preview["pages"],
         warning_codes=sorted({w["code"] for w in warnings}),
     )
@@ -264,6 +260,14 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
         "pages": [dict(p, path=str(root / "preview" / p["png"])) for p in preview["pages"]],
         "warnings": warnings,
     }
+
+
+def _renderer_name(root):
+    try:
+        backend = read_json(root / "preview" / "office-backend.json")
+    except (OSError, ValueError):
+        return ""
+    return str(backend.get("engine") or backend.get("backend") or "")
 
 
 def _renderer_unavailable(root, exc, probe, note):
@@ -493,17 +497,22 @@ def clean(workspace):
         raise OSError("工作区没有清理干净，不能说只剩最终 Word。")
 
 
+FONT_NOTICE = "检查用的页图是在没有宋体/黑体等原字体的环境里渲染的（用了替代字体），分页和字宽以装有这些字体的 Word 为准，建议在自己电脑上翻看一遍。"
+
+
 def user_notice(s):
     review = s["review"]
     if s.get("validation_scope") == "static-only":
         return s["user_notice"]
+    fonts = FONT_NOTICE if "FONT_SUBSTITUTED" in s.get("warning_codes", []) else ""
     if review["visual_review"] == "skipped_no_vision":
         return (
             "已完成排版、格式检查和实际分页；没有逐页看图检查，原因："
             + review["no_vision_reason"].strip().rstrip("。")
             + "。建议打开文件快速翻看一遍。"
+            + fonts
         )
-    return ""
+    return fonts
 
 
 def publish(workspace):
@@ -521,6 +530,8 @@ def publish(workspace):
         for page in s["pages"]:
             if sha(root / "preview" / page["png"]) != page["png_sha256"]:
                 raise ValueError("页图已变化，请重新运行 run。")
+        if s.get("render_audit_sha256") and sha(root / "render-audit.json") != s["render_audit_sha256"]:
+            raise ValueError("渲染后版面检查结果被改动，请重新运行 run。")
         check_preview_toc(root)
     verify_originals(s)
     source = s.get("active_request_source")
@@ -533,7 +544,7 @@ def publish(workspace):
         validation_scope="static-only" if limited else "full",
     )
     if not result["passed"]:
-        raise ValueError("交付前复查未通过：" + json.dumps(result["errors"], ensure_ascii=False))
+        raise AcceptanceFailed("交付前复查", explain(result["errors"], final, root))
     dest = Path(s["destination"])
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.is_relative_to(root) or dest.is_relative_to(E.ROOT):

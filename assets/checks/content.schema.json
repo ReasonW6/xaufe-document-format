@@ -223,6 +223,13 @@
               },
               "caption": {
                 "type": "string"
+              },
+              "widths": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
               }
             }
           },

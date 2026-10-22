@@ -221,11 +221,11 @@ def run_check(p, role, label, want, err):
         fonts = props["fonts"]
         for attr, code in [("eastAsia", "FONT_CN"), ("ascii", "FONT_EN"), ("hAnsi", "FONT_EN")]:
             if fonts.get(attr) != ft[attr] or fonts.get(attr + "Theme"):
-                err(code, f"{label}/r{ri}: 有效{attr}字体不是{ft[attr]}。")
+                err(code, f"{label}/r{ri}: 有效{attr}字体={fonts.get(attr) or fonts.get(attr + 'Theme')}，应为{ft[attr]}。")
         if ft["bold_required"] and not props.get("b", False):
-            err("FONT_BOLD", f"{label}/r{ri}: 要求加粗。")
+            err("FONT_BOLD", f"{label}/r{ri}: 加粗=否，应为是（要求加粗）。")
         if ft.get("bold_exact") and props.get("b", False) != ft["bold_required"]:
-            err("FONT_BOLD", f"{label}/r{ri}: 不符合用户明确的加粗开关。")
+            err("FONT_BOLD", f"{label}/r{ri}: 加粗={'是' if props.get('b', False) else '否'}，应为{'是' if ft['bold_required'] else '否'}（用户明确的加粗开关）。")
         if props.get("vanish") or props.get("webHidden") or props.get("specVanish"):
             err("HIDDEN_TEXT", f"{label}/r{ri}: 存在隐藏正文。")
         for attr, default in [("w", "100"), ("spacing", "0"), ("position", "0")]:
@@ -234,7 +234,7 @@ def run_check(p, role, label, want, err):
         if props.get("color", "000000").upper() not in (
             {"000000", "AUTO"} if ft.get("color", "000000") == "000000" else {ft["color"]}
         ):
-            err("FONT_COLOR", f"{label}/r{ri}: 文字颜色不符合本次要求。")
+            err("FONT_COLOR", f"{label}/r{ri}: 文字颜色={props.get('color', '000000')}，应为{ft.get('color', '000000')}。")
         if "italic" in ft and (
             props.get("i", False) != ft["italic"] or props.get("iCs", False) != ft["italic"]
         ):

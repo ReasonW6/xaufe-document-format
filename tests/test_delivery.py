@@ -32,6 +32,11 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.d = Path(self.tmp.name)
+        # Synthetic renders below write no PDF; the rendered-page audit has its own tests
+        # (tests/test_render_audit.py) and runs for real in tests/run_acceptance.py.
+        audit = patch("delivery.audit_rendered", return_value={"passed": True, "errors": [], "warnings": [], "pages": 1, "fonts": {}})
+        audit.start()
+        self.addCleanup(audit.stop)
 
     def tearDown(self):
         self.tmp.cleanup()

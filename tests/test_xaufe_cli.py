@@ -60,6 +60,11 @@ class CLI(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.d = Path(self.tmp.name)
+        # Synthetic renders below write no PDF; the rendered-page audit has its own tests
+        # (tests/test_render_audit.py) and runs for real in tests/run_acceptance.py.
+        audit = patch("delivery.audit_rendered", return_value={"passed": True, "errors": [], "warnings": [], "pages": 1, "fonts": {}})
+        audit.start()
+        self.addCleanup(audit.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -436,9 +441,64 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("参考文献核实清单", out)
         self.assertIn("| [1] |", out)
-        self.assertIn("已核对", out)
+        self.assertIn("已验证", out)
         self.assertIn("pandas 适合做数据清洗", out)
+        self.assertIn("观点支撑", out)
+        self.assertIn("没有提供原文摘录", out)
         self.assertIn("少 5 篇", out)
+
+    def test_writing_mode_checks_citation_numbers_against_references(self):
+        entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "这里引用了不存在的第三条[3]。"})
+        work = self.written(content, [entry])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 2)
+        self.assertIn("正文引用了 [3]，但参考文献只有 1 条", err)
+        self.assertIn("第 1 条在正文里没有被引用", err)
+
+    def test_citation_order_follows_first_citation(self):
+        content = {"blocks": [{"type": "paragraph", "text": "先引第二条[2]，再引第一条[1]，范围[1-2]。"}], "references": ["甲", "乙"]}
+        problems = X._citation_problems(content)
+        self.assertTrue(any("第一次引用的顺序" in p for p in problems), problems)
+        self.assertEqual(X._cited_numbers("见[1,3]和[4–6]"), [1, 3, 4, 5, 6])
+        ok = {"blocks": [{"type": "paragraph", "text": "引[1]，又引[2]。"}], "references": ["甲", "乙"]}
+        self.assertEqual(X._citation_problems(ok), [])
+
+    def test_failed_acceptance_prints_located_fixable_issues_and_counts_rounds(self):
+        import feedback as F
+
+        document = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": CONTENT["blocks"]}
+        work = self.new(JOB_B, document)
+        failing = {"passed": False, "pages": 3, "warnings": [], "fonts": {}, "errors": [
+            {"code": "BLANK_PAGE", "severity": "error", "page": 3, "message": "这一页正文区什么都没有（多余的空白页）。",
+             "where": "紧跟在“这是合成正文第二段。”之后"}]}
+        with patch("delivery.render", side_effect=fake_render), patch("office_discovery.discover", return_value={}), \
+                patch("delivery.audit_rendered", return_value=failing):
+            for round_ in range(1, F.MAX_ROUNDS + 1):
+                code, out, err = self.call("run", "--work", work)
+                self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        for word in ("第3页", "content.json 的 blocks", "可能原因", "怎么改", "停止自动重试"):
+            self.assertIn(word, out)
+        issues = json.loads((work / "issues.json").read_text(encoding="utf-8"))
+        self.assertEqual(issues["issues"][0]["code"], "BLANK_PAGE")
+        self.assertFalse((work / "review.json").exists())
+
+    def test_examples_run_as_documented_in_readme(self):
+        import shutil
+
+        for template in ("A", "B"):
+            code, out, err = self.call("new", "--out", self.d / f"example-{template}.docx")
+            self.assertEqual(code, 0, err)
+            work = Path(out.split("WORK = ")[1].splitlines()[0].strip())
+            for name in ("job.json", "content.json"):
+                shutil.copy2(ROOT / "examples" / template / name, work / name)
+            shutil.copy2(ROOT / "examples/layout-test.png", work / "layout-test.png")
+            code, out, err = self.call("run", "--work", work, "--office", "none")
+            self.assertEqual(code, 0, err)
+            self.call("cancel", "--work", work)
 
     def test_writing_mode_rejects_reference_not_in_refs_json(self):
         entry = {"text": "合成作者. 合成书[M]. 2017.", "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017}

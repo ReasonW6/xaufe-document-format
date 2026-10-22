@@ -26,8 +26,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 ROOT = HERE.parent
+import feedback as F  # noqa: E402  (needs the scripts folder on sys.path)
 
 EXIT_ASK_USER = 3
+EXIT_NOT_ACCEPTED = 5
 
 
 def _read(path, what):
@@ -117,6 +119,52 @@ def _ref_key(text):
     return re.sub(r"\s+", "", re.sub(r"^\s*[\[［]\d+[\]］]", "", str(text)))
 
 
+def _cited_numbers(text):
+    """[1] / [1,3] / [2-4] -> [1] / [1, 3] / [2, 3, 4], in reading order."""
+    numbers = []
+    for match in CITE.finditer(text):
+        for part in re.split(r"\s*[,，]\s*", match.group(0)[1:-1]):
+            bounds = [int(x) for x in re.split(r"\s*[-–]\s*", part) if x.strip().isdigit()]
+            if len(bounds) == 2 and bounds[0] <= bounds[1] <= bounds[0] + 50:
+                numbers.extend(range(bounds[0], bounds[1] + 1))
+            elif bounds:
+                numbers.append(bounds[0])
+    return numbers
+
+
+def _citation_problems(content):
+    """Every [n] points to a reference, every reference is cited, numbered by first citation."""
+    references = content.get("references") or []
+    cited = []
+    for block in content.get("blocks", []):
+        runs = block.get("runs") or []
+        parts = [block.get("text") or "", "".join(r.get("text", "") for r in runs), str(block.get("caption") or "")]
+        if block.get("type") == "table":
+            parts += [str(c) for row in [block.get("header") or []] + (block.get("rows") or []) for c in row]
+        cited += _cited_numbers(" ".join(parts))
+    problems = []
+    if not references:
+        if cited:
+            problems.append(f"正文引用了 [{cited[0]}]，但 references 是空的：要么补上核对过的文献，要么删掉引用标记。")
+        return problems
+    beyond = sorted({n for n in cited if n < 1 or n > len(references)})
+    if beyond:
+        problems.append(f"正文引用了 {', '.join(f'[{n}]' for n in beyond)}，但参考文献只有 {len(references)} 条。")
+    uncited = [i for i in range(1, len(references) + 1) if i not in cited]
+    if uncited:
+        problems.append(
+            "参考文献第 " + "、".join(map(str, uncited)) + " 条在正文里没有被引用：在支撑的句子后标上序号，或删掉这条。"
+        )
+    first = list(dict.fromkeys(n for n in cited if 1 <= n <= len(references)))
+    if first != sorted(first):
+        problems.append(
+            "参考文献要按正文第一次引用的顺序编号：现在第一次出现的顺序是 "
+            + "、".join(f"[{n}]" for n in first[:10])
+            + "。调整 references 的顺序并同步改正文里的序号。"
+        )
+    return problems
+
+
 def _writing_problems(root, content):
     """What a written document must satisfy before it is laid out (task = write)."""
     import refcheck as R
@@ -149,6 +197,7 @@ def _writing_problems(root, content):
             continue
         if NUMBER.search(text) and not cited:
             problems.append(f"有具体数字但没有标出处（删掉数字，或在句末标上核对过的文献序号）：{text[:40]}")
+    problems += _citation_problems(content)
     counters = {1: 0, 2: 0, 3: 0}
     for block in content.get("blocks", []):
         level = block.get("level")
@@ -179,16 +228,18 @@ def _reference_checklist(root):
     by_key = {_ref_key(r["text"]): r for r in saved.get("results", [])}
     lines = []
     if references:
-        lines += ["| 序号 | 文献 | 核实情况 | 支撑的论点 |", "|---|---|---|---|"]
+        lines += ["| 序号 | 文献 | 真实性 | 支撑的论点 | 观点支撑 |", "|---|---|---|---|---|"]
         for index, text in enumerate(references, 1):
             r = by_key.get(_ref_key(text), {})
-            status = {R.PASS: "已核对", R.USER: "你提供的"}.get(r.get("status"))
+            status = {R.PASS: "已验证", R.USER: "你提供的（未自动核实）"}.get(r.get("status"))
             if status is None:
-                status = "待核实：" + "；".join(r.get("notes", []))[:40]
+                status = "无法验证：" + "；".join(r.get("notes", []))[:40]
             supports = r.get("supports") or ""
             if supports and r.get("relevance") == "中":
                 supports += "（弱支撑）"
-            lines.append(f"| [{index}] | {_ref_key(text)[:50]} | {status} | {supports} |")
+            backing = r.get("support") or R.NO_QUOTE
+            lines.append(f"| [{index}] | {_ref_key(text)[:50]} | {status} | {supports} | {backing} |")
+        lines.append("“真实性”只说明文献存在、信息对得上；“观点支撑”才说明你引用的那句话在原文里找到了依据。")
     else:
         lines.append("这次没有找到能核实的参考文献，请提供你读过的文献。")
     if 0 < len(references) < minimum:
@@ -510,6 +561,8 @@ def cmd_run(args):
                 root, draft, root / "intake.json", args.office_note, "none" if args.office == "none" else "auto"
             )
             break
+        except F.AcceptanceFailed as exc:
+            return _not_accepted(root, exc)
         except CoverOverflow as exc:
             used = int(E.get_vars(docx.Document(draft)).get("XAUFE_COVER_FIT", "0"))
             if used >= MAX_LEVEL:
@@ -520,6 +573,7 @@ def cmd_run(args):
                 ) from exc
             level = used + 1
             print(f"封面太长，日期被挤出第一页；自动收紧封面空白（第 {level} 级）后重试……")
+    F.record_round(root, [])
     _write(root / "review.json", _review_template(result))
     print(I.summary(state).splitlines()[0])
     stats = _body_length(root)
@@ -546,6 +600,23 @@ def cmd_run(args):
         print(f"\n→ 下一步：看完每一页后，把 {review} 里所有“请填写”换成你的实际检查结果，然后运行 finish。")
     print("  发现问题就改 job.json / content.json / mapping.json 后重新 run，不要直接改 WORK 里的 Word。")
     return 0
+
+
+def _not_accepted(root, exc):
+    """Print located, actionable issues; count rounds so the agent knows when to stop."""
+    _write(root / "issues.json", {"stage": exc.stage, "issues": exc.issues})
+    rounds, repeated = F.record_round(root, exc.issues)
+    print(f"{exc.stage}没通过，共 {len(exc.issues)} 个问题（完整列表：{root / 'issues.json'}）：\n")
+    print(F.render_text(exc.issues))
+    print("\n→ 改 job.json / content.json / mapping.json 后重新 run；不要直接改 WORK 里的 Word，也不要为了通过检查改动用户原文。")
+    if rounds >= F.MAX_ROUNDS:
+        print(
+            f"\n已经连续 {rounds} 次没通过。停止自动重试：把上面还没解决的问题如实告诉用户"
+            "（哪一页、哪一段、差在哪里、你试过什么），问用户怎么处理；不要交付没通过检查的文件。"
+        )
+    elif repeated:
+        print(f"\n注意：和上一次是同样的问题（第 {rounds} 次）。换一种改法；连续 {F.MAX_ROUNDS} 次不过就停下来报告用户。")
+    return EXIT_NOT_ACCEPTED
 
 
 # ---------------------------------------------------------------- finish / cancel
@@ -642,6 +713,14 @@ def cmd_preview(args):
         verify_pdf(source, pdf)
     except Exception as exc:
         print("注意（封面检查）：" + str(exc))
+    from render_audit import audit
+
+    rendered = audit(source, pdf)
+    _write(out / "render-audit.json", rendered)
+    if rendered["errors"]:
+        print("\n渲染后版面检查发现问题：\n" + F.render_text(F.from_render(rendered)))
+    for w in rendered["warnings"]:
+        print(f"注意（{w['code']}）：{w['message']}")
     return 0
 
 

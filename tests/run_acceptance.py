@@ -72,6 +72,71 @@ def existing_paper(path):
     return path
 
 
+def long_document(template):
+    """About twenty pages: three heading levels, wide tables that cross pages, formulas,
+    code with a long line, a long URL and an image - the regression case for long and
+    extreme layouts."""
+    job, content = example(template)
+    sentence = "本段为合成的长文档回归文字，用于检验分页、行距、首行缩进和两端对齐在多页中保持一致，"
+    blocks = [{"type": "heading", "level": 1, "text": "引言", "preface": True},
+              {"type": "paragraph", "text": sentence * 6 + "不代表任何研究结论。"}]
+    numerals = "一二三四五六七八"
+    for i, n in enumerate(numerals[:6], 1):
+        blocks.append({"type": "heading", "level": 1, "text": f"{n}、合成章节{i}"})
+        for j, m in enumerate("一二三", 1):
+            blocks.append({"type": "heading", "level": 2, "text": f"（{m}）合成小节{i}.{j}"})
+            blocks.append({"type": "heading", "level": 3, "text": f"{j}.合成要点"})
+            blocks += [{"type": "paragraph", "text": sentence * 5 + f"第{i}章第{j}节第{k}段。"} for k in range(1, 4)]
+        if i == 2:
+            blocks.append({"type": "table", "caption": "表1 合成宽表（七列，跨页）",
+                           "header": ["编号", "名称", "类别", "说明文字较长的一列", "数值甲", "数值乙", "备注"],
+                           "rows": [[str(r), f"项目{r}", "合成类", "单元格里放一段较长的说明文字，检验自动换行和列宽分配。", f"{r * 3.5:.1f}", f"{r * 7}", "无"]
+                                    for r in range(1, 31)]})
+        if i == 3:
+            blocks += [{"type": "equation", "text": "f(x) = a₀ + Σᵢ aᵢ·cos(iωx) + bᵢ·sin(iωx)"},
+                       {"type": "equation", "text": "E = mc²"},
+                       {"type": "code", "text": "def merge(a, b):\n    return sorted(a + b, key=lambda item: (item.priority, item.created_at, item.identifier_that_is_quite_long))"},
+                       {"type": "paragraph", "text": "长链接示例：https://example.org/a/very/long/path/that/keeps/going/without/any/space/to/check/line/breaking/behaviour/in/narrow/columns.html"}]
+        if i == 4:
+            blocks.append({"type": "image", "path": str(ROOT / "examples/layout-test.png"), "caption": "图1 合成图片"})
+    content["blocks"] = blocks
+    return job, content
+
+
+def complex_paper(path):
+    """An existing paper with merged cells, a nested table, a nine-column table and an oversized image."""
+    from docx import Document
+    from docx.shared import Cm
+
+    doc = Document()
+    doc.add_paragraph("复杂表格合成论文")
+    doc.add_paragraph("摘要")
+    doc.add_paragraph("本文仅用于复杂表格和图片的排版验收，不含真实研究内容。")
+    doc.add_paragraph("关键词：表格 合并单元格 验收")
+    doc.add_heading("一、合并单元格", level=1)
+    doc.add_paragraph("下表含横向与纵向合并。")
+    t = doc.add_table(rows=4, cols=4)
+    t.style = "Table Grid"
+    for r in range(4):
+        for c in range(4):
+            t.cell(r, c).text = f"r{r}c{c}"
+    t.cell(0, 0).merge(t.cell(0, 1))
+    t.cell(1, 2).merge(t.cell(3, 2))
+    t.cell(2, 3).tables  # keep python-docx happy before nesting
+    t.cell(2, 3).add_table(rows=2, cols=2)
+    doc.add_heading("二、宽表与大图", level=1)
+    wide = doc.add_table(rows=3, cols=9)
+    wide.style = "Table Grid"
+    for r in range(3):
+        for c in range(9):
+            wide.cell(r, c).text = f"列{c + 1}较长文字"
+    doc.add_paragraph().add_run().add_picture(str(ROOT / "examples/layout-test.png"), width=Cm(22))
+    doc.add_paragraph("参考文献")
+    doc.add_paragraph("[1] 合成作者. 合成文献[M]. 北京: 合成出版社, 2020.")
+    doc.save(path)
+    return path
+
+
 def call(*args):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -106,7 +171,10 @@ def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, off
         for page in sorted((work / "preview").glob("page-*.png")) if (work / "preview").exists() else []:
             shutil.copy2(page, target / page.name)
         state = D.load(work)[1]
+        audit = json.loads((work / "render-audit.json").read_text(encoding="utf-8")) if (work / "render-audit.json").exists() else {}
         row = {"case": name, "pages": len(state.get("pages", [])), "scope": state["validation_scope"],
+               "render_audit": "passed" if audit.get("passed") else ("not-run" if not audit else "failed"),
+               "render_warnings": sorted({w["code"] for w in audit.get("warnings", [])}),
                "cover_fit": __import__("engine").get_vars(__import__("docx").Document(work / "final.docx")).get("XAUFE_COVER_FIT")}
         print(json.dumps(row, ensure_ascii=False), flush=True)
         return row
@@ -155,6 +223,12 @@ def main():
         }
 
     rows.append(run_case(out, "08-A-existing-paper-structured", job, docx=existing, mapping_edit=translated))
+    job, content = long_document("B")
+    rows.append(run_case(out, "09-B-long-document-tables-formulas", job, content))
+    complex_docx = complex_paper(out / "complex-paper.docx")
+    job, _ = example("B")
+    job["info"]["title_zh"] = "复杂表格合成论文"
+    rows.append(run_case(out, "10-B-existing-complex-tables", job, docx=complex_docx))
     (out / "summary.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     print("页图和成品已复制到", out, "；请逐页查看。工作区已全部清理。")
 

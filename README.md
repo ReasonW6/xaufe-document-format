@@ -15,8 +15,10 @@
   - 给了提纲或草稿，就在你的材料上写完整。
 - **已有 Word 一键套模板**：自动识别标题、摘要、关键词、参考文献，补上目录、摘要分页和分节页码。
 - **长封面自动适配**：题目、课程名再长也自动换行对齐，完成日期始终留在第一页底部，字号不变。
-- **参考文献不编造**：写作时先检索再用 DOI、ISBN 或原文页面逐条核对，交付时附一张核实清单。没有出处的具体数字不写，编号跳号会被拦下。
-- **真实检查**：有 Word 或 WPS 时实际分页、刷新目录页码，并逐页看图检查；没有办公软件也能交付，但会说明哪些检查没做。
+- **参考文献不编造，两层核实**：写作时先检索，再用 DOI、ISBN 或原文页面核对“文献是否存在、信息是否一致”（已验证 / 信息不一致 / 无法验证 / 排除），并单独核对“引用的那句话在原文里有没有依据”。交付时附一张核实清单。没有出处的具体数字、对不上的引用序号、跳号的标题都会被拦下。
+- **两层格式验收**：静态检查读 Word 的实际生效格式（字体字号、行距缩进、页边距、分节、页眉页脚、封面、校徽、目录、表格），基准是独立的模板参数表，不调用排版器；渲染后检查只看办公软件真实导出的 PDF（越界、空白页、页眉页脚、文字重叠、字体替代）。之后再逐页看图。
+- **出错能自己改**：没通过时列出每个问题的位置（第几页、哪一段、该改哪个输入）、实际与应为、可能原因和改法；连续 5 次不过就停下来如实报告。
+- **如实说明验收范围**：没有办公软件时照样交付 Word，但明确是“静态验收”，不会说成看过版面；渲染机器缺字体时也会说明。
 - **默认值都能改**：字体、字号、页码、页眉、英文摘要等；多轮修改只改你这次说的那一项。
 
 ## 两套版式
@@ -73,6 +75,18 @@ python -m pip install -r ~/.claude/skills/xaufe-document-format/requirements.txt
 4. 实际分页并逐页检查。
 5. 交付一个 Word。
 
+## 试跑示例
+
+```bash
+python -X utf8 scripts/xaufe.py new --out 技能目录外/示例.docx
+```
+
+把 `examples/B/job.json`、`examples/B/content.json` 和 `examples/layout-test.png` 复制进输出里的 `WORK` 文件夹，然后：
+
+```bash
+python -X utf8 scripts/xaufe.py run --work "WORK"
+```
+
 ## 运行环境
 
 - **Python 3.10+**，依赖见 [requirements.txt](requirements.txt)（python-docx、PyMuPDF、jsonschema、tzdata）。
@@ -83,20 +97,23 @@ python -m pip install -r ~/.claude/skills/xaufe-document-format/requirements.txt
 
 ```text
 xaufe-document-format/
-├── SKILL.md            给 AI 助手的分步说明（技能入口）
+├── SKILL.md            给 AI 助手的交付标准和工具说明（技能入口）
 ├── references/         对比表、job.json 写法、内容写法、参考文献规则、默认格式、特殊情况
 ├── scripts/xaufe.py    唯一命令入口：compare / read / new / check / inspect / refs / run / finish …
-├── scripts/            排版、封面适配、格式检查、文献核对、办公软件调用、交付清理
+├── scripts/            排版、封面适配、静态与渲染后格式检查、失败反馈、文献核对、办公软件调用、交付清理
 ├── assets/             两套清洁母版、两枚原校徽、检查基准
 ├── sources/            学校原始模板和细则（来源存档，不修改）
 ├── examples/           最小示例输入
-└── tests/              自动测试和真实渲染验收脚本
+├── tests/              自动测试和真实渲染验收脚本
+└── .github/workflows/  CI：三个系统上的单元测试 + LibreOffice 真实渲染验收
 ```
 
 ## 验证情况
 
-- **自动测试**：500 多项单元和集成测试。
-- **真实 Word 验收**：8 个用例在 Word 中实际分页并逐页看图，覆盖：
+验证分两种，不混为一谈：**静态验收**只检查 Word 文件里的格式设置；**完整验收**还要用办公软件实际分页、做渲染后检查、逐页看图。
+
+- **自动测试**：540 多项单元和集成测试；GitHub Actions 在 Windows、macOS、Linux 上用 Python 3.10 和 3.13 跑（这三个系统上都没有 Word，实际渲染部分按“没有办公软件”的路径测）。
+- **真实 Word 验收（Windows）**：8 个用例在 Word 中实际分页并逐页看图，覆盖：
   - A、B 默认版式；
   - 校徽互换；
   - 超长封面；
@@ -104,8 +121,9 @@ xaufe-document-format/
   - 在上一版成品上再修改；
   - 不启动办公软件的静态交付；
   - 已有论文补齐结构。
-- **弱模型验收**：用 Claude Haiku 4.5 当执行者，跑了从零写作、只排版、已有 Word、多轮修改、缺信息时提问等场景。每轮发现的问题都已改进技能，关键环节（文献核对、数字出处、编号连续）由脚本把关，不靠模型自觉。
-- **只在 Windows + Word 上实测过**。macOS、Linux、WPS 自动导出、LibreOffice 理论上支持，但还没有实测。
+- **真实 LibreOffice 验收（Linux，2026-10-22，CI 每次都跑）**：上面 8 个用例加上 20 页长文档（宽表跨页、公式、代码、长链接、图片）和带合并单元格、嵌套表、九列宽表、超大图片的原稿，共 10 个；渲染后检查全部通过，页图人工抽看过。这台机器没有宋体、黑体，页图用替代字体，所以只证明版面逻辑，不证明和 Word 逐像素一致。
+- **弱模型验收**：v2 时用 Claude Haiku 4.5 当执行者，跑了从零写作、只排版、已有 Word、多轮修改、缺信息时提问等场景，关键环节由脚本把关，不靠模型自觉。v3（目标导向的 SKILL.md、渲染后检查、失败反馈）之后还没有重跑。
+- **还没实测**：macOS 上的 Word 实际渲染、WPS 自动导出。
 
 维护时的检查命令：
 
@@ -121,7 +139,7 @@ python -X utf8 -B -m unittest discover -s tests -p "test_*.py"
 python -X utf8 tests/run_acceptance.py --output-dir 技能目录外的空文件夹
 ```
 
-改动任何文件后要重新生成 `SHA256SUMS`，`verify_bundle.py` 会指出不一致的文件。
+改动任何文件后要重新生成 `SHA256SUMS`（确认改动都是有意的再运行 `python -X utf8 scripts/verify_bundle.py --update`），`verify_bundle.py` 会指出不一致的文件。仓库按原样字节校验，所以 `.gitattributes` 关闭了换行转换，文本文件统一用 LF。
 
 ## 注意
 

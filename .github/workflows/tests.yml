@@ -1,0 +1,55 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit · ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements.txt
+      - name: Bundle integrity (exact bytes)
+        run: python -X utf8 scripts/verify_bundle.py
+      - name: Unit and integration tests
+        run: python -X utf8 -B -m unittest discover -s tests -p "test_*.py"
+
+  render-libreoffice:
+    # Real pagination, TOC page numbers, page images and the rendered-page audit.
+    # Static acceptance (case 07) and full visual acceptance are reported separately.
+    name: real render · LibreOffice · Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install LibreOffice and CJK fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-writer fonts-noto-cjk fonts-liberation
+      - run: python -m pip install -r requirements.txt
+      - name: Unit tests including the real-render audit test
+        run: python -X utf8 -B -m unittest discover -s tests -p "test_*.py"
+      - name: Acceptance cases through the agent-facing commands
+        run: python -X utf8 tests/run_acceptance.py --output-dir "$RUNNER_TEMP/acceptance"
+      - name: Keep page images for people to look at
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-pages-libreoffice
+          path: ${{ runner.temp }}/acceptance
+          if-no-files-found: ignore
