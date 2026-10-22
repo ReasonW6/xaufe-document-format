@@ -453,6 +453,38 @@ class CLI(unittest.TestCase):
         self.assertIn("“正文内容很长，这一段不是标题。”（role=abstract_zh）", out)
         self.assertIn("role 可能标错了", out)
 
+    def test_document_title_must_match_the_cover_title(self):
+        def title(mapping):
+            next(r for r in mapping["paragraphs"] if r["text"] == "排序算法比较")["role"] = "title_zh"
+
+        info = dict(JOB_B["info"], title_zh="另一个题目")
+        work = self.new({"template": "B", "info": info})
+        code, out, err = self.call("inspect", "--work", work, "--docx", self.sample_docx())
+        mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
+        mapping["paragraphs"][9]["role"] = "body"
+        title(mapping)
+        (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("info.title_zh“另一个题目”不一致", out)
+        self.assertIn("问用户哪个对", out)
+
+    def test_dropped_original_footer_is_reported(self):
+        source = self.sample_docx()
+        doc = Document(source)
+        doc.sections[0].footer.paragraphs[0].text = "第 1 页"
+        doc.sections[0].header.paragraphs[0].text = "合成学院课程作业"
+        doc.save(source)
+        work = self.new(JOB_B)
+        code, out, err = self.call("inspect", "--work", work, "--docx", source)
+        mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
+        mapping["paragraphs"][9]["role"] = "body"
+        (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("ORIGINAL_HEADER_FOOTER_REPLACED", out)
+        self.assertIn("合成学院课程作业", out)
+
     def test_tiny_margins_are_flagged_for_the_review(self):
         document = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": CONTENT["blocks"]}
         work = self.new({**JOB_B, "format": {"page_twips": {"left": 200}}}, document)
@@ -478,7 +510,8 @@ class CLI(unittest.TestCase):
 
     def test_unreachable_reference_service_needs_the_users_consent(self):
         entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
-                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"]}
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"],
+                 "quote": "pandas is a library for data cleaning and analysis"}
         content = json.loads(json.dumps(CONTENT))
         content["references"] = [entry["text"]]
         content["blocks"].append({"type": "paragraph", "text": "pandas 常用于数据清洗[1]。"})
@@ -617,7 +650,8 @@ class CLI(unittest.TestCase):
     def test_writing_mode_passes_and_finish_prints_checklist(self):
         entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
                  "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"],
-                 "supports": "pandas 适合做数据清洗", "relevance": "高"}
+                 "supports": "pandas 适合做数据清洗", "relevance": "高",
+                 "quote": "pandas is a library for data cleaning and analysis"}
         content = json.loads(json.dumps(CONTENT))
         content["references"] = [entry["text"]]
         content["blocks"].append({"type": "paragraph", "runs": [
@@ -633,8 +667,61 @@ class CLI(unittest.TestCase):
         self.assertIn("已验证", out)
         self.assertIn("pandas 适合做数据清洗", out)
         self.assertIn("观点支撑", out)
-        self.assertIn("没有提供原文摘录", out)
+        self.assertIn("取不到原文，未能对照", out)
+        self.assertIn("pandas 的使用者超过 100 万人", out)
         self.assertIn("少 5 篇", out)
+
+    def test_writing_mode_requires_a_quote_and_flags_unconfirmed_support(self):
+        entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"]}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "pandas 常用于数据清洗[1]。"})
+        work = self.written(content, [entry])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("没有写 quote", out)
+        self.assertIn("refs.json", out)
+        work = self.written(content, [dict(entry, quote="pandas is a library for data cleaning and analysis")])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("REF_SUPPORT_UNCONFIRMED", out)
+        self.assertIn("引用句“pandas 常用于数据清洗[1]。”", out)
+        review = json.loads((work / "review.json").read_text(encoding="utf-8"))
+        self.assertIn("REF_SUPPORT_UNCONFIRMED", review["warnings"])
+
+    def test_unverifiable_reference_needs_the_users_consent(self):
+        import refcheck as R
+
+        entry = {"text": "某作者. 某题目[J]. 某刊, 2020, 1(1): 1-2.", "title": "某题目", "authors": ["某作者"], "year": 2020,
+                 "url": "https://example.org/a", "quote": "某题目的原文里的一整句话。"}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "有研究讨论了这个问题[1]。"})
+        work = self.new({**JOB_B, "task": "write"}, content)
+        (work / "refs.json").write_text(json.dumps([entry], ensure_ascii=False), encoding="utf-8")
+        blocked = R.Offline("HTTP 403")
+        blocked.code = 403
+        with patch("refcheck.fetch", return_value=None), patch("refcheck.fetch_page", side_effect=blocked):
+            self.call("refs", "--work", work)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("无法验证", out)
+        self.assertIn("accept_unverified_refs", out)
+
+    def test_figures_from_the_users_material_need_no_reference(self):
+        material = self.d / "调查数据.txt"
+        material.write_text("问卷共回收 312 份，女生月均消费 710 元。", encoding="utf-8")
+        content = json.loads(json.dumps(CONTENT))
+        content["blocks"].append({"type": "paragraph", "text": "本次调查共回收问卷 312 份，女生月均消费为 710 元。"})
+        work = self.new({**JOB_B, "task": "write"}, content, sources=[material])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertNotIn("具体数字", out)
+        content["blocks"][-1]["text"] = "本次调查共回收问卷 312 份，男生月均消费为 820 元。"
+        (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertIn("820 元", out)
+        self.assertIn("blocks[", out)
 
     def test_user_provided_reference_needs_a_source(self):
         entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",

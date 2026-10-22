@@ -84,6 +84,20 @@ def fetch(url, accept=None):
         raise Unsupported(url) from exc
 
 
+class Page(str):
+    """Visible text of a page; ``headline`` is what the page says it is (<title>, <h1>, citation_title)."""
+
+    headline = None
+
+
+def _headline(raw_html):
+    parts = re.findall(r"<title[^>]*>(.*?)</title>|<h1[^>]*>(.*?)</h1>", raw_html, re.I | re.S)
+    parts = [a or b for a, b in parts]
+    parts += re.findall(r"<meta[^>]+(?:name|property)=[\"'](?:citation_title|dc\.title|og:title)[\"'][^>]*content=[\"']([^\"']*)",
+                        raw_html, re.I)
+    return html.unescape(re.sub(r"<[^>]+>", " ", " ".join(parts)))
+
+
 def fetch_page(url):
     """Visible text of a web page, tags removed. Raises Offline when it cannot be read."""
     if not re.match(r"https?://", url, re.I):
@@ -109,7 +123,9 @@ def fetch_page(url):
             break
     else:
         text = raw.decode("utf-8", "ignore")
-    return html.unescape(re.sub(r"<[^>]+>", " ", text))
+    page = Page(html.unescape(re.sub(r"<[^>]+>", " ", text)))
+    page.headline = _headline(text)
+    return page
 
 
 def _online():
@@ -183,9 +199,14 @@ def _page_check(entry, result, why=""):
             missing = [x for x, ok in ((f"第一作者 {first}", _contains_word(page, first)), (f"年份 {year}", not year or year in page)) if not ok]
             if not first:
                 missing.insert(0, "authors（refs.json 里没写作者）")
+            headline = getattr(page, "headline", None)
             if missing:
                 result.update(status=FIX, notes=["链接页面上有这个题目，但找不到" + "、".join(missing)
                                                  + "：可能是引用了它的别的页面。换成文献本身的页面，或核对作者和年份"])
+            elif headline is not None and _norm(title) not in _norm(headline):
+                # A page that only mentions the work (a citing paper, a reading list) proves less than its own page.
+                result.update(status=PENDING, notes=[why + "链接页面提到了这篇文献，但页面标题不是它，可能是引用它的别的页面，无法验证；"
+                                                     "换成文献本身的页面（页面标题就是这篇文献）"])
             else:
                 result["notes"].append("链接页面上有题目、第一作者和年份")
                 result["_source_text"] = page
@@ -714,7 +735,11 @@ def report(results, entries, minimum=DEFAULT_MIN, this_year=None, report_only=Fa
         lines.append("  不要删改用户原文里的文献。finish 会生成核对清单，原样附在给用户的回复里，由用户决定要不要改。")
         return "\n".join(lines)
     lines.append("")
-    lines.append(f"可用 {len(usable)} 条（不含“排除”），本次至少要 {minimum} 条（用户另有要求按用户的）。")
+    verified = [i for i in usable if results[i]["status"] == PASS]
+    unchecked = [i for i in usable if results[i].get("unreachable")]
+    lines.append(f"可用 {len(usable)} 条（不含“排除”；其中已验证 {len(verified)} 条"
+                 + (f"，{len(unchecked)} 条因为连不上核对服务根本没核对" if unchecked else "")
+                 + f"），本次至少要 {minimum} 条（用户另有要求按用户的）。")
     if counted:
         lines.append(
             f"近 {RECENT_YEARS} 年（{this_year - RECENT_YEARS + 1} 年以后）{recent}/{len(counted)} 条，"
@@ -724,11 +749,12 @@ def report(results, entries, minimum=DEFAULT_MIN, this_year=None, report_only=Fa
     lines.append("→ 下一步：")
     lines.append("  排除：从 refs.json 删掉，另找一篇；不要把它改成查到的那篇。")
     lines.append("  信息不一致：确认是同一篇后，按提示同时改 refs.json 里的字段和 text，再运行 refs；不改不能用。")
-    lines.append("  无法验证：可以用，但不能说成已验证；finish 会把原因列进给用户的清单。")
+    lines.append("  无法验证：先问用户是否接受，用户同意后在 job.json 写 \"accept_unverified_refs\": true，否则 run 会拦下；"
+                 "能换成可核实的文献就换。finish 会把原因列进给用户的清单。")
     if any(r.get("unreachable") for r in results):
         lines.append("  连不上核对服务的条目：联网后重新运行 refs。确实没法联网时先问用户是否接受未核实的文献，"
                      "用户同意后在 job.json 写 \"accept_unverified_refs\": true，否则 run 会拦下。")
-    lines.append("  观点支撑：给每条写 quote（支撑你那句话的原文原句）；没找到或没对照的会在清单里如实标出。")
+    lines.append("  观点支撑：给每条写 quote（支撑你那句话的原文原句，必写）；没找到或没对照的，run 会列出引用句和摘录让你逐条核对，清单里如实标出。")
     if len(usable) < minimum:
         lines.append(f"  可用的不够 {minimum} 条：继续检索；实在找不到就如实告诉用户还差 {minimum - len(usable)} 条，不要凑数。")
     lines.append("  都处理好后，把要用的条目的 text 按正文第一次引用的顺序写进 content.json 的 references。")

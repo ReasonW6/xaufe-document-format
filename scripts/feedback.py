@@ -306,6 +306,8 @@ def from_render(audit, root=None, docx=None):
 
 # Input errors raised while laying out (ValueError text) -> cause and fix.
 _MESSAGE_HINTS = (
+    (r"的题目“.*”和 job\.json 的 info\.title", "原稿里的题目和 job.json 封面信息里的题目不是同一个。",
+     "问用户哪个对：job.json 写错了就改 info.title_zh / title_en；原稿要改就请用户确认后改原稿。不要自己挑一个。"),
     (r"放不下一个五号汉字|列太多|太窄", "表格列太多或某几列太窄，按版心缩放后一列连一个汉字都放不下。",
      "content.json 里给这个表格写 widths（各列宽度比例，长文字列给大、编号列给小），或减少列数、缩短表头、把表拆成两个；"
      "已有 Word 里的表格：请用户减少列数或拆表。用户要求横向页面时脚本做不到，按 references/special-cases.md 的“脚本做不到的要求”处理。"),

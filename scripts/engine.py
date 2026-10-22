@@ -1415,6 +1415,12 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
                 fail(f"原稿 p{i}“{p.text.strip()[:15]}”（role {roles.get(f'p{i}', default)}）：{exc}")
             if change:
                 spacing_changes.append(dict(change, paragraph=f"p{i}"))
+    for i, p in enumerate(doc.paragraphs):
+        role = roles.get(f"p{i}", default)
+        wanted = m["metadata"].get(role, "") if role in ("title_zh", "title_en") else None
+        if wanted and re.sub(r"\s+", "", p.text) != re.sub(r"\s+", "", wanted):
+            fail(f"原稿 p{i} 的题目“{p.text.strip()[:30]}”和 job.json 的 info.{role}“{wanted[:30]}”不一致："
+                 "封面和页眉用的是 job.json 里的题目，两处会对不上。问用户哪个是对的，改 job.json 的 info 或原稿后重新 run。")
     before = content_signature(doc)
     install_styles(doc)
     for i, p in enumerate(doc.paragraphs):

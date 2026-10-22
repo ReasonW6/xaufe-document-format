@@ -247,6 +247,35 @@ def _span(a, b):
     return a[max(0, ops[0][1] - 8) : ops[-1][2] + 8], b[max(0, ops[0][3] - 8) : ops[-1][4] + 8]
 
 
+def margin_texts(path):
+    """Header and footer lines of a .docx; digits dropped so "第 3 页" and "第 1 页" are one line."""
+    from docx import Document
+
+    seen = []
+    for section in Document(path).sections:
+        for part in (section.header, section.first_page_header, section.even_page_header,
+                     section.footer, section.first_page_footer, section.even_page_footer):
+            if part.is_linked_to_previous:  # no own definition: nothing new to show (and reading would add one)
+                continue
+            for p in part.paragraphs:
+                text = "".join(p._p.xpath(".//w:t/text()"))
+                key = re.sub(r"[\s\d]+", "", text)
+                if key and key not in [k for k, _ in seen]:
+                    seen.append((key, text.strip()))
+    return seen
+
+
+def dropped_margins(sources, docx):
+    """Header/footer text of a .docx original that the output's headers and footers no longer show."""
+    kept = {k for k, _ in margin_texts(docx)}
+    out = []
+    for source in sources:
+        path = Path(source["path"])
+        if path.suffix.lower() == ".docx" and path.is_file():
+            out += [text for key, text in margin_texts(path) if not any(key in k or k in key for k in kept)]
+    return out
+
+
 def compare(sources, docx, *, approved=(), generated=(), replaced=None, old_toc=()):
     """Differences between the readable originals and the output.
 

@@ -150,6 +150,26 @@ class CheckEntry(unittest.TestCase):
         r = self.check({**GOOD, "doi": "10.48550/arXiv.1706.03762"})
         self.assertIn("预印本", " ".join(r["notes"]))
 
+    def test_page_that_only_mentions_the_work_is_not_proof(self):
+        book = {"text": "某作者. 数据分析方法[M]. 北京: 某出版社, 2020.", "title": "数据分析方法", "url": "https://example.org/book",
+                "authors": ["某作者"], "year": 2020}
+        own = R.Page("数据分析方法 某作者 著 某出版社 2020")
+        own.headline = "数据分析方法 - 某出版社"
+        citing = R.Page("参考文献：某作者. 数据分析方法. 2020. 本文讨论的是别的问题。")
+        citing.headline = "另一篇论文的题目"
+        with patch("refcheck.fetch"), patch("refcheck.fetch_page", return_value=own):
+            self.assertEqual(R.check_all([book])[0]["status"], R.PASS)
+        with patch("refcheck.fetch"), patch("refcheck.fetch_page", return_value=citing):
+            r = R.check_all([book])[0]
+        self.assertEqual(r["status"], R.PENDING)
+        self.assertIn("页面标题不是它", r["notes"][0])
+
+    def test_headline_comes_from_title_h1_and_citation_meta(self):
+        raw = ('<html><head><title>站点</title><meta name="citation_title" content="Deep learning"></head>'
+               '<body><h1>文章页</h1></body></html>')
+        self.assertIn("Deep learning", R._headline(raw))
+        self.assertIn("文章页", R._headline(raw))
+
     def test_entries_without_doi_are_checked_on_their_page(self):
         book = {"text": "某作者. 数据分析方法[M]. 北京: 某出版社, 2020.", "title": "数据分析方法", "url": "https://example.org/book",
                 "authors": ["某作者"], "year": 2020}

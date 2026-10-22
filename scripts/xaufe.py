@@ -172,6 +172,46 @@ def _citation_problems(content):
     return problems
 
 
+class Problem(str):
+    """A writing-check message; ``edit`` says which input to change."""
+
+    edit = None
+
+
+def _problem(message, edit=None):
+    item = Problem(message)
+    item.edit = edit
+    return item
+
+
+def _material_text(root):
+    """Text of the user's registered material (new --source / inspect), for figures the user gave."""
+    import delivery as D
+    from source_compare import fragments
+
+    try:
+        sources = D.load(root)[1].get("source_documents", [])
+    except (OSError, ValueError, KeyError):
+        return ""
+    texts = []
+    for source in sources:
+        if source.get("role") == "original":
+            items = fragments(Path(source["path"])) or []
+            texts += [text for _, text, _ in items]
+    return re.sub(r"\s+", "", "".join(texts)).replace("％", "%")
+
+
+def _from_material(sentence, material):
+    """Every figure in the sentence also appears in the user's material."""
+    if not material:
+        return False
+    for match in NUMBER.finditer(sentence):
+        token = re.sub(r"\s+", "", sentence[match.start(): match.end() + (4 if match.group(0) == "百分之" else 0)])
+        if token.replace("％", "%") not in material:
+            return False
+    return True
+
+
 def _writing_problems(root, content):
     """What a written document must satisfy before it is laid out (task = write)."""
     import refcheck as R
@@ -180,40 +220,52 @@ def _writing_problems(root, content):
     references = content.get("references") or []
     result_path = root / "refs-result.json"
     if references and not result_path.is_file():
-        problems.append("参考文献还没有核对：按 references/citations.md 写 refs.json 并运行 refs。")
+        problems.append(_problem("参考文献还没有核对：按 references/citations.md 写 refs.json 并运行 refs。", "refs.json"))
     elif references:
         saved = _read(result_path, "refs-result.json")
         refs_json = root / "refs.json"
         current = hashlib.sha256(refs_json.read_bytes()).hexdigest() if refs_json.is_file() else None
         if saved.get("refs_sha256") != current:
-            problems.append("refs.json 改过以后还没有重新运行 refs。")
+            problems.append(_problem("refs.json 改过以后还没有重新运行 refs。", "refs.json"))
         results = {_ref_key(r["text"]): r for r in saved.get("results", [])}
         accepted = _read(root / "job.json", "job.json").get("accept_unverified_refs") is True
         for index, text in enumerate(references, 1):
+            edit = f"content.json 的 references[{index - 1}]"
             r = results.get(_ref_key(text))
             if r is None or r["status"] not in (R.PASS, R.PENDING, R.USER):
-                problems.append(f"参考文献第 {index} 条不在 refs 核对可用的条目里（要用 refs.json 里的 text 原样写）：{str(text)[:40]}")
+                problems.append(_problem(f"参考文献第 {index} 条不在 refs 核对可用的条目里（要用 refs.json 里的 text 原样写）：{str(text)[:40]}", edit))
             elif r["status"] == R.USER and not r.get("provenance"):
-                problems.append(
+                problems.append(_problem(
                     f"参考文献第 {index} 条标成用户提供（from_user），但原稿里没有这一条，refs.json 也没写 user_said（用户给它时的原话）："
-                    "确实是用户给的就补上 user_said 后重新 refs；不是就去掉 from_user 正常核对。" + str(text)[:30])
+                    "确实是用户给的就补上 user_said 后重新 refs；不是就去掉 from_user 正常核对。" + str(text)[:30], "refs.json"))
             elif r.get("unreachable") and not accepted:
-                problems.append(
+                problems.append(_problem(
                     f"参考文献第 {index} 条因为连不上核对服务根本没核对：联网后重新运行 refs；确实没法联网，"
-                    "先问用户是否接受未核实的文献，用户同意后在 job.json 写 \"accept_unverified_refs\": true：" + str(text)[:30]
-                )
-    for block in content.get("blocks", []):
+                    "先问用户是否接受未核实的文献，用户同意后在 job.json 写 \"accept_unverified_refs\": true：" + str(text)[:30], "job.json"))
+            elif r["status"] == R.PENDING and not accepted:
+                problems.append(_problem(
+                    f"参考文献第 {index} 条无法验证（{R.plain_reason(r)[:40]}）：换一条能核实的文献；"
+                    "确实要用，先问用户是否接受这条未核实的文献，用户同意后在 job.json 写 \"accept_unverified_refs\": true：" + str(text)[:30], edit))
+            elif r["status"] != R.USER and r.get("support") == R.NO_QUOTE:
+                problems.append(_problem(
+                    f"参考文献第 {index} 条没有写 quote（支撑正文那句话的原文原句）：自己找的文献要从摘要或正文照抄一句写进 refs.json 的 quote，"
+                    "找不到能支撑的原句就换文献或删掉那句话：" + str(text)[:30], "refs.json"))
+    material = _material_text(root)
+    for i, block in enumerate(content.get("blocks", [])):
+        edit = f"content.json 的 blocks[{i}]"
         if block.get("type") == "paragraph":
             runs = block.get("runs") or []
             # Each sentence with a figure needs its own citation; one [n] elsewhere in the paragraph is not enough.
+            # Figures the user supplied (they appear in the registered material) need no reference.
             for sentence in _sentences(block.get("text") or "".join(r.get("text", "") for r in runs)):
-                if NUMBER.search(sentence) and not CITE.search(sentence):
-                    problems.append(f"这句话有具体数字但没有标出处（删掉数字，或在这句末尾标上核对过的文献序号）：{sentence.strip()[:40]}")
+                if NUMBER.search(sentence) and not CITE.search(sentence) and not _from_material(sentence, material):
+                    problems.append(_problem("这句话有具体数字但没有标出处（删掉数字，或在这句末尾标上核对过的文献序号；"
+                                             f"数字是用户给的，就把用户的资料用 new --source 登记）：{sentence.strip()[:40]}", edit))
         elif block.get("type") == "table":
             cells = [str(c) for row in [block.get("header") or []] + (block.get("rows") or []) for c in row]
             text = " ".join(cells)
-            if NUMBER.search(text) and not CITE.search(str(block.get("caption") or "")):
-                problems.append(f"表格里有具体数字但表题没有标出处（在表题末尾标上核对过的文献序号）：{text[:40]}")
+            if NUMBER.search(text) and not CITE.search(str(block.get("caption") or "")) and not _from_material(text, material):
+                problems.append(_problem(f"表格里有具体数字但表题没有标出处（在表题末尾标上核对过的文献序号）：{text[:40]}", edit))
     problems += _citation_problems(content)
     counters = {1: 0, 2: 0, 3: 0}
     for block in content.get("blocks", []):
@@ -230,6 +282,37 @@ def _writing_problems(root, content):
         for deeper in range(level + 1, 4):
             counters[deeper] = 0
     return problems
+
+
+def _citing_sentences(content):
+    """{n: first sentence of the text that cites [n]}."""
+    found = {}
+    for block in content.get("blocks", []):
+        runs = block.get("runs") or []
+        for sentence in _sentences(block.get("text") or "".join(r.get("text", "") for r in runs)):
+            for n in _cited_numbers(sentence):
+                found.setdefault(n, sentence.strip())
+    return found
+
+
+def _weak_support(root, content):
+    """References whose quoted excerpt was not found in what could be read: the claim rests on the agent's word."""
+    import refcheck as R
+
+    if not (root / "refs-result.json").is_file():
+        return None
+    results = {_ref_key(r["text"]): r for r in _read(root / "refs-result.json", "refs-result.json").get("results", [])}
+    citing = _citing_sentences(content)
+    lines = []
+    for index, text in enumerate(content.get("references") or [], 1):
+        r = results.get(_ref_key(text), {})
+        if r.get("status") != R.USER and r.get("support") in (R.NOT_FOUND, R.UNCHECKED):
+            lines.append(f"[{index}] 引用句“{citing.get(index, '')[:30]}”／摘录“{str(r.get('quote') or '')[:30]}”（{r['support']}）")
+    if not lines:
+        return None
+    return {"code": "REF_SUPPORT_UNCONFIRMED",
+            "message": "这些引用的原文摘录没能在读得到的原文里对上，支撑关系只有你的判断：" + "；".join(lines)
+                       + "。逐条核对引用句和摘录说的是不是同一件事；对不上就换文献或改写那句话。清单会把这几条标成未确认。"}
 
 
 def _readable(text):
@@ -296,7 +379,8 @@ def _reference_checklist(root):
     by_key = {_ref_key(r["text"]): r for r in saved.get("results", [])}
     lines = []
     if references:
-        lines += ["| 序号 | 文献 | 真实性 | 支撑的论点 | 观点支撑 |", "|---|---|---|---|---|"]
+        citing = _citing_sentences(_read(content_path, "content.json"))
+        lines += ["| 序号 | 文献 | 真实性 | 支撑的论点 | 正文引用句 | 观点支撑 |", "|---|---|---|---|---|---|"]
         for index, text in enumerate(references, 1):
             r = by_key.get(_ref_key(text), {})
             status = {R.PASS: "已验证"}.get(r.get("status"))
@@ -308,7 +392,7 @@ def _reference_checklist(root):
             if supports and r.get("relevance") == "中":
                 supports += "（弱支撑）"
             backing = r.get("support") or R.NO_QUOTE
-            lines.append(f"| [{index}] | {_readable(text)[:60]} | {status} | {supports} | {backing} |")
+            lines.append(f"| [{index}] | {_readable(text)[:60]} | {status} | {supports} | {citing.get(index, '')[:40]} | {backing} |")
         lines.append("“真实性”只说明文献存在、信息对得上；“观点支撑”才说明你引用的那句话在原文里找到了依据。")
     else:
         lines.append("这次没有找到能核实的参考文献，请提供你读过的文献。")
@@ -617,7 +701,9 @@ def cmd_run(args):
         if problems:
             fix = "改 content.json / refs.json 后重新 run；不要为了通过检查编造数字或出处。"
             issues = [
-                {"code": "WRITING_CHECK", "stage": "写作检查", "message": text, "cause": "写作模式（task 为 write）的硬性要求没满足。", "fix": fix}
+                dict({"code": "WRITING_CHECK", "stage": "写作检查", "message": str(text),
+                      "cause": "写作模式（task 为 write）的硬性要求没满足。", "fix": fix},
+                     **({"where": {"edit": text.edit}} if getattr(text, "edit", None) else {}))
                 for text in problems
             ]
             return _not_accepted(root, F.AcceptanceFailed("写作检查", issues))
@@ -674,6 +760,11 @@ def cmd_run(args):
             level = used + 1
             print(f"封面太长，日期被挤出第一页；自动收紧封面空白（第 {level} 级）后重试……")
     F.record_round(root, [])
+    if _task(root) == "write" and (root / "content.json").is_file():
+        weak = _weak_support(root, _read(root / "content.json", "content.json"))
+        if weak:
+            result["warnings"].append(weak)
+            D.add_review_warnings(root, [weak])
     _write(root / "review.json", _review_template(result))
     print(I.summary(state).splitlines()[0])
     stats = _body_length(root)

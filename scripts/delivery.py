@@ -136,8 +136,15 @@ def compare_originals(root, state, result):
                 "用户是在对话里直接贴的文字，就先把原文原样存成 .txt 再用 --source 登记。",
             }])
         return
-    from source_compare import compare
+    from source_compare import compare, dropped_margins
 
+    dropped = dropped_margins(originals, root / "final.docx")
+    if dropped:
+        result["warnings"].append({
+            "code": "ORIGINAL_HEADER_FOOTER_REPLACED",
+            "message": "原稿页眉/页脚里的“" + "”“".join(t[:20] for t in dropped[:3]) + "”没有保留：成品的页眉页脚按模板重新生成了。"
+                       "要在回复里告诉用户；用户想保留原来的页眉文字，就写进 job.json 的 format.header（left / right）后重新 run。",
+        })
     mapping = read_json(root / "mapping.json") if (root / "mapping.json").is_file() else {}
     toc_line = re.compile(r"^\s*目\s*录\s*$|\d+\s*$")
     old_toc = {r["id"] for r in mapping.get("paragraphs", []) if r.get("role") == "old_toc" and toc_line.search(r.get("text", ""))}
@@ -330,6 +337,13 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
         "pages": [dict(p, path=str(root / "preview" / p["png"])) for p in preview["pages"]],
         "warnings": warnings,
     }
+
+
+def add_review_warnings(workspace, warnings):
+    """Warnings found outside the layout checks (e.g. reference support) that review.json must answer too."""
+    root, s = load(workspace)
+    s["warning_codes"] = sorted(set(s.get("warning_codes", [])) | {warning_key(w) for w in warnings})
+    write_json(root / MARKER, s)
 
 
 def _renderer_name(root):
