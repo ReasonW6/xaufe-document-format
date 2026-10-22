@@ -566,6 +566,27 @@ class WPSTests(Fixture):
         self.assertNotIn(str(self.root), seen.get("XDG_CONFIG_HOME", ""))
         self.assertTrue((self.root / "a.pdf").is_file())
 
+    def test_libreoffice_on_macos_is_told_where_fonts_are(self):
+        seen = {}
+
+        def run(cmd, **kw):
+            seen.update(kw["env"])
+            (Path(cmd[cmd.index("--outdir") + 1]) / "a.pdf").write_bytes(b"%PDF-1.4 synthetic")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        source = self.root / "a.docx"
+        Document().save(source)
+        fonts = self.root / "Library/Fonts"
+        fonts.mkdir(parents=True)
+        with (
+            tempfile.TemporaryDirectory(dir=self.root) as tmp,
+            patch("office_backend.subprocess.run", side_effect=run),
+            patch("office_backend.sys.platform", "darwin"),
+            patch("office_backend.Path.home", return_value=self.root),
+        ):
+            B._lo(source, self.root / "a.pdf", {"path": "soffice"}, Path(tmp))
+        self.assertIn(str(fonts), seen["SAL_FONTPATH_PRIVATE"].split(";"))
+
     def test_invalid_pdf_backend_rejected(self):
         source = self.root / "a.docx"
         Document().save(source)
