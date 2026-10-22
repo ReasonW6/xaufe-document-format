@@ -290,7 +290,8 @@ class CLI(unittest.TestCase):
         self.assertIn("加上所选模板的封面", out)
         mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
         self.assertEqual(mapping["replace_cover_before"], 0)
-        self.assertIn(str(source), [x["path"] for x in D.load(work)[1]["source_documents"]])
+        # The workspace records resolved paths (macOS temp dirs live behind /var -> /private/var).
+        self.assertIn(str(source.resolve()), [x["path"] for x in D.load(work)[1]["source_documents"]])
 
     def test_mapping_delete_role_removes_only_marked_paragraph(self):
         work = self.new(JOB_B)
