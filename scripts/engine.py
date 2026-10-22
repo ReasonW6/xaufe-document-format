@@ -1241,7 +1241,10 @@ def structure_paper(doc, has_cover, meta, additions):
         elif current == "lead" and role not in ("spacer", "abstract_spacer"):
             fail("正文前有分不到摘要或正文里的段落：" + "".join(el.xpath(".//w:t/text()"))[:40])
         if order.index(target) < order.index(current):
-            fail("原稿里摘要、英文摘要、正文的先后顺序和所选版式不同；请改用 mode=document，或先和用户确认。")
+            names = {"lead": "开头", "abstract_zh": "中文摘要", "abstract_en": "英文摘要", "body": "正文"}
+            text = "".join(el.xpath(".//w:t/text()")).strip()[:20]
+            fail(f"“{text}”（role={role}）排在{names[current]}后面，但它属于{names[target]}：摘要、英文摘要、正文的先后顺序和所选版式不同。"
+                 "先看这一段的 role 是否标错；没标错就改用 mode=document，或先和用户确认。")
         current = target
         parts[current].append(el)
     if not parts["abstract_zh"]:

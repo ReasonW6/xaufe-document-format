@@ -47,14 +47,12 @@ def _lo(docx, pdf, candidate, tmp):
     if os.name != "nt":
         env.update(XDG_CACHE_HOME=str(tmp / "cache"))
     if sys.platform == "darwin":
-        # Headless LibreOffice on macOS only sees its bundled fonts unless told
-        # where the system and user fonts are; without this every CJK line falls
-        # back to a Latin font and the pages are wrong.
-        dirs = ["/System/Library/Fonts", "/System/Library/Fonts/Supplemental", "/Library/Fonts",
-                str(Path.home() / "Library/Fonts")]
-        extra = [d for d in env.get("SAL_FONTPATH_PRIVATE", "").split(";") if d]
-        env["SAL_FONTPATH_PRIVATE"] = ";".join(extra + [d for d in dirs if Path(d).is_dir()])
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
+        # --headless on macOS falls back to the "svp" backend, which only knows the
+        # fonts bundled with LibreOffice: every CJK line came out in a Latin font
+        # and the pages were wrong. The native backend still runs headless but
+        # sees the system and user fonts (measured on macOS CI runners).
+        env.setdefault("SAL_USE_VCLPLUGIN", "osx")
+    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=180, env=env)
     produced = od / (docx.stem + ".pdf")
     if not produced.is_file() or not produced.stat().st_size:
         raise RuntimeError("LibreOffice已找到但导出失败：" + proc.stdout + "\n" + proc.stderr)

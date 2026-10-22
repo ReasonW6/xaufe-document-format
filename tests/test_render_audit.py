@@ -205,6 +205,17 @@ class RenderAudit(unittest.TestCase):
         self.assertIn("72.0pt", spill[0]["expected"])
         self.assertIn("format.header", F.HINTS["HEADER_OVERFLOW"][1].replace("\"header\"", "format.header"))
 
+    def test_header_wrapped_to_two_lines_inside_the_margin(self):
+        # Both rows stay above the 72 pt top margin, so nothing overflows, but the header is no longer one line.
+        doc = self.docx("A")
+        one = audit(doc, self.pdf([self.cover(), [("text", 95, 60, "测试"), ("text", 400, 60, "测试"), ("text", 95, 200, "正文")]]))
+        self.assertNotIn("HEADER_WRAPPED", self.codes(one))
+        two = audit(doc, self.pdf([self.cover(), [("text", 95, 50, "测试"), ("text", 95, 64, "测试"), ("text", 95, 200, "正文")]]))
+        wrapped = [e for e in two["errors"] if e["code"] == "HEADER_WRAPPED"]
+        self.assertEqual(wrapped[0]["page"], 2)
+        self.assertEqual(wrapped[0]["actual"], "2 行")
+        self.assertIn("header", F.HINTS["HEADER_WRAPPED"][1])
+
     def test_page_with_only_a_drawing_is_not_blank(self):
         result = audit(self.docx(), self.pdf([self.cover(), [("line", 100, 300, 300)]]))
         self.assertNotIn("BLANK_PAGE", self.codes(result))

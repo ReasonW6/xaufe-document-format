@@ -203,6 +203,25 @@ def _header_texts(doc):
     return texts
 
 
+def _header_paragraphs(doc):
+    """Most non-empty paragraphs any one header has: how many rows a header may show."""
+    return max((sum(1 for p in part.paragraphs if p.text.strip())
+                for s in doc.sections for part in (s.header, s.even_page_header)), default=0)
+
+
+def _header_rows(head, texts):
+    """Distinct baselines the header text sits on (left and right parts share one when it fits)."""
+    rows = []
+    for line in head:
+        text = re.sub(r"\s+", "", line["spans"][0]["text"])
+        if not text or not any(text in t or t in text for t in texts):
+            continue
+        base, size = line["chars"][0][2], line["chars"][0][3]
+        if not any(abs(base - b) < 0.5 * size for b, _ in rows):
+            rows.append((base, line))
+    return sorted(rows, key=lambda r: r[0])
+
+
 def _header_overflow(lines, top, texts):
     """The last header line when the header wrapped past the top margin into the text area."""
     if not texts:
@@ -273,6 +292,7 @@ def audit(docx, pdf):
     body_margins = _margins(sections[1:] if want["has_cover"] and len(sections) > 1 else sections)
     cover_margins = _margins(sections[:1])
     header_texts = _header_texts(doc)
+    header_paragraphs = _header_paragraphs(doc)
     errors, warnings = [], []
     used = set()
     previous = ""
@@ -358,6 +378,13 @@ def audit(docx, pdf):
                         errors.append(_issue("error", "HEADER_OVERFLOW", index, "页眉文字折成多行，伸出上边距压进了正文区。",
                                              where=spill["spans"][0]["text"][:30], expected=f"页眉在 {top:.1f}pt 以上",
                                              actual=f"页眉底边 {spill['bbox'][3]:.1f}pt", bbox=spill["bbox"]))
+                    else:
+                        rows = _header_rows(head, header_texts)
+                        if len(rows) > max(header_paragraphs, 1):
+                            errors.append(_issue("error", "HEADER_WRAPPED", index, "页眉一行放不下，折成了两行（还没压进正文，但已经不是一行页眉）。",
+                                                 where=rows[-1][1]["spans"][0]["text"][:30],
+                                                 expected=f"页眉在一行内（{max(header_paragraphs, 1)} 行）",
+                                                 actual=f"{len(rows)} 行", bbox=rows[-1][1]["bbox"]))
                 elif not cover and not want["header"] and head:
                     errors.append(_issue("error", "HEADER_UNEXPECTED", index, "这一页不应该有页眉，渲染结果里有。",
                                          where=head[0]["spans"][0]["text"][:30]))

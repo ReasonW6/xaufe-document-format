@@ -58,41 +58,6 @@ jobs:
               brew install --cask libreoffice font-noto-serif-cjk-sc font-noto-sans-cjk-sc ;;
           esac
       - run: python -m pip install -r requirements.txt
-      - name: Font diagnosis (macOS)
-        if: runner.os == 'macOS'
-        continue-on-error: true
-        run: |
-          ls ~/Library/Fonts | head; ls /System/Library/Fonts | head -50
-          cat > "$RUNNER_TEMP/diag.py" <<'PY'
-          import os, subprocess, sys, tempfile
-          from pathlib import Path
-          sys.path.insert(0, "scripts")
-          from docx import Document
-          from docx.oxml.ns import qn
-          import pymupdf
-          import office_backend as B
-          tmp = Path(tempfile.mkdtemp())
-          for name in ["宋体", "SimSun", "Noto Serif CJK SC", "PingFang SC", "Songti SC"]:
-              d = Document()
-              r = d.add_paragraph().add_run("学号：20230001 中文测试")
-              r.font.name = name
-              r._r.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), name)
-              src = tmp / f"t{abs(hash(name))}.docx"
-              d.save(src)
-              for label, plugin in [("default", None), ("svp", "svp"), ("osx", "osx")]:
-                  work = Path(tempfile.mkdtemp())
-                  if plugin:
-                      os.environ["SAL_USE_VCLPLUGIN"] = plugin
-                  else:
-                      os.environ.pop("SAL_USE_VCLPLUGIN", None)
-                  try:
-                      B._lo(src, work / "o.pdf", {"path": "/Applications/LibreOffice.app/Contents/MacOS/soffice"}, work)
-                      with pymupdf.open(work / "o.pdf") as p:
-                          print(name, label, [f[3] for f in p[0].get_fonts()], repr(p[0].get_text()[:40]), flush=True)
-                  except Exception as e:
-                      print(name, label, "ERROR", str(e)[:300], flush=True)
-          PY
-          python -X utf8 "$RUNNER_TEMP/diag.py"
       - name: Unit tests including the real-render audit tests
         if: runner.os == 'Linux'
         run: python -X utf8 -B -m unittest discover -s tests -p "test_*.py"

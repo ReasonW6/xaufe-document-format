@@ -131,6 +131,7 @@ HINTS = {
     "IMAGE_OFF_PAGE": ("图片超出纸张。", "把图片改小，或确认这一段 role 是 figure。"),
     "IMAGE_OUTSIDE_MARGINS": ("图片比版心宽，或比一页的版心还高、伸进了上下页边距。", "把图片改小（太高的图请用户裁开或缩小），或确认这一段 role 是 figure（脚本会按版心缩放宽度）。"),
     "TEXT_OVER_IMAGE": ("文字压在图片上：常见于原稿的浮动图片、环绕方式，或图片所在段落是固定行距。", "已有 Word 时把这张图所在段落的 role 设为 figure；仍压字就请用户把图片改成“嵌入型”后再给。"),
+    "HEADER_WRAPPED": ("页眉文字太长，一行放不下折成了两行。A 版页眉右侧默认放论文题目，长题目最容易这样。", "在 job.json 的 format 里给页眉写一个短的题目：\"header\": {\"right\": \"简短题目\"}（先问用户用哪个简称；左侧太长就改 left）；或经用户同意缩小页眉字号（styles.header.size）。"),
     "HEADER_OVERFLOW": ("页眉文字太长，折成多行后伸出了上边距，把正文往下挤。A 版页眉右侧默认放论文题目，长题目最容易这样。", "在 job.json 的 format 里给页眉写一个短的题目：\"header\": {\"right\": \"简短题目\"}（先问用户用哪个简称；左侧太长就改 left）；或经用户同意缩小页眉字号（styles.header.size）。"),
     "TABLE_OUTSIDE_MARGINS": ("表格或图形伸出了版心。", "已有 Word 时确认 format_tables 是 true；列太多就请用户拆表；浮动图形请用户改成嵌入式。"),
     "BLANK_PAGE": ("出现了多余的空白页：常见于连续分页符、段落自带的“段前分页”，或分节后又手动分页。", "content.json：删掉多余的 page_break 块。已有 Word：在 mapping.json 里把位置里那些只有分页符的空段落 role 设为 delete（空段落没有文字，删掉不算改原文；设为 spacer 不会去掉分页）。"),
@@ -314,6 +315,8 @@ _MESSAGE_HINTS = (
      "content.json 用 keywords_zh/keywords_en 列表写关键词，每项一个词。"),
     (r"摘要和目录要排在正文之前|parts", "job.json 的 format.parts 顺序或内容不合规。",
      "删掉 format.parts 用默认顺序；用户要的顺序脚本不支持时，在 content.json 用 mode=document 自己安排并告诉用户。"),
+    (r"先后顺序和所选版式不同", "这一段的 role 可能标错了（比如正文段标成了摘要或关键词），或者原稿本来就是这个顺序。",
+     "role 标错就改 mapping.json 里这一段的 role；原稿顺序本来如此，就把 mapping.json 的 mode 改成 document，或先问用户。"),
     (r"未标记角色|未映射|role", "mapping.json 里有段落没有可用的 role。", "按 references/content.md 的“已有 Word”一节给这一段写 role。"),
     (r"英文摘要", "原稿有没有英文摘要和本次版式设置不一致。", "问用户：要英文摘要就在 job.json 的 format 写 \"english_abstract\": true（缺的用 mapping.json 的 add 补译文）；不要就经用户同意把那些段落设为 delete。"),
     (r"内容控件|文本框|修订|批注|嵌入", "原稿里有脚本不能安全排版的对象。", "按 references/special-cases.md 的“输入文件”一节处理，请用户先改成普通文字/嵌入式图片或接受修订。"),
@@ -338,6 +341,10 @@ def from_message(message, root=None, stage="排版"):
         where["location"] = label.group(1)
         hint = _input_hint(root, quoted.group(1)) if quoted else None
         where["edit"] = hint or f"mapping.json 里 id 为 {label.group(1)} 的段落"
+    elif quoted and root is not None:
+        hint = _input_hint(root, quoted.group(1))
+        if hint:
+            where["edit"] = hint
     if quoted:
         where["text"] = quoted.group(1)
     if where:

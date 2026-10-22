@@ -256,10 +256,23 @@ class CLI(unittest.TestCase):
 
         with patch("delivery.prepare", side_effect=prepare):
             code, out, err = self.call("run", "--work", work)
-        self.assertEqual(code, 2)
-        self.assertIn("缺少文档要求的字体（宋体、黑体）", err)
-        self.assertIn("装好字体后仍放不下，才需要问用户缩短", err)
-        self.assertNotIn("同意缩小封面字号", err)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("COVER_FONTS_MISSING", out)
+        self.assertIn("渲染时没有宋体、黑体", out)
+        self.assertIn("run --office none", out)
+        self.assertNotIn("同意缩小封面字号", out)
+        issues = json.loads((work / "issues.json").read_text(encoding="utf-8"))
+        self.assertEqual(issues["issues"][0]["code"], "COVER_FONTS_MISSING")
+
+    def test_cover_too_long_is_a_counted_located_issue(self):
+        from cover_date_audit import CoverOverflow
+
+        work = self.new(JOB_B, CONTENT)
+        with patch("delivery.prepare", side_effect=CoverOverflow("合成：学号挤到第二页")):
+            code, out, err = self.call("run", "--work", work)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("COVER_TOO_LONG", out)
+        self.assertIn("format.cover_fonts", out)
 
     def test_both_content_and_mapping_is_refused(self):
         work = self.new(JOB_B, CONTENT)
@@ -422,6 +435,23 @@ class CLI(unittest.TestCase):
         work, _, code, out, err = self.paper_run("B", edit=body_reference)
         self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
         self.assertIn("参考文献条目应为 reference", out)
+
+    def test_body_paragraph_marked_as_reference_is_refused(self):
+        def body_as_reference(mapping):
+            next(r for r in mapping["paragraphs"] if r["text"] == "这是正文。")["role"] = "reference"
+
+        work, _, code, out, err = self.paper_run("B", edit=body_as_reference)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("在参考文献标题前面", out)
+
+    def test_body_paragraph_marked_as_abstract_is_refused(self):
+        def body_as_abstract(mapping):
+            next(r for r in mapping["paragraphs"] if r["text"] == "正文内容很长，这一段不是标题。")["role"] = "abstract_zh"
+
+        work, _, code, out, err = self.paper_run("B", edit=body_as_abstract)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("“正文内容很长，这一段不是标题。”（role=abstract_zh）", out)
+        self.assertIn("role 可能标错了", out)
 
     def test_tiny_margins_are_flagged_for_the_review(self):
         document = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": CONTENT["blocks"]}

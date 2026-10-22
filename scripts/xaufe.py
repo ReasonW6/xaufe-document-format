@@ -646,24 +646,31 @@ def cmd_run(args):
         except CoverOverflow as exc:
             used = int(E.get_vars(docx.Document(draft)).get("XAUFE_COVER_FIT", "0"))
             if used >= MAX_LEVEL and exc.missing_fonts:
-                raise ValueError(
-                    "封面在这台机器上放不下（" + str(exc) + "），但渲染时缺少文档要求的字体（"
-                    + "、".join(exc.missing_fonts) + "），用的是替代字体（"
-                    + "、".join(exc.rendered_fonts)[:120] + "）。替代字体的字宽和行高不同，"
-                    "封面挤出第一页很可能是字体造成的，不是内容太长。请先装上这些字体，"
-                    "或换装有这些字体的 Word/WPS 渲染（run --office word / wps），再重新 run；"
-                    "装好字体后仍放不下，才需要问用户缩短封面内容。Word 文件本身的字体设置没有变。"
-                ) from exc
+                return _not_accepted(root, F.AcceptanceFailed("封面", [{
+                    "code": "COVER_FONTS_MISSING", "stage": "封面",
+                    "message": "封面在这台机器上放不下：" + str(exc),
+                    "where": {"location": "第 1 页（封面）"},
+                    "expected": "封面信息和完成日期都在第一页",
+                    "actual": "渲染时没有" + "、".join(exc.missing_fonts) + "，用的是替代字体（"
+                              + "、".join(exc.rendered_fonts)[:120] + "）",
+                    "cause": "替代字体的字宽和行高和要求的字体不同，封面被撑出第一页，很可能不是内容太长。Word 文件本身的字体设置没有变。",
+                    "fix": "不要自己装软件或字体，也不要先让用户缩短封面。问用户选一个：① 电脑上有 Word 或 WPS 就用它渲染（run --office word 或 run --office wps）；"
+                           "② 用户自己装上" + "、".join(exc.missing_fonts) + "后再 run；"
+                           "③ 用户同意这次不做实际分页检查，按静态交付（run --office none，会如实告诉用户哪些检查没做）。"
+                           "装好字体或换了软件后仍放不下，才问用户缩短封面内容。",
+                }]))
             if used >= MAX_LEVEL:
                 values = {I.LABELS.get(k, k): str(v) for k, v in state.get("metadata", {}).items() if k != "date" and v}
                 longest = sorted(values.items(), key=lambda kv: -len(kv[1]))[:2]
-                raise ValueError(
-                    "封面已经收紧到最紧，第一页仍放不下（"
-                    + str(exc)
-                    + "）。最长的是"
-                    + "、".join(f"{k}（{len(v)} 字：“{v[:20]}”）" for k, v in longest)
-                    + "。请问用户：缩短这几项，或同意缩小封面字号（format.cover_fonts）。"
-                ) from exc
+                return _not_accepted(root, F.AcceptanceFailed("封面", [{
+                    "code": "COVER_TOO_LONG", "stage": "封面",
+                    "message": "封面已经收紧到最紧，第一页仍放不下：" + str(exc),
+                    "where": {"location": "第 1 页（封面）", "edit": "job.json 的 info"},
+                    "expected": "封面信息和完成日期都在第一页",
+                    "actual": "最长的是" + "、".join(f"{k}（{len(v)} 字：“{v[:20]}”）" for k, v in longest),
+                    "cause": "封面字段太长，空白和行距已经收到最紧。",
+                    "fix": "问用户：缩短这几项，或同意缩小封面字号（job.json 的 format.cover_fonts）。不要自己删改封面内容。",
+                }]))
             level = used + 1
             print(f"封面太长，日期被挤出第一页；自动收紧封面空白（第 {level} 级）后重试……")
     F.record_round(root, [])

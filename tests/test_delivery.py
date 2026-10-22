@@ -627,6 +627,15 @@ class DeliveryGuards(Base):
         self.assertTrue(s.exists())
         self.assertEqual(len(list((self.d / "output").iterdir())), 1)
 
+    def test_notice_names_the_renderer_when_it_is_not_word(self):
+        base = {"review": {"visual_review": "done"}, "validation_scope": "full"}
+        self.assertEqual(D.user_notice(dict(base, renderer="word", has_toc=True)), "")
+        lo = D.user_notice(dict(base, renderer="libreoffice", has_toc=True))
+        self.assertIn("LibreOffice", lo)
+        self.assertIn("更新域", lo)
+        self.assertNotIn("更新域", D.user_notice(dict(base, renderer="wps", has_toc=False)))
+        self.assertIn("WPS", D.user_notice(dict(base, renderer="wps", has_toc=False)))
+
     def test_does_not_delete_unrelated_output_files(self):
         w, src, s, r = self.job()
         folder = self.d / "output"

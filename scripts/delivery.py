@@ -288,7 +288,8 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
     write_json(root / "office-probe.json", probe)
     final = root / "final.docx"
     try:
-        if toc_entries(doc):
+        has_toc = bool(toc_entries(doc))
+        if has_toc:
             update(normalized, final, force=True, intake_path=local_intake)
         else:
             shutil.copy2(normalized, final)
@@ -318,6 +319,7 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
         render_report_sha256=sha(root / "preview/render-report.json"),
         render_audit_sha256=sha(root / "render-audit.json"),
         renderer=_renderer_name(root),
+        has_toc=has_toc,
         pages=preview["pages"],
         warning_codes=sorted({warning_key(w) for w in warnings}),
     )
@@ -358,10 +360,14 @@ def _renderer_unavailable(root, exc, probe, note):
                 "attempts": smoke_exc.failures,
             }
         else:
-            raise ValueError(
-                "办公软件能导出一个测试文档，说明是当前稿件导出失败，不是缺软件。请根据下面的错误修稿后重试："
-                + str(exc)
-            )
+            raise AcceptanceFailed("导出 PDF", [{
+                "code": "EXPORT_FAILED", "stage": "导出 PDF",
+                "message": "办公软件能导出一个测试文档，却导不出这份稿件。",
+                "actual": str(exc)[:400],
+                "cause": "问题在这份稿件本身（常见：超大或损坏的图片、嵌入对象、极长的表格或公式），不是缺软件。",
+                "fix": "按上面的错误找出那一处：先去掉或换掉可疑的图片/对象（content.json 的对应块，或 mapping.json 里那一段）后重新 run；"
+                       "找不到原因就停下来告诉用户哪一步失败了，不要改走静态交付。",
+            }])
     elif any(c.get("automation") for c in installed):
         raise ValueError("还有可自动调用的办公软件没试过；请直接重新运行 run。")
     if installed and (not isinstance(note, str) or not note.strip()):
@@ -414,9 +420,7 @@ def _prepare_static_only(root, s, normalized, intake, evidence):
     compare_originals(root, s, result)
     write_json(root / "final-check.json", result)
     if not result["passed"]:
-        raise ValueError(
-            "没有排版软件也必须先通过静态检查：" + json.dumps(result["errors"], ensure_ascii=False)
-        )
+        raise AcceptanceFailed("静态格式检查", explain(result["errors"], final, root))
     receipt = RF.create_receipt(root, final, evidence, count)
     warnings = [
         w
@@ -712,11 +716,26 @@ def clean(workspace):
 FONT_NOTICE = "检查用的页图是在没有宋体/黑体等原字体的环境里渲染的（用了替代字体），分页和字宽以装有这些字体的 Word 为准，建议在自己电脑上翻看一遍。"
 
 
+RENDERER_NAMES = {"libreoffice": "LibreOffice", "wps": "WPS"}
+
+
+def renderer_notice(s):
+    """Pagination was checked in something other than Word: say which, and how to refresh the TOC."""
+    name = RENDERER_NAMES.get(str(s.get("renderer", "")).lower())
+    if not name:
+        return ""
+    text = f"分页和逐页检查是在 {name} 里做的，Word 的分页可能差一两行"
+    if s.get("has_toc"):
+        return text + "；用 Word 打开后如果目录页码和正文对不上，在目录上右键 →“更新域”→“只更新页码”。"
+    return text + "，建议用 Word 打开翻看一遍。"
+
+
 def user_notice(s):
     review = s["review"]
     if s.get("validation_scope") == "static-only":
         return s["user_notice"]
-    fonts = FONT_NOTICE if any(c.startswith("FONT_SUBSTITUTED") for c in s.get("warning_codes", [])) else ""
+    fonts = renderer_notice(s)
+    fonts += FONT_NOTICE if any(c.startswith("FONT_SUBSTITUTED") for c in s.get("warning_codes", [])) else ""
     manual = s.get("manual")
     if manual:
         fonts += "有一项是手工处理的：" + manual["note"].rstrip("。") + "。"

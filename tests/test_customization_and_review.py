@@ -576,16 +576,15 @@ class WPSTests(Fixture):
 
         source = self.root / "a.docx"
         Document().save(source)
-        fonts = self.root / "Library/Fonts"
-        fonts.mkdir(parents=True)
         with (
             tempfile.TemporaryDirectory(dir=self.root) as tmp,
             patch("office_backend.subprocess.run", side_effect=run),
             patch("office_backend.sys.platform", "darwin"),
-            patch("office_backend.Path.home", return_value=self.root),
+            patch.dict(os.environ, {}, clear=False),
         ):
+            os.environ.pop("SAL_USE_VCLPLUGIN", None)
             B._lo(source, self.root / "a.pdf", {"path": "soffice"}, Path(tmp))
-        self.assertIn(str(fonts), seen["SAL_FONTPATH_PRIVATE"].split(";"))
+        self.assertEqual(seen["SAL_USE_VCLPLUGIN"], "osx")
 
     def test_invalid_pdf_backend_rejected(self):
         source = self.root / "a.docx"

@@ -614,6 +614,16 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         elif body is not None and roles.index("reference_title") <= body:
             at = roles.index("reference_title")
             err("PART_ORDER", f"p{at}: 参考文献标题{quote(at)}排在了第一段正文{quote(body)}（p{body}）前面。")
+        ref_at = roles.index("reference_title") if "reference_title" in roles else len(roles)
+        for i, x in enumerate(roles):
+            if x == "reference" and i < ref_at and doc.paragraphs[i].text.strip():
+                err("ROLE_MISMATCH", f"p{i}: 这一段{quote(i)}标成了参考文献条目（reference），但它在参考文献标题前面：正文段落应为 body。")
+                break
+        late = {"abstract_zh", "abstract_en", "keywords_zh", "keywords_en", "abstract_label_zh", "abstract_label_en"}
+        for i in range(body + 1 if body is not None else len(roles), len(roles)):
+            if roles[i] in late and doc.paragraphs[i].text.strip():
+                err("ROLE_MISMATCH", f"p{i}: 正文开始以后的这一段{quote(i)}标成了{roles[i]}（摘要/关键词）：正文里的段落应为 body 或标题。")
+                break
         if "reference_title" in roles:
             for i in range(roles.index("reference_title") + 1, len(roles)):
                 if roles[i] in ("h1", "h2", "h3", "h4", "preface"):
