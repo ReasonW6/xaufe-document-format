@@ -135,6 +135,11 @@ class CheckEntry(unittest.TestCase):
         book = R.parse_line("McKinney W. Python for Data Analysis[M]. 2nd ed. 2017. ISBN 9781491957660.")
         self.assertEqual((book["title"], book["isbn"], book["year"]), ("Python for Data Analysis", "9781491957660", 2017))
 
+    def test_user_provided_entries_are_still_checked_and_reported(self):
+        r = self.check({**GOOD, "year": 2015, "from_user": True})
+        self.assertEqual((r["status"], r["checked"]), (R.USER, R.FIX))
+        self.assertIn("自动核对结果：信息不一致", r["notes"][0])
+
     def test_retraction_from_crossref_or_openalex_drops(self):
         retracted = {"message": {"updated-by": [{"type": "retraction"}]}}
         self.assertEqual(self.check(GOOD, crossref=retracted)["status"], R.DROP)

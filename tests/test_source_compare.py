@@ -47,10 +47,22 @@ class SourceProseTests(unittest.TestCase):
                 self.assertEqual([d["kind"] for d in found], ["changed"])
                 self.assertNotEqual(found[0]["original"], found[0]["output"])
 
-    def test_spacing_full_width_and_keyword_separators_are_not_differences(self):
-        found = self.diff("English title: Room Reservation\n\nKey words: room reservation; data records\n\n保留**重点**,好。",
-                          "Room Reservation", "Key words：room reservation   data records", "保留 重点，好。")
+    def test_spacing_and_keyword_separators_are_not_differences(self):
+        found = self.diff("English title: Room Reservation\n\nKey words: room reservation; data records\n\n保留**重点**，好。\n\n一段被硬换行\n的中文。",
+                          "Room Reservation", "Key words：room reservation   data records", "保留 重点，好。", "一段被硬换行的中文。")
         self.assertEqual(found, [])
+
+    def test_punctuation_width_and_spaces_between_words_are_differences(self):
+        for changed in ("用于格式校准,不提供结论。", "用于格式校准，不提供结论（示例）.", "字体用TimesNewRoman。"):
+            with self.subTest(changed=changed):
+                original = {"用于格式校准,不提供结论。": "用于格式校准，不提供结论。",
+                            "用于格式校准，不提供结论（示例）.": "用于格式校准，不提供结论（示例）。",
+                            "字体用TimesNewRoman。": "字体用 Times New Roman。"}[changed]
+                found = self.diff(original, changed)
+                self.assertEqual([d["kind"] for d in found], ["changed"], found)
+                self.assertNotEqual(found[0]["original"], found[0]["output"])
+        shown = self.diff("用于格式校准，不提供结论。", "用于格式校准,不提供结论。")[0]
+        self.assertIn("，", shown["original"])  # the user's own text is shown, not a normalised copy
 
     def test_moved_and_duplicated_paragraphs(self):
         text = "甲段落内容。\n\n乙段落内容。\n\n丙段落内容。"

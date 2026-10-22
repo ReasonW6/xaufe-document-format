@@ -354,6 +354,65 @@ class CLI(unittest.TestCase):
         self.assertIn("ROLE_MISMATCH", out)
         self.assertIn(row["id"], out)
 
+    def test_plain_existing_word_numbers_the_body_from_one_after_the_cover(self):
+        from docx.oxml.ns import qn
+
+        doc = Document()
+        for i in range(3):
+            doc.add_paragraph(f"第{i + 1}段合成正文，没有摘要和标题。")
+        source = self.d / "普通文档.docx"
+        doc.save(source)
+        work = self.new({**JOB_B, "format": {"footer_page_numbers": True}})
+        code, out, err = self.call("inspect", "--work", work, "--docx", source)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads((work / "mapping.json").read_text(encoding="utf-8"))["mode"], "document")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        page = Document(work / "final.docx").sections[1]._sectPr.find(qn("w:pgNumType"))
+        self.assertEqual((page.get(qn("w:fmt")), page.get(qn("w:start"))), ("decimal", "1"))
+
+    def test_gbk_job_and_original_still_guard_the_text(self):
+        content = {"mode": "document", "metadata": {"title_zh": "排序算法比较"},
+                   "blocks": [{"type": "paragraph", "text": "本段用于格式校准，不提供结论。"}]}
+        source = self.d / "原稿-gbk.txt"
+        source.write_bytes("本段用于格式校准，不提供结论。".encode("gbk"))
+        work = self.new(JOB_B, content, sources=[source])
+        (work / "job.json").write_bytes(json.dumps(JOB_B, ensure_ascii=False).encode("gbk"))
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        content["blocks"][0]["text"] = "本段用来格式校准，不提供结论。"
+        (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("SOURCE_CHANGED", out)
+
+    def test_heading_marked_as_body_is_refused(self):
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", self.sample_docx())
+        mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
+        row = next(r for r in mapping["paragraphs"] if r["text"] == "（一）背景")
+        row["role"] = "body"
+        (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("ROLE_MISMATCH", out)
+        self.assertIn("像是标题", out)
+
+    def test_reference_entry_marked_as_body_is_refused(self):
+        def body_reference(mapping):
+            next(r for r in mapping["paragraphs"] if r["text"].startswith("[1]"))["role"] = "body"
+
+        work, _, code, out, err = self.paper_run("B", edit=body_reference)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("参考文献条目应为 reference", out)
+
+    def test_tiny_margins_are_flagged_for_the_review(self):
+        document = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": CONTENT["blocks"]}
+        work = self.new({**JOB_B, "format": {"page_twips": {"left": 200}}}, document)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("MARGIN_TOO_SMALL", out)
+
     def test_format_only_keeps_links_and_figures_of_the_original(self):
         source = self.d / "带链接.md"
         source.write_text("# 一、引言\n\n详见[学校官网](https://www.example.edu.cn/a)。", encoding="utf-8")
@@ -529,6 +588,27 @@ class CLI(unittest.TestCase):
         self.assertIn("观点支撑", out)
         self.assertIn("没有提供原文摘录", out)
         self.assertIn("少 5 篇", out)
+
+    def test_user_provided_reference_needs_a_source(self):
+        entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"],
+                 "from_user": True}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "pandas 常用于数据清洗[1]。"})
+        work = self.written(content, [entry])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("user_said", out)
+        result = json.loads((work / "refs-result.json").read_text(encoding="utf-8"))["results"][0]
+        self.assertEqual((result["status"], result["checked"]), ("用户提供", "已验证"))
+        (work / "refs.json").write_text(json.dumps([{**entry, "user_said": "用户：参考文献用这本 pandas 的书"}],
+                                                   ensure_ascii=False), encoding="utf-8")
+        with patch("refcheck.fetch", return_value={"title": "Python for Data Analysis", "publish_date": "2017",
+                                                   "by_statement": "Wes McKinney"}):
+            self.call("refs", "--work", work)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertNotIn("user_said", out + err)
 
     def test_writing_mode_checks_citation_numbers_against_references(self):
         entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",

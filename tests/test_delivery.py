@@ -576,6 +576,32 @@ class DeliveryGuards(Base):
         with self.assertRaisesRegex(ValueError, "第 1 页"):
             self.review(w, r, pages={"1": "请填写：第1页实际看到的情况"})
 
+    def test_pages_may_be_reviewed_in_ranges_but_each_page_once(self):
+        def three_pages(docx, outdir):
+            outdir = Path(outdir)
+            outdir.mkdir(exist_ok=True, parents=True)
+            pages = []
+            for n in (1, 2, 3):
+                png = outdir / f"page-00{n}.png"
+                png.write_bytes(b"unit-test-only-not-real-render-%d" % n)
+                pages.append({"page": n, "png": png.name, "png_sha256": sha(png)})
+            result = {"source_sha256": sha(docx), "pages": pages, "visual_review": "pending"}
+            D.write_json(outdir / "render-report.json", result)
+            return result
+
+        source, state = self.build(paper=False, cover=False)
+        info = D.create(self.d / "output/ranges.docx", parent=self.d)
+        with patch("delivery.render", side_effect=three_pages):
+            r = D.prepare(info["workspace"], source, state)
+        w = Path(info["workspace"])
+        with self.assertRaisesRegex(ValueError, "写了两次"):
+            self.review(w, r, pages={"1": "单元测试合成记录：封面", "1-3": "单元测试合成记录：正文"})
+        with self.assertRaisesRegex(ValueError, "还缺第 3 页"):
+            self.review(w, r, pages={"1-2": "单元测试合成记录：前两页"})
+        with self.assertRaisesRegex(ValueError, "不是页码"):
+            self.review(w, r, pages={"3-1": "单元测试合成记录：倒着写"})
+        self.review(w, r, pages={"1": "单元测试合成记录：封面", "2-3": "单元测试合成记录：正文两页无异常"})
+
     def test_unknown_review_key_rejected(self):
         w, src, s, r = self.job()
         with self.assertRaises(ValueError):

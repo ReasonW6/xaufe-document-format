@@ -19,6 +19,7 @@ from pathlib import Path
 import difflib, re, unicodedata
 from docx import Document
 from docx.oxml.ns import qn
+from textio import read_text_any
 
 GENERATED_ROLES = {
     "toc_title", "toc1", "toc2", "toc3", "toc4", "abstract_label_zh", "abstract_label_en",
@@ -33,11 +34,23 @@ OBJECT_LABELS = (("images", "图片"), ("tables", "表格"), ("equations", "公�
 
 
 def norm(text):
-    """Same characters, ignoring whitespace and full-/half-width forms; keyword separators unified."""
-    text = NUMBER.sub("", unicodedata.normalize("NFKC", str(text or "")))
+    """The text to keep, character for character (full-/half-width punctuation counts).
+
+    Only layout noise is ignored: the reference number the template prints, line
+    breaks and runs of spaces, and a space next to a Chinese character or a
+    punctuation mark (hard-wrapped .txt lines).  A space between two Latin letters
+    or digits is text ("Times New Roman").  Keyword lines compare their words only,
+    because the template sets the separators.
+    """
+    text = NUMBER.sub("", unicodedata.normalize("NFC", str(text or "")))
     if KEYWORDS.match(text):
-        text = re.sub(r"[\s;,、]+", "", text.lower())
-    return re.sub(r"\s+", "", text)
+        return re.sub(r"[\s;,、；，]+", "", text.lower().replace("：", ":"))
+    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"(?<![A-Za-z0-9]) | (?![A-Za-z0-9])", "", text)
+
+
+def _plain(text):
+    return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
 def _text(element):
@@ -74,7 +87,7 @@ def fragments(path):
         return result
     if path.suffix.lower() not in (".md", ".txt"):
         return None
-    text = path.read_text(encoding="utf-8-sig")
+    text = read_text_any(path)
     result, lines, start, fenced = [], [], 1, False
 
     def flush():
@@ -143,7 +156,7 @@ def objects(path, start=0):
         }
     if path.suffix.lower() != ".md":
         return None
-    text = re.sub(r"```.*?```|~~~.*?~~~", "", path.read_text(encoding="utf-8-sig"), flags=re.S)
+    text = re.sub(r"```.*?```|~~~.*?~~~", "", read_text_any(path), flags=re.S)
     tables, rows, cols = [], 0, 0
     for line in text.splitlines() + [""]:
         if line.strip().startswith("|"):
@@ -169,6 +182,25 @@ def body_key(docx):
         _text(p) for p in doc.element.body.xpath(".//w:p")
         if not set(p.xpath("./w:pPr/w:pStyle/@w:val")) & toc
     ))
+
+
+def first_text_difference(before, after):
+    """(location in ``after``, was, now) of the first paragraph whose text differs; None when equal."""
+    def paragraphs(docx):
+        doc = Document(docx)
+        toc = {s.style_id for s in doc.styles if s.name.lower().startswith("toc ")}
+        return [(f"第 {i + 1} 段", _plain(_text(p))) for i, p in enumerate(doc.element.body.xpath(".//w:p"))
+                if _text(p).strip() and not set(p.xpath("./w:pPr/w:pStyle/@w:val")) & toc]
+
+    a, b = paragraphs(before), paragraphs(after)
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, [norm(t) for _, t in a], [norm(t) for _, t in b],
+                                                      autojunk=False).get_opcodes():
+        if op != "equal":
+            was = a[i1][1] if i1 < i2 else ""
+            now = b[j1][1] if j1 < j2 else ""
+            where = b[j1][0] if j1 < j2 else (b[j1 - 1][0] + " 之后" if j1 else "开头")
+            return (where,) + (_span(was, now) if was and now else (was, now))
+    return None
 
 
 def _after_cover(doc):
@@ -271,7 +303,7 @@ def compare(sources, docx, *, approved=(), generated=(), replaced=None, old_toc=
         if _covered(before, approved) and _covered(after, approved) and approved:
             continue
         if i is not None and j is not None:
-            was, now = _span(norm(before), norm(after))
+            was, now = _span(_plain(before), _plain(after))
             differences.append({"kind": "changed", "location": f"{original[i][0]} → {target[j][0]}",
                                 "original": was, "output": now})
         elif i is not None:
@@ -296,5 +328,5 @@ def compare(sources, docx, *, approved=(), generated=(), replaced=None, old_toc=
     return {
         "sources": reports,
         "differences": differences,
-        "notice": "逐段按顺序比对文字（只忽略空格和全角/半角写法），并核对图片、表格、公式、链接的数量。",
+        "notice": "逐段按顺序逐字比对文字（全角/半角标点也算；只忽略换行和中文旁边的空格），并核对图片、表格、公式、链接的数量。",
     }

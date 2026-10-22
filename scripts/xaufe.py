@@ -37,7 +37,7 @@ def _read(path, what):
     path = Path(path)
     if not path.is_file():
         raise ValueError(f"找不到 {what}：{path}")
-    from engine import read_text_any
+    from textio import read_text_any
 
     try:
         return json.loads(read_text_any(path))
@@ -193,6 +193,10 @@ def _writing_problems(root, content):
             r = results.get(_ref_key(text))
             if r is None or r["status"] not in (R.PASS, R.PENDING, R.USER):
                 problems.append(f"参考文献第 {index} 条不在 refs 核对可用的条目里（要用 refs.json 里的 text 原样写）：{str(text)[:40]}")
+            elif r["status"] == R.USER and not r.get("provenance"):
+                problems.append(
+                    f"参考文献第 {index} 条标成用户提供（from_user），但原稿里没有这一条，refs.json 也没写 user_said（用户给它时的原话）："
+                    "确实是用户给的就补上 user_said 后重新 refs；不是就去掉 from_user 正常核对。" + str(text)[:30])
             elif r.get("unreachable") and not accepted:
                 problems.append(
                     f"参考文献第 {index} 条因为连不上核对服务根本没核对：联网后重新运行 refs；确实没法联网，"
@@ -257,6 +261,28 @@ def _original_reference_report(root):
     return "\n".join(lines)
 
 
+def _original_text(root):
+    """All text of the registered originals, normalised for "is this line in there" checks."""
+    import delivery as D
+    from source_compare import fragments, norm
+
+    texts = []
+    for item in D.load(root)[1].get("source_documents", []):
+        found = fragments(item["path"]) if Path(item["path"]).is_file() else None
+        texts += [t for _, t, _ in found or []]
+    return norm(" ".join(texts))
+
+
+def _user_provenance(entry, originals):
+    """Where a from_user reference came from: the user's own words, or a registered original."""
+    from source_compare import norm
+
+    if isinstance(entry.get("user_said"), str) and entry["user_said"].strip():
+        return "用户原话"
+    line = norm(_readable(entry.get("text", "")))
+    return "原稿" if len(line) >= 8 and line in originals else None
+
+
 def _reference_checklist(root):
     """Ready-made table for the reply to the user (task = write)."""
     import refcheck as R
@@ -273,7 +299,9 @@ def _reference_checklist(root):
         lines += ["| 序号 | 文献 | 真实性 | 支撑的论点 | 观点支撑 |", "|---|---|---|---|---|"]
         for index, text in enumerate(references, 1):
             r = by_key.get(_ref_key(text), {})
-            status = {R.PASS: "已验证", R.USER: "你提供的（未自动核实）"}.get(r.get("status"))
+            status = {R.PASS: "已验证"}.get(r.get("status"))
+            if r.get("status") == R.USER:
+                status = f"你提供的（自动核对：{r.get('checked', '未核对')}）"
             if status is None:
                 status = "无法验证：" + R.plain_reason(r)[:40]
             supports = r.get("supports") or ""
@@ -618,10 +646,14 @@ def cmd_run(args):
         except CoverOverflow as exc:
             used = int(E.get_vars(docx.Document(draft)).get("XAUFE_COVER_FIT", "0"))
             if used >= MAX_LEVEL:
+                values = {I.LABELS.get(k, k): str(v) for k, v in state.get("metadata", {}).items() if k != "date" and v}
+                longest = sorted(values.items(), key=lambda kv: -len(kv[1]))[:2]
                 raise ValueError(
                     "封面已经收紧到最紧，第一页仍放不下（"
                     + str(exc)
-                    + "）。请问用户：缩短题目、课程名或过长的封面项，或同意缩小封面字号。"
+                    + "）。最长的是"
+                    + "、".join(f"{k}（{len(v)} 字：“{v[:20]}”）" for k, v in longest)
+                    + "。请问用户：缩短这几项，或同意缩小封面字号（format.cover_fonts）。"
                 ) from exc
             level = used + 1
             print(f"封面太长，日期被挤出第一页；自动收紧封面空白（第 {level} 级）后重试……")
@@ -710,10 +742,16 @@ def cmd_refs(args):
     if not isinstance(entries, list):
         raise ValueError("refs.json 应该是一个列表：[{...}, {...}]，写法见 references/citations.md")
     results = R.check_all(entries)
+    originals = None
     for result, entry in zip(results, entries):
         if isinstance(entry, dict):
             result["supports"] = entry.get("supports", "")
             result["relevance"] = entry.get("relevance", "")
+            if entry.get("from_user"):
+                originals = _original_text(root) if originals is None else originals
+                result["provenance"] = _user_provenance(entry, originals)
+                if not result["provenance"]:
+                    result["notes"].append("标了 from_user，但登记的原稿里找不到这一条，也没写 user_said（用户给这条文献时的原话）")
     _write(
         root / "refs-result.json",
         {"refs_sha256": hashlib.sha256((root / "refs.json").read_bytes()).hexdigest(), "min": args.min, "results": results},

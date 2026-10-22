@@ -92,7 +92,10 @@ def line_check(p, label, err):
 
 CAPTION = re.compile(r"^\s*(?:图|表|续表|Figure|Fig\.?|Table)\s*[\dA-Za-z一二三四五六七八九十]", re.I)
 ROLE_NAMES = {"spacer": "空行", "abstract_spacer": "空行", "figure": "图片段", "caption": "图表标题",
-              "h1": "一级标题", "h2": "二级标题", "h3": "三级标题", "h4": "四级标题", "preface": "序言标题"}
+              "h1": "一级标题", "h2": "二级标题", "h3": "三级标题", "h4": "四级标题", "preface": "序言标题", "body": "正文"}
+
+
+HEADING_LIKE = re.compile(r"^(?:[一二三四五六七八九十]+、|[（(][一二三四五六七八九十]+[）)]|第[一二三四五六七八九十\d]+[章节])\s*\S")
 
 
 def role_check(p, role, label, visible, err):
@@ -108,6 +111,8 @@ def role_check(p, role, label, visible, err):
         problem = "图表标题应以“图1”“表2”“Figure 3”等开头"
     elif role in ("h1", "h2", "h3", "h4", "preface") and (len(text) > 80 or re.search(r"[。；;]$", text)):
         problem = "标题太长或以句号/分号结尾，像是一段正文"
+    elif role == "body" and len(text) <= 30 and HEADING_LIKE.match(text) and not re.search(r"[。；;，,：:]$", text):
+        problem = "它是“一、”“（一）”“第一章”这样开头的短行，像是标题（标成正文会从目录里漏掉）"
     if problem:
         err("ROLE_MISMATCH", f"{label}: 这一段标成了{ROLE_NAMES[role]}（{role}），但{problem}：“{text[:20]}”。")
 
@@ -151,6 +156,20 @@ def numbering_check(doc, reverse, err):
             )
             err("PAGE_NUMBERING", f"第{index}节（{what}）页码格式={show(fmt, start)}，应为{show(*want)}。")
         roles = set()
+
+
+def plain_numbering_check(doc, has_cover, err):
+    """Without paper structure: arabic from 1 after the cover, then continuing (no restarts)."""
+    for i, section in enumerate(doc.sections):
+        if has_cover and i == 0:
+            continue
+        page = section._sectPr.find(qn("w:pgNumType"))
+        fmt = (page.get(qn("w:fmt")) if page is not None else None) or "decimal"
+        start = page.get(qn("w:start")) if page is not None else None
+        want = ("decimal", "1" if i == (1 if has_cover else 0) else None)
+        if (fmt, start) != want:
+            err("PAGE_NUMBERING", f"第{i + 1}节页码格式={fmt}{'从' + start + '开始' if start else '接着上一节'}，"
+                f"应为阿拉伯数字{'从1开始' if want[1] else '接着上一节'}（{'封面后的第一节' if want[1] else '正文中途不重新编号'}）。")
 
 
 def _check(path, final=False, intake_path=None, toc_report=None, validation_scope="full"):
@@ -236,6 +255,9 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             actual = getattr(s, attr)
             if actual is None or actual.twips != spec["page_twips"][key]:
                 err("PAGE", f"第{i+1}节 {attr} 与本次有效格式（默认值加用户覆盖）不一致。")
+            elif i == 0 and key in ("top", "bottom", "left", "right") and actual.twips < 284:
+                warn("MARGIN_TOO_SMALL", f"页边距 {key} 只有 {actual.twips / 567:.2f} 厘米：多数打印机印不到离纸边 0.5 厘米以内的地方，"
+                     "边上的文字可能被裁掉。是用户要求的就在回复里提醒用户；不是就删掉 job.json 的 page_twips 这一项。")
         for variant, f in [
             ("default", s.footer),
             ("first", s.first_page_footer),
@@ -548,6 +570,11 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
 
     audit_toc(doc, spec, err)
     table_count = tables_check(doc, E.WIDTH, err)
+    if mode == "document":
+        if any(reverse.get(p.style.name) in ("toc_title", "abstract_label_zh", "abstract_label_en") for p in doc.paragraphs):
+            numbering_check(doc, reverse, err)  # an earlier output of this skill, revised
+        else:
+            plain_numbering_check(doc, has_cover, err)
     if mode == "paper":
         front = []
         for part in spec["parts"]:
@@ -587,6 +614,13 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         elif body is not None and roles.index("reference_title") <= body:
             at = roles.index("reference_title")
             err("PART_ORDER", f"p{at}: 参考文献标题{quote(at)}排在了第一段正文{quote(body)}（p{body}）前面。")
+        if "reference_title" in roles:
+            for i in range(roles.index("reference_title") + 1, len(roles)):
+                if roles[i] in ("h1", "h2", "h3", "h4", "preface"):
+                    break
+                if roles[i] == "body" and doc.paragraphs[i].text.strip():
+                    err("ROLE_MISMATCH", f"p{i}: 参考文献标题后面的这一段标成了正文（body）{quote(i)}：参考文献条目应为 reference。")
+                    break
         numbering_check(doc, reverse, err)
         minimum = (5 if spec["english_abstract"] else 4) - (0 if has_cover else 1)
         if len(doc.sections) < minimum:

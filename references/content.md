@@ -120,7 +120,7 @@ WORK 里只能有其中一个文件。
 | `old_toc` | 原稿里的旧目录，由新目录代替（inspect 自动标，不要用在别的段落） |
 
 其他项：
-- `mode`：inspect 自动判断。`"paper"`＝原稿有摘要和标题，按完整论文结构排：自动生成目录、摘要单独成页、分节设页码（原稿里的旧目录会标成 `old_toc`，由新目录代替）。`"document"`＝普通文档，只排样式，不加目录。
+- `mode`：inspect 自动判断。`"paper"`＝有摘要和标题，按完整论文排：生成目录（旧目录标成 `old_toc`）、摘要单独成页、分节设页码。`"document"`＝普通文档，只排样式，不加目录。
 - `add`：只在 `mode` 为 `"paper"`、所选版式要英文摘要、原稿没有、**用户同意由你翻译**时使用，写法：
   ```json
   "add": {"title_en": "英文题目", "abstract_en": "英文摘要正文", "keywords_en": ["keyword one", "keyword two"]}

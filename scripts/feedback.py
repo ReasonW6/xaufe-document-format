@@ -8,6 +8,7 @@ expected and what was found, the likely cause, and a fix that edits the inputs
 from __future__ import annotations
 import json, re
 from pathlib import Path
+from textio import read_json
 
 MAX_STALLED = 3  # failed runs in a row that fixed nothing: stop and report
 MAX_ROUNDS = 8  # failed runs in a row in total, even while some issues still get fixed
@@ -91,8 +92,8 @@ HINTS = {
     "CELL_IMAGE_WIDTH": ("表格里的图片比单元格宽。", "请用户把这张图改小，或从表格里移出来。"),
     "CELL_IMAGE_SPACING": ("表格里的图片留白会撑出边界。", "确认 format_tables 是 true 后重新 run。"),
     "IMAGE_WIDTH": ("图片比版心宽。", "content.json 的图片会自动缩放；已有 Word 时确认这一段 role 是 figure。"),
-    "LINE_TOO_TIGHT": ("固定行距比字号还小，打印出来上下两行会叠在一起。", "改 job.json 里这一角色的 styles：把 line 调到不小于字号（固定行距 line = 磅数×20，例如五号 10.5 磅至少 210），或改用 \"line_rule\": \"auto\"；用户确实要这么挤就先告诉用户会重叠。"),
-    "PAGE_NUMBERING": ("某一节的页码格式或起始页和规范不一致（摘要、目录用罗马数字从 I 开始；正文用阿拉伯数字从 1 开始，参考文献接着正文）。", "重新 run（脚本会按规范重设）；已有 Word 时确认 mapping 的 mode 是 paper，摘要、目录、正文的 role 标对。"),
+    "LINE_TOO_TIGHT": ("固定行距比字号还小，打印出来上下两行会叠在一起。", "改 job.json 里这一角色的 styles：把 line 调到不小于字号（固定行距 line = 磅数×20，例如五号 10.5 磅至少 210），或改用 \"line_rule\": \"auto\"。这是会让文字重叠的缺陷，不能交付：用户坚持要这么挤，就告诉用户会重叠、请用户换一种要求（比如缩小字号）。"),
+    "PAGE_NUMBERING": ("某一节的页码格式或起始页和规范不一致（完整论文：摘要、目录用罗马数字从 I 开始，正文用阿拉伯数字从 1 开始、一直接到最后；普通文档：封面后从 1 开始、一直接到最后）。", "重新 run，脚本会按规范重设各节页码；仍失败说明成品被改动过或 mapping 的 mode/role 不对：完整论文核对摘要、目录、正文的 role，普通文档不用改 mode。"),
     "OBJECT_HEIGHT": ("大图片放在固定行距的段落里，会被裁掉。", "把这一段的 role 改成 figure。"),
     "PART_MISSING": ("完整论文结构缺了一部分（摘要、目录、正文或参考文献）。", "写作时补上缺的部分；只排版就把 mode 改成 \"document\"，不要替用户补写。"),
     "PART_ORDER": ("各部分顺序和版式不一致：多半是某一段的角色标错了（摘要或目录里的段落标成了正文/标题，或反过来），也可能是 format.parts 写错。", "看“位置”里那一段：已有 Word 就改 mapping.json 里这一段的 role；content.json 就检查 blocks 的顺序和 type。角色都对时，删掉 format.parts 用默认顺序，或按用户要求核对它的写法。"),
@@ -132,7 +133,7 @@ HINTS = {
     "TEXT_OVER_IMAGE": ("文字压在图片上：常见于原稿的浮动图片、环绕方式，或图片所在段落是固定行距。", "已有 Word 时把这张图所在段落的 role 设为 figure；仍压字就请用户把图片改成“嵌入型”后再给。"),
     "HEADER_OVERFLOW": ("页眉文字太长，折成多行后伸出了上边距，把正文往下挤。A 版页眉右侧默认放论文题目，长题目最容易这样。", "在 job.json 的 format 里给页眉写一个短的题目：\"header\": {\"right\": \"简短题目\"}（先问用户用哪个简称；左侧太长就改 left）；或经用户同意缩小页眉字号（styles.header.size）。"),
     "TABLE_OUTSIDE_MARGINS": ("表格或图形伸出了版心。", "已有 Word 时确认 format_tables 是 true；列太多就请用户拆表；浮动图形请用户改成嵌入式。"),
-    "BLANK_PAGE": ("出现了多余的空白页：常见于连续分页符、段落自带的“段前分页”，或分节后又手动分页。", "删掉 content.json 里多余的 page_break；已有 Word 时把那段空段落的 role 设为 spacer 或经用户同意设为 delete。"),
+    "BLANK_PAGE": ("出现了多余的空白页：常见于连续分页符、段落自带的“段前分页”，或分节后又手动分页。", "content.json：删掉多余的 page_break 块。已有 Word：在 mapping.json 里把位置里那些只有分页符的空段落 role 设为 delete（空段落没有文字，删掉不算改原文；设为 spacer 不会去掉分页）。"),
     "HEADER_MISSING": ("应有页眉的页面没有页眉。", "核对 job.json 的 format.header 和封面信息（A 版页眉要 major、title_zh）。"),
     "HEADER_UNEXPECTED": ("不该有页眉的页面出现了页眉文字。", "B 版默认无页眉；检查原稿是否带页眉，以及 format.header 写法。"),
     "COVER_HEADER_VISIBLE": ("封面上出现了页眉。", "重新 run；原稿有旧封面时用 mapping 的 replace_cover_before 替换。"),
@@ -140,7 +141,7 @@ HINTS = {
     "PAGE_NUMBER_MISSING": ("用户要页码，但渲染结果里页脚没有页码。", "确认 job.json 写了 \"footer_page_numbers\": true；换办公软件再 run 一次排除渲染差异。"),
     "FOOTER_UNEXPECTED": ("页脚应该空白，渲染结果里有文字。", "用户没要页码时删掉 footer_page_numbers；原稿自带页脚文字时请用户删掉。"),
     "TEXT_OVERLAP": ("两行文字在页面上叠在一起（上下两行的基线距离不到字号的 0.9 倍）：常见于过小的固定行距、文字位置被提升或降低、负的段前段后，或浮动对象。", "打开这一页的页图看是哪两行；检查 job.json 里这类段落的 line/line_rule（固定行距磅数×20 不能小于字号×20）和 size；原稿里文字设了“位置提升/降低”或有浮动对象，就把那一段 role 重新标对后再 run，仍重叠请用户在 Word 里取消这些设置。"),
-    "PAGE_NUMBER_SEQUENCE": ("页码跳号、重复，或在不该重新开始的地方重新从 1 开始：通常是原稿自带的分节页码设置。", "已有 Word 时确认 mapping 的 mode 是 paper（脚本会重设各节页码）；document 模式下原稿分节自带的页码重启会保留，请用户确认要不要连续编号。"),
+    "PAGE_NUMBER_SEQUENCE": ("页码跳号、重复，或在不该重新开始的地方重新从 1 开始。脚本会把各节页码设成连续的，所以多半是页脚里另有手写的页码文字，或某一节的页脚不是页码域。", "看这一页的页图和 Word 页脚：原稿页脚里有手打的数字就请用户删掉（只排版时先问）；再重新 run。仍不对就把页码问题和页图如实告诉用户。"),
     "FONT_SUBSTITUTED": ("渲染机器上没有文档要求的字体。", "不用改文档。在 review.json 的 warnings 里写明页图是用替代字体看的，交付时告诉用户分页以装有这些字体的 Word 为准。"),
 }
 
@@ -178,7 +179,7 @@ def _input_hint(root, text):
     content, mapping = Path(root) / "content.json", Path(root) / "mapping.json"
     try:
         if content.is_file():
-            data = json.loads(content.read_text(encoding="utf-8-sig"))
+            data = read_json(content)
             for i, block in enumerate(data.get("blocks", [])):
                 body = block.get("text") or "".join(r.get("text", "") for r in block.get("runs", []))
                 body += " ".join(str(c) for row in [block.get("header") or []] + (block.get("rows") or []) for c in row)
@@ -188,7 +189,7 @@ def _input_hint(root, text):
                 if key in re.sub(r"\s+", "", json.dumps(data.get(field, ""), ensure_ascii=False)):
                     return f"content.json 的 {field}"
         elif mapping.is_file():
-            data = json.loads(mapping.read_text(encoding="utf-8-sig"))
+            data = read_json(mapping)
             for row in data.get("paragraphs", []):
                 if key[:8] and re.sub(r"\s+", "", row.get("text", "")).startswith(key[:8]):
                     return f"mapping.json 里 id 为 {row.get('id')} 的段落（当前 role：{row.get('role')}）"
@@ -231,21 +232,70 @@ def explain(errors, docx=None, root=None, stage="格式检查"):
     return issues
 
 
-def from_render(audit, root=None):
+def _mapping_gap(root, previous):
+    """mapping.json ids of the empty paragraphs right after the text ``previous`` (existing Word)."""
+    path = Path(root) / "mapping.json" if root else None
+    if not path or not path.is_file():
+        return []
+    try:
+        rows = read_json(path).get("paragraphs", [])
+    except (OSError, ValueError):
+        return []
+    key = re.sub(r"\s+", "", previous)[-12:]
+    start = next((i for i, r in enumerate(rows) if key and key in re.sub(r"\s+", "", r.get("text", ""))), None)
+    found = []
+    for r in rows[start + 1 : start + 8] if start is not None else []:
+        if r.get("text", "").strip():
+            break
+        found.append(str(r.get("id")))
+    return found
+
+
+def _page_breaks(docx, previous):
+    """Output paragraphs that only carry a page break (or start a page) right after the text ``previous``."""
+    from docx import Document
+
+    try:
+        paragraphs = Document(docx).paragraphs
+    except Exception:
+        return []
+    key = re.sub(r"\s+", "", previous)[-12:]
+    start = next((i for i, p in enumerate(paragraphs) if key and key in re.sub(r"\s+", "", p.text)), None)
+    if start is None:
+        return []
+    found = []
+    for i in range(start + 1, min(start + 8, len(paragraphs))):
+        p = paragraphs[i]
+        if p.text.strip():
+            break
+        if p._p.xpath('.//w:br[@w:type="page"]|./w:pPr/w:pageBreakBefore|./w:pPr/w:sectPr'):
+            found.append(f"p{i}")
+    return found
+
+
+def from_render(audit, root=None, docx=None):
     """Rendered-page audit errors -> actionable issues (they already carry page/expected/actual)."""
     issues = []
     for e in audit.get("errors", []):
         cause, fix = HINTS.get(e["code"], ("", ""))
         item = {"code": e["code"], "stage": "渲染后版面检查", "message": e["message"], "cause": cause, "fix": fix,
                 "where": {"page": e.get("page")}}
+        quoted = re.search(r"“(.+)”", e["where"]) if e.get("where") else None
         if e.get("where"):
             item["where"]["text"] = e["where"]
-            quoted = re.search(r"“(.+)”", e["where"])
             source = _input_hint(root, quoted.group(1)[-12:] if quoted else e["where"])
             if source:
                 item["where"]["edit"] = source
         if e.get("bbox_pt"):
             item["where"]["bbox_pt"] = e["bbox_pt"]
+        if e["code"] == "BLANK_PAGE" and docx and quoted:
+            breaks = _page_breaks(docx, quoted.group(1))
+            rows = _mapping_gap(root, quoted.group(1))
+            if breaks:
+                item["where"]["location"] = "成品 " + "、".join(breaks)
+                item["cause"] = f"成品里 {'、'.join(breaks)} 是只有分页符（或分节符）的空段落，连在一起就多出一页空白。"
+            if rows:
+                item["where"]["edit"] = f"mapping.json 里 id 为 {'、'.join(rows)} 的空段落"
         for key in ("expected", "actual"):
             if key in e:
                 item[key] = e[key]
@@ -340,7 +390,7 @@ def _span(values, label, unit=""):
 
 def render_text(issues, limit=12):
     """Readable summary for the agent; the full list is in WORK/issues.json."""
-    lines = []
+    lines, fixes = [], {}
     issues = group(issues)
     for n, item in enumerate(issues[:limit], 1):
         where = item.get("where") or {}
@@ -358,6 +408,11 @@ def render_text(issues, limit=12):
             lines.append(f"   要改的输入：{where['edit']}")
         if "expected" in item or "actual" in item:
             lines.append(f"   实际：{item.get('actual', '（没有）')}；应为：{item.get('expected', '（不应有）')}")
+        same = fixes.get((item.get("cause"), item.get("fix")))
+        if same:
+            lines.append(f"   可能原因和怎么改：同第 {same} 条。")
+            continue
+        fixes[(item.get("cause"), item.get("fix"))] = n
         if item.get("cause"):
             lines.append(f"   可能原因：{item['cause']}")
         if item.get("fix"):

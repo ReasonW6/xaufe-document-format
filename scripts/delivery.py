@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib, json, os, re, shutil, tempfile, uuid
 from pathlib import Path
 from docx import Document
+from textio import read_text_any
 import engine as E
 from intake import require
 from check_format import check
@@ -36,7 +37,7 @@ def sha(path):
 
 
 def read_json(path):
-    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    return json.loads(read_text_any(path))
 
 
 def write_json(path, data):
@@ -56,6 +57,8 @@ def create(destination, *, parent=None, sources=()):
         path = Path(value).expanduser().resolve()
         if not path.is_file():
             raise ValueError("原始材料不是可读取的文件：" + str(path))
+        if path.suffix.lower() in (".txt", ".md"):
+            read_text_any(path)  # unreadable text must stop here, not after a full layout run
         if str(path) not in [x["path"] for x in originals]:
             originals.append({"path": str(path), "sha256": sha(path), "role": "original"})
     if os.name == "nt":
@@ -104,10 +107,17 @@ def load(root):
 
 
 def _job(root):
-    try:
-        return read_json(Path(root) / "job.json")
-    except (OSError, ValueError):
+    """job.json as the agent wrote it; an unreadable one stops delivery instead of skipping checks."""
+    path = Path(root) / "job.json"
+    if not path.is_file():
         return {}
+    try:
+        job = read_json(path)
+    except ValueError as exc:
+        raise ValueError(f"job.json 读不出来（{exc}），请用 UTF-8 重新保存后重新 run。") from exc
+    if not isinstance(job, dict):
+        raise ValueError("job.json 必须是一个 JSON 对象。")
+    return job
 
 
 def compare_originals(root, state, result):
@@ -291,7 +301,7 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
         rendered = audit_rendered(final, root / "preview" / "final.pdf")
         write_json(root / "render-audit.json", rendered)
         if not rendered["passed"]:
-            raise AcceptanceFailed("渲染后版面检查", from_render(rendered, root))
+            raise AcceptanceFailed("渲染后版面检查", from_render(rendered, root, final))
     except OfficeUnavailable as exc:
         evidence = _renderer_unavailable(root, exc, probe, unavailable_note)
         return _prepare_static_only(root, s, normalized, local_intake, evidence)
@@ -528,7 +538,7 @@ def adopt(workspace, docx, note):
     as long as it is a change of how text looks (``ADOPTABLE``); any other new
     static error is refused like a failed ``run``.
     """
-    from source_compare import body_key
+    from source_compare import body_key, first_text_difference
 
     root, s = load(workspace)
     if s.get("stage") not in ("awaiting_review", "ready") or s.get("validation_scope") != "full":
@@ -542,10 +552,13 @@ def adopt(workspace, docx, note):
     if not base.is_file():
         shutil.copy2(root / "final.docx", base)
     if body_key(source) != body_key(base):
+        where, was, now = first_text_difference(base, source) or ("", "", "")
         raise AcceptanceFailed("手工修改", [{
             "code": "MANUAL_TEXT_CHANGED", "stage": "手工修改", "message": "手工处理的文件和脚本生成的成品文字不一样。",
+            "where": {"location": f"手工文件的{where}"} if where else {},
+            "expected": was or "（不应有）", "actual": now or "（没有）",
             "cause": "手工处理只能改格式，不能增删改文字（目录页码除外）。",
-            "fix": "从 WORK 里的 generated.docx 重新复制一份，只改用户要求的那一项格式；要改文字就改 content.json / mapping.json 后重新 run。",
+            "fix": "把这一处改回去，或从 WORK 里的 generated.docx 重新复制一份，只改用户要求的那一项格式；要改文字就改 content.json / mapping.json 后重新 run。",
         }])
     intake = root / "active-intake.json"
     known = {(e["code"], e["message"]) for e in check(base, final=True, intake_path=intake)["errors"]}
@@ -561,7 +574,9 @@ def adopt(workspace, docx, note):
             issues = explain(blocking, final, root, stage="手工修改")
             for item in issues:
                 item["cause"] = ("手工处理只能改文字的外观（字体、字号、颜色、加粗、对齐、缩进、间距等）；"
-                                 "这一项是会让版面出错的问题，adopt 不放行。" + (" " + item["cause"] if item["cause"] else ""))
+                                 "这一项是会让版面出错的问题，adopt 不放行。")
+                item["fix"] = ("在手工处理的副本里把这一处改回去（位置见上），或换一种不引起这个问题的改法，再重新 adopt；"
+                               "做不到就告诉用户这项要求会带来什么问题，问用户怎么取舍。")
             raise AcceptanceFailed("手工修改", issues)
         explained = explain(deviations, final, root, stage="手工修改")
         try:
@@ -642,16 +657,25 @@ def attest(workspace, review):
             raise ValueError("这次没有生成页图，pages 必须为空，不能写看图结果。")
         visual = "skipped_no_renderer"
     elif vision:
-        expected = {str(p["page"]) for p in s["pages"]}
-        missing = sorted(expected - set(pages), key=int)
+        expected = {p["page"] for p in s["pages"]}
+        covered = {}
+        for key in pages:
+            m = re.fullmatch(r"\s*(\d+)\s*(?:[-–~]\s*(\d+)\s*)?", str(key))
+            if not m or (m.group(2) and int(m.group(2)) <= int(m.group(1))):
+                raise ValueError(f'review.json 的 pages 里“{key}”不是页码：写 "3" 或连续几页 "5-12"。')
+            for n in range(int(m.group(1)), int(m.group(2) or m.group(1)) + 1):
+                if n not in expected:
+                    raise ValueError(f"pages 里有不存在的页码：{n}（“{key}”）。")
+                if n in covered:
+                    raise ValueError(f"第 {n} 页在 pages 里写了两次（“{covered[n]}”和“{key}”）。")
+                covered[n] = key
+        missing = sorted(expected - set(covered))
         if missing:
-            raise ValueError("每一页都要打开看并写一句观察，还缺第 " + "、".join(missing) + " 页。")
-        extra = set(pages) - expected
-        if extra:
-            raise ValueError("pages 里有不存在的页码：" + "、".join(sorted(extra)))
-        weak = sorted((k for k, v in pages.items() if not _real_text(v)), key=int)
+            raise ValueError("每一页都要打开看并写观察（连续几页情况相同可以合写，如 \"5-12\"），还缺第 "
+                             + "、".join(map(str, missing)) + " 页。")
+        weak = [k for k, v in pages.items() if not _real_text(v)]
         if weak:
-            raise ValueError("这些页没有写具体看到的情况：第 " + "、".join(weak) + " 页。")
+            raise ValueError("这些页没有写具体看到的情况：" + "、".join(f"第 {k} 页" for k in weak) + "。")
         for page in s["pages"]:
             if sha(root / "preview" / page["png"]) != page["png_sha256"]:
                 raise ValueError("页图已变化；请重新运行 run 后再看图。")

@@ -11,6 +11,7 @@ from datetime import datetime, date
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from profiles import load_profile, TEMPLATES, LOGOS
+from textio import read_json
 from customization import profile_for, effective_profile, merge_request
 
 VERSION = "1.0.0"
@@ -28,7 +29,7 @@ SOURCES = {"user": 3, "document": 2, "memory": 1}
 
 
 def load(path):
-    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    return read_json(path)
 
 
 def digest(value):

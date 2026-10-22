@@ -158,9 +158,22 @@ class RenderAudit(unittest.TestCase):
         overlap = [e for e in tight["errors"] if e["code"] == "TEXT_OVERLAP"]
         self.assertTrue(overlap, tight["errors"])
         self.assertIn("0.9", overlap[0]["expected"])
-        self.assertEqual(overlap[0]["actual"], "8.0pt")
+        self.assertIn("基线相距 8.0pt", overlap[0]["actual"])
         snug = audit(self.docx(), self.pdf([self.cover(), [("text", 90, 200, "第一行文字"), ("text", 90, 210, "第二行文字")]]))
         self.assertTrue(snug["passed"], snug["errors"])
+
+    def test_large_title_above_small_text_is_judged_by_the_room_left(self):
+        doc = fitz.open()
+        page = doc.new_page(width=A4[0], height=A4[1])
+        page.insert_text((150, 120), "封面大字", fontname="china-s", fontsize=72)
+        page.insert_text((160, 151), "下面的小字说明", fontname="china-s", fontsize=10.5)
+        path = self.folder / "mixed.pdf"
+        doc.save(path)
+        from render_audit import _lines, _line_clash
+
+        with fitz.open(path) as rendered:
+            lines = _lines(rendered[0])
+        self.assertIsNone(_line_clash(lines[0], lines[1]))
 
     def test_superscript_beside_a_word_is_not_an_overlap(self):
         result = audit(self.docx(), self.pdf([self.cover(), [("text", 90, 200, "引用文字"), ("small", 132.5, 195, "[1]"),
@@ -203,6 +216,35 @@ class RenderAudit(unittest.TestCase):
         text = F.render_text(issues)
         self.assertEqual(text.count("[HEADER_UNEXPECTED]"), 1)
         self.assertIn("第2页、第3页、第4页（共 3 处）", text)
+
+    def test_same_cause_and_fix_are_written_once(self):
+        issues = [{"code": "TEXT_OUTSIDE_MARGINS", "message": "文字伸出了左右页边距。", "where": {"page": n, "text": t},
+                   "cause": "长网址", "fix": "加断行"} for n, t in ((2, "甲"), (3, "乙"))]
+        text = F.render_text(issues)
+        self.assertEqual(text.count("怎么改：加断行"), 1)
+        self.assertIn("同第 1 条", text)
+
+    def test_blank_page_points_at_the_empty_break_paragraphs_of_the_mapping(self):
+        from docx import Document
+        from docx.enum.text import WD_BREAK
+
+        doc = Document()
+        doc.add_paragraph("前一页最后一句。")
+        for _ in range(2):
+            doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+        doc.add_paragraph("后一页。")
+        out = self.folder / "breaks.docx"
+        doc.save(out)
+        (self.folder / "mapping.json").write_text(json.dumps({"paragraphs": [
+            {"id": "p0", "text": "前一页最后一句。", "role": "body"}, {"id": "p1", "text": "", "role": "spacer"},
+            {"id": "p2", "text": "", "role": "spacer"}, {"id": "p3", "text": "后一页。", "role": "body"}]},
+            ensure_ascii=False), encoding="utf-8")
+        audit_result = {"errors": [{"code": "BLANK_PAGE", "page": 2, "message": "空白页",
+                                    "where": "紧跟在“前一页最后一句。”之后"}]}
+        issue = F.from_render(audit_result, self.folder, out)[0]
+        self.assertEqual(issue["where"]["location"], "成品 p1、p2")
+        self.assertIn("p1、p2", issue["where"]["edit"])
+        self.assertIn("delete", issue["fix"])
 
     def test_stop_rule_counts_runs_without_progress(self):
         def issue(page):
@@ -420,6 +462,8 @@ class RenderAuditRealOffice(unittest.TestCase):
                 code = X.main(["adopt", "--work", str(work), "--docx", str(folder / "手工.docx"), "--note", "合成测试"])
             self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
             self.assertIn("MANUAL_TEXT_CHANGED", out.getvalue())
+            self.assertIn("手工文件的第", out.getvalue())
+            self.assertIn("手工加的一句", out.getvalue())
             with contextlib.redirect_stdout(io.StringIO()):
                 X.main(["cancel", "--work", str(work)])
 

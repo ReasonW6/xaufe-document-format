@@ -17,6 +17,7 @@ from docx.text.paragraph import Paragraph
 
 ROOT = Path(__file__).resolve().parents[1]
 from profiles import load_profile
+from textio import read_text_any
 from customization import (
     effective_profile,
     apply_cover,
@@ -56,19 +57,6 @@ ROLES = ROLE_STYLES
 
 def fail(message: str) -> None:
     raise ValueError(message)
-
-
-def read_text_any(path: str | Path) -> str:
-    """UTF-8 (with or without BOM); also UTF-16 and GBK files written by Windows tools."""
-    raw = Path(path).read_bytes()
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return raw.decode("utf-16")
-    for encoding in ("utf-8-sig", "gbk"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    fail(f"{Path(path).name} 的编码无法识别，请用 UTF-8 重新保存。")
 
 
 def load_json(path: str | Path) -> dict:
@@ -614,6 +602,17 @@ def number_sections(doc):
         current = set()
 
 
+def number_plain_sections(doc, has_cover):
+    """A document without paper structure: arabic numbers from 1 after the cover, continuing to the end."""
+    for i, section in enumerate(doc.sections):
+        if has_cover and i == 0:
+            continue
+        page = element(section._sectPr, "w:pgNumType", fmt="decimal")
+        page.attrib.pop(qn("w:start"), None)
+        if i == (1 if has_cover else 0):
+            page.set(qn("w:start"), "1")
+
+
 def finalize(doc, out, meta, has_cover, mode, state=None):
     if state and "include_cover" in state and state["include_cover"] != bool(has_cover):
         fail(
@@ -621,8 +620,11 @@ def finalize(doc, out, meta, has_cover, mode, state=None):
         )
     set_page(doc)
     headers_footers(doc, meta, has_cover)
-    if mode == "paper":
-        number_sections(doc)
+    front = {ROLES["toc_title"], ROLES["abstract_label_zh"], ROLES["abstract_label_en"]}
+    if mode == "paper" or any(p.style is not None and p.style.name in front for p in doc.paragraphs):
+        number_sections(doc)  # also an earlier output of this skill revised as a "document"
+    else:
+        number_plain_sections(doc, has_cover)
     if has_cover:
         apply_cover(doc, SPEC)
         position_cover_date(doc, SPEC)

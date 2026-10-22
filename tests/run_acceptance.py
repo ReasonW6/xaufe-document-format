@@ -165,6 +165,19 @@ def blank_page_paper(path):
     return path
 
 
+def plain_word(path):
+    """An ordinary Word file with no abstract or headings, long enough for several pages."""
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("普通文档合成标题")
+    for i in range(1, 41):
+        doc.add_paragraph(f"第 {i} 段合成正文，用来检验没有论文结构的普通 Word 加上封面和页码之后，"
+                          "正文从第 1 页开始连续编号，并且每一页的版面都在版心以内。")
+    doc.save(path)
+    return path
+
+
 def call(*args):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -286,11 +299,15 @@ def main():
     job, _ = example("B")
     job["info"]["title_zh"] = "复杂表格合成论文"
     rows.append(run_case(out, "10-B-existing-complex-tables", job, docx=complex_docx))
+    job, _ = example("B")
+    job["info"]["title_zh"] = "普通文档合成标题"
+    job["format"] = {"footer_page_numbers": True}
+    rows.append(run_case(out, "11-B-plain-word-cover-page-numbers", job, docx=plain_word(out / "plain-word.docx")))
     # Defects that must never be delivered.
     job, content = example("B")
     job["format"] = {"styles": {"body": {"size": 15, "line": 200, "line_rule": "exact"}}}
-    rows.append(run_case(out, "11-defect-lines-overlap", job, content, expect="LINE_TOO_TIGHT"))
-    rows.append(run_case(out, "12-defect-blank-page", *example("B")[:1], docx=blank_page_paper(out / "blank-page.docx"),
+    rows.append(run_case(out, "12-defect-lines-overlap", job, content, expect="LINE_TOO_TIGHT"))
+    rows.append(run_case(out, "13-defect-blank-page", *example("B")[:1], docx=blank_page_paper(out / "blank-page.docx"),
                          expect="BLANK_PAGE"))
     (out / "summary.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     bad = [r for r in rows if "refused" not in r and (

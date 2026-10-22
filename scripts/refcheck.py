@@ -496,9 +496,6 @@ def check_entry(entry, this_year):
     if not text:
         result.update(status=DROP, notes=["没有 text（写进参考文献列表的那一行）"])
         return result
-    if entry.get("from_user"):
-        result["status"] = USER
-        return result
     doi = clean_doi(entry.get("doi"))
     if not doi and entry.get("isbn"):
         return _isbn_check(entry, result)
@@ -628,6 +625,14 @@ def check_entry(entry, this_year):
     return result
 
 
+def _as_user(verdict):
+    """The user's own reference: checked like any other, reported, never blocking and never shown as verified."""
+    verdict["checked"] = verdict["status"]
+    verdict["status"] = USER
+    verdict["notes"].insert(0, f"用户提供；自动核对结果：{verdict['checked']}（只报告，用不用由用户决定）")
+    verdict.pop("unreachable", None)
+
+
 def check_all(entries, this_year=None):
     this_year = this_year or dt.date.today().year
     results, offline = [], None
@@ -644,7 +649,7 @@ def check_all(entries, this_year=None):
             continue
         if key:
             seen[key] = index
-        if offline and clean_doi(entry.get("doi")) and not entry.get("from_user"):
+        if offline and clean_doi(entry.get("doi")):
             results.append(
                 {"text": str(entry.get("text") or ""), "status": PENDING, "notes": [offline], "year": _int(entry.get("year")),
                  "per_year": None, "unreachable": True,
@@ -654,20 +659,23 @@ def check_all(entries, this_year=None):
         try:
             verdict = check_entry(entry, this_year)
             verdict.update(support(entry, verdict.pop("_source_text", "")))
-            mismatch = text_problems(entry) if verdict["status"] in (PASS, PENDING) and not entry.get("from_user") else []
+            mismatch = text_problems(entry) if verdict["status"] in (PASS, PENDING) else []
             if mismatch:
                 verdict["status"] = FIX
                 verdict["notes"].append("；".join(mismatch) + "。text 是印在论文里的那一行，要和核对过的字段一致")
+            if entry.get("from_user"):
+                _as_user(verdict)
             results.append(verdict)
         except Offline as exc:
             note = f"连不上核对服务（{exc}），这条没核对"
             if exc.down:
                 offline = note
-            results.append(
-                {"text": str(entry.get("text") or ""), "status": PENDING, "notes": [note], "year": _int(entry.get("year")),
-                 "per_year": None, "unreachable": True,
-                 "support": UNCHECKED if str(entry.get("quote") or "").strip() else NO_QUOTE}
-            )
+            verdict = {"text": str(entry.get("text") or ""), "status": PENDING, "notes": [note], "year": _int(entry.get("year")),
+                       "per_year": None, "unreachable": True,
+                       "support": UNCHECKED if str(entry.get("quote") or "").strip() else NO_QUOTE}
+            if entry.get("from_user"):
+                _as_user(verdict)
+            results.append(verdict)
     return results
 
 

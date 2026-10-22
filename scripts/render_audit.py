@@ -147,23 +147,30 @@ def _ink(char):
 
 
 def _line_clash(a, b):
-    """Baseline gap of the closest pair of glyphs printed over each other, or None.
+    """(baseline gap, ink overlap) of the worst pair of glyphs printed into each other, or None.
 
-    Two glyphs clash when they share at least 30% of the narrower one's width and
-    their baselines are closer than 0.9 of the larger size: a reader sees one line
-    printed into the other.  Superscripts beside a word never share its width.
+    Each glyph inks roughly 0.8 em above to 0.1 em below its baseline.  Two glyphs
+    clash when they share at least 30% of the narrower one's width and those ink
+    bands overlap by more than 5% of the smaller size: for one size that is a
+    baseline gap under about 0.85 of the size; a large title above small text is
+    judged by the room actually left between them.  Superscripts beside a word
+    never share its width.
     """
     if a["bbox"][1] > b["bbox"][3] + 40 or b["bbox"][1] > a["bbox"][3] + 40:
         return None
     worst = None
-    for x0, x1, base, size in a["chars"]:
-        for u0, u1, ubase, usize in b["chars"]:
+    for char in a["chars"]:
+        x0, x1, base, size = char
+        for other in b["chars"]:
+            u0, u1, ubase, usize = other
             narrow = min(x1 - x0, u1 - u0)
             if narrow <= 0 or min(x1, u1) - max(x0, u0) < 0.3 * narrow:
                 continue
-            gap, limit = abs(base - ubase), 0.9 * max(size, usize)
-            if gap < limit and (worst is None or gap < worst[0]):
-                worst = (gap, max(size, usize))
+            _, top, _, bottom = _ink(char)
+            _, utop, _, ubottom = _ink(other)
+            overlap = min(bottom, ubottom) - max(top, utop)
+            if overlap > 0.05 * min(size, usize) and (worst is None or overlap > worst[1]):
+                worst = (abs(base - ubase), overlap)
     return worst
 
 
@@ -356,11 +363,11 @@ def audit(docx, pdf):
             clash = next(((a, b, gap) for i, a in enumerate(lines) for b in lines[i + 1 :]
                           for gap in [_line_clash(a, b)] if gap), None)
             if clash:
-                a, b, (gap, size) = clash
+                a, b, (gap, overlap) = clash
                 errors.append(_issue("error", "TEXT_OVERLAP", index, "两行文字在页面上叠在一起。",
                                      where=a["spans"][0]["text"][:20] + " / " + b["spans"][0]["text"][:20],
-                                     expected=f"上下两行基线相距不小于字号的 0.9 倍（≥{0.9 * size:.1f}pt）",
-                                     actual=f"{gap:.1f}pt", bbox=a["bbox"]))
+                                     expected="上下两行的字形互不重叠（同一字号时基线至少相距约 0.9 倍字号）",
+                                     actual=f"基线相距 {gap:.1f}pt，字形重叠 {overlap:.1f}pt", bbox=a["bbox"]))
             if want["page_numbers"] and not cover:
                 numbers.append((index, "".join(l["spans"][0]["text"] for l in foot).strip()))
     errors += _number_sequence(numbers)
