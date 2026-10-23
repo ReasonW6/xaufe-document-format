@@ -97,6 +97,10 @@ class RenderAudit(unittest.TestCase):
         result = audit(self.docx(), self.pdf([self.cover(), [("text", 106, 780, "合成正文。")]]))
         self.assertTrue(any("正文伸进了上下页边距" in e["message"] for e in result["errors"]), result["errors"])
 
+    def test_cover_underline_past_the_margin_is_named_as_the_cover(self):
+        result = audit(self.docx(), self.pdf([self.cover() + [("line", 400, 330, 150)], self.body()]))
+        self.assertEqual(self.codes(result), ["COVER_OUTSIDE_MARGINS"])
+
     def test_one_trailing_punctuation_may_hang(self):
         # The last glyph is a comma just past the column: 行末标点悬挂 is not a defect.
         x = 533 - 10.5 * 3
@@ -347,6 +351,14 @@ class RenderAudit(unittest.TestCase):
         self.assertEqual([r[1] for r in rounds], [0, 0] + list(range(1, F.MAX_STALLED + 1)))
         self.assertTrue(rounds[-1][2])
         self.assertEqual(F.record_round(self.folder, []), (0, 0, False))
+        # After a pass the first failure is new, not a stall; the same code at another block, or a
+        # better measured value, is progress too.
+        rejected = lambda block, actual="10 磅": {"code": "INPUT_REJECTED", "message": f"blocks[{block}] 不对",
+                                                 "where": {"edit": f"content.json 的 blocks[{block}]"}, "actual": actual}
+        self.assertEqual(F.record_round(self.folder, [rejected(5)])[1], 0)
+        self.assertEqual(F.record_round(self.folder, [rejected(3)])[1], 0)
+        self.assertEqual(F.record_round(self.folder, [rejected(3, "15 磅")])[1], 0)
+        self.assertEqual(F.record_round(self.folder, [rejected(3, "15 磅")])[1:], (1, True))
 
     def numbered(self, *labels):
         doc = self.docx(patch={"footer_page_numbers": True})
@@ -391,6 +403,16 @@ class RenderAudit(unittest.TestCase):
 class RenderAuditRealOffice(unittest.TestCase):
     """A real export of a defective document must be caught from the PDF alone."""
 
+    def setUp(self):
+        # Workspaces made by `new` go here, so a test that stops half-way leaves nothing in /tmp.
+        from unittest.mock import patch
+
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        temp = patch("tempfile.gettempdir", return_value=scratch.name)
+        temp.start()
+        self.addCleanup(temp.stop)
+
     def test_blank_page_from_double_page_break(self):
         from office_backend import export_pdf
         from docx import Document
@@ -425,14 +447,16 @@ class RenderAuditRealOffice(unittest.TestCase):
             folder = Path(folder)
             case = RenderAudit("test_clean_pages_pass")
             case.folder = folder
-            out = case.docx(cover=False, blocks=[{"type": "heading", "level": 1, "text": "一、合成标题"},
+            out = case.docx(cover=False, blocks=[{"type": "heading", "level": 1, "text": "一、合成标题 Results"},
                                                  {"type": "paragraph", "text": text}])
             pdf = folder / "good.pdf"
             export_pdf(out, pdf)
             self.assertTrue(audit(out, pdf)["passed"], audit(out, pdf)["errors"])
             doc = Document(out)
-            heading = next(p for p in doc.paragraphs if p.text == "一、合成标题")
+            heading = next(p for p in doc.paragraphs if p.text == "一、合成标题 Results")
             heading.paragraph_format.alignment = 0  # left
+            for run in heading.runs:
+                run.font.size, run.font.bold = Pt(18), True
             body = next(p for p in doc.paragraphs if p.text == text)
             body.paragraph_format.first_line_indent = 0
             body._p.pPr.find(qn("w:ind")).set(qn("w:firstLineChars"), "0")
@@ -441,7 +465,7 @@ class RenderAuditRealOffice(unittest.TestCase):
             pdf = folder / "bad.pdf"
             export_pdf(out, pdf)
             codes = [e["code"] for e in audit(out, pdf)["errors"]]
-            for code in ("NOT_CENTERED", "INDENT_RENDERED", "LINE_PITCH_RENDERED"):
+            for code in ("NOT_CENTERED", "INDENT_RENDERED", "LINE_PITCH_RENDERED", "SIZE_RENDERED", "WEIGHT_RENDERED"):
                 self.assertIn(code, codes)
 
     def test_page_numbers_on_b_stay_clear_of_the_paper_edge(self):

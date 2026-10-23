@@ -68,6 +68,13 @@ class CLI(unittest.TestCase):
         audit = patch("delivery.audit_rendered", return_value={"passed": True, "errors": [], "warnings": [], "pages": 1, "fonts": {}})
         audit.start()
         self.addCleanup(audit.stop)
+        # The automatic check of an original's references goes online; its own tests mock it.
+        offline = patch.dict("os.environ", {"XAUFE_SKIP_REF_CHECK": "1"})
+        offline.start()
+        self.addCleanup(offline.stop)
+        temp = patch("tempfile.gettempdir", return_value=str(self.d))  # every workspace lives in the test folder
+        temp.start()
+        self.addCleanup(temp.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -203,8 +210,32 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("必须在给用户的回复里说明", out)
         self.assertIn("1 条参考文献按原文保留", out)  # format only, refs never checked: say so
+
         self.assertFalse(work.exists())
         self.assertEqual([p.name for p in (self.d / "out").iterdir()], ["成品.docx"])
+
+    def test_format_only_checks_the_originals_references_once_and_reports(self):
+        import refcheck as R
+
+        verdict = [{"text": CONTENT["references"][0], "status": R.PENDING, "notes": ["合成：找不到这本书"],
+                    "year": 2020, "per_year": None}]
+        with patch.dict("os.environ", {"XAUFE_SKIP_REF_CHECK": ""}):
+            work = self.new(JOB_B, CONTENT)
+            offline = self.new(JOB_B, CONTENT)
+            with patch("refcheck._online", return_value=True), patch("refcheck.check_all", return_value=verdict) as checked:
+                code, out, err = self.call("run", "--work", work, "--office", "none")
+                self.assertEqual(code, 0, out + err)
+                self.call("run", "--work", work, "--office", "none")
+            self.assertEqual(checked.call_count, 1)  # once per job, not every run
+            self.assertIn("原文参考文献已自动核对", out)
+            self.fill_review(work, vision=False)
+            code, out, err = self.call("finish", "--work", work)
+            self.assertEqual(code, 0, err)
+            self.assertIn("原文参考文献的核对结果", out)
+            with patch("refcheck._online", return_value=False):
+                code, out, err = self.call("run", "--work", offline, "--office", "none")
+            self.assertIn("连不上文献核对服务", out)
+            self.assertIn("这次连不上文献核对服务，没有核对", X._original_reference_report(offline))
 
     def test_rendered_run_lists_pages_and_needs_every_page(self):
         # No table of contents here: real TOC paging is covered by run_acceptance.py.
@@ -297,6 +328,16 @@ class CLI(unittest.TestCase):
             for word in words:
                 self.assertIn(word, out)
 
+    def test_all_broken_blocks_are_reported_in_one_run(self):
+        content = json.loads(json.dumps(CONTENT))
+        content["blocks"] += [{"type": "table", "header": ["甲", "乙"], "rows": [["1"]]},
+                              {"type": "paragrah", "text": "合成"}, {"type": "image", "path": "a.png", "width": 8}]
+        work = self.new(JOB_B, content)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        for where in ("content.json 的 blocks[4]", "content.json 的 blocks[5]", "content.json 的 blocks[6]"):
+            self.assertIn("要改的输入：" + where, out)
+
     def test_absurd_margins_and_spacing_name_the_setting(self):
         work = self.new({**JOB_B, "format": {"page_twips": {"left": 8000, "right": 8000}}}, CONTENT)
         code, out, err = self.call("run", "--work", work, "--office", "none")
@@ -307,6 +348,13 @@ class CLI(unittest.TestCase):
         code, out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
         self.assertIn("format.styles.h1.before=40000", out)
+
+    def test_style_problem_points_at_job_json_not_the_text(self):
+        work = self.new({**JOB_B, "format": {"styles": {"body": {"line": 200, "line_rule": "exact"}}}}, CONTENT)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("LINE_TOO_TIGHT", out)
+        self.assertIn("要改的输入：job.json 的 format.styles.body（line=200、line_rule=exact）", out)
 
     def test_logo_wider_than_narrowed_column_names_the_job_change(self):
         work = self.new({**JOB_B, "format": {"page_twips": {"left": 3600, "right": 3600}}}, CONTENT)
@@ -391,6 +439,22 @@ class CLI(unittest.TestCase):
         self.assertEqual(mapping["replace_cover_before"], 0)
         # The workspace records resolved paths (macOS temp dirs live behind /var -> /private/var).
         self.assertIn(str(source.resolve()), [x["path"] for x in D.load(work)[1]["source_documents"]])
+
+    def test_typed_indent_in_an_existing_word_is_removed_not_blocked(self):
+        doc = Document()
+        doc.add_paragraph("\u3000\u3000用全角空格顶出来缩进的第一段合成正文。")
+        doc.add_paragraph("\t用 Tab 顶出来缩进的第二段合成正文。")
+        doc.add_paragraph("    用半角空格顶出来的第三段，Times New Roman 中间的空格要留着。")
+        source = self.d / "空格缩进.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("去掉了 3 段段首", out)
+        texts = [p.text for p in Document(work / "final.docx").paragraphs if "合成正文" in p.text or "第三段" in p.text]
+        self.assertEqual(texts, ["用全角空格顶出来缩进的第一段合成正文。", "用 Tab 顶出来缩进的第二段合成正文。",
+                                 "用半角空格顶出来的第三段，Times New Roman 中间的空格要留着。"])
 
     def test_mapping_delete_role_removes_only_marked_paragraph(self):
         work = self.new(JOB_B)
@@ -1028,6 +1092,28 @@ class CLI(unittest.TestCase):
         self.assertEqual(roles["（一）背景"], "h2")
         self.assertGreater(mapping["replace_cover_before"], 0)
         self.assertIn("旧封面", out)
+
+    def test_new_from_an_earlier_output_restores_its_settings(self):
+        job = dict(JOB_B, logo="green", format={"footer_page_numbers": True, "styles": {"body": {"cn": "仿宋"}}})
+        work = self.new(job, CONTENT)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        previous = self.d / "上一版.docx"
+        previous.write_bytes((work / "final.docx").read_bytes())
+        with patch("tempfile.gettempdir", return_value=str(self.d)):
+            code, out, err = self.call("new", "--out", self.d / "out2" / "第二版.docx", "--source", previous)
+        self.assertEqual(code, 0, err)
+        self.assertIn("已按它记录的设置恢复", out)
+        work2 = Path(out.split("WORK = ")[1].splitlines()[0].strip())
+        seeded = json.loads((work2 / "job.json").read_text(encoding="utf-8"))
+        self.assertEqual(seeded["logo"], "green")
+        self.assertEqual(seeded["format"], {"footer_page_numbers": True, "styles": {"body": {"cn": "仿宋"}}})
+        for key, value in JOB_B["info"].items():
+            self.assertEqual(seeded["info"][key], value)
+        self.assertNotIn("blank", seeded)
+        code, out, err = self.call("check", "--work", work2)
+        self.assertEqual(code, 0, out + err)
+        self.assertNotIn("还缺", out)
 
     # ------------------------------------------------------------ instructions
     def test_skill_md_keeps_the_core_rules(self):

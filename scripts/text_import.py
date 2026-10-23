@@ -108,8 +108,14 @@ def to_content(path, work):
     from xaufe import guess_roles
 
     path = Path(path)
-    pieces = _pieces(read_text_any(path), markdown=path.suffix.lower() == ".md")
+    raw = read_text_any(path)
+    pieces = _pieces(raw, markdown=path.suffix.lower() == ".md")
     blocks, notes = [], []
+    plain = re.sub(r"```.*?```|~~~.*?~~~", "", raw, flags=re.S)
+    marked = len(re.findall(r"\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`", plain))
+    if marked:
+        notes.append(f"原稿有 {marked} 处 Markdown 加粗或行内代码标记（**、__、`），导入时只留了文字、没带格式："
+                     "要保留某处加粗，就在 content.json 那一段改用 runs 写 {\"text\": \"…\", \"bold\": true}。")
     texts = [(i, kind, payload) for i, (kind, payload) in enumerate(pieces) if kind in ("para", "heading")]
     first_heading = next((i for i, kind, _ in texts if kind == "heading"), None)
     pseudo = []

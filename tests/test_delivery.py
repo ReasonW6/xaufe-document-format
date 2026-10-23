@@ -280,6 +280,15 @@ class Customizations(Base):
         self.assertPass(check(out, intake_path=state))
         self.assertEqual(Document(out).paragraphs[14]._p.xpath("./w:pPr/w:framePr/@w:w"), ["8706"])
 
+    def test_narrow_column_pulls_the_cover_field_underlines_in(self):
+        out, state = self.build(request={"page_twips": {"left": 2500, "right": 2500}})
+        self.assertPass(check(out, intake_path=state))
+        doc = Document(out)
+        width = 11906 - 2500 - 2500
+        field = doc.paragraphs[E.SPEC["cover"]["fields"]["student_name"]]
+        tabs = [int(x) for x in field._p.xpath("./w:pPr/w:tabs/w:tab/@w:pos")]
+        self.assertLessEqual(max(tabs), width)
+
     def test_requires_true_request_evidence(self):
         state = self.d / "intake.json"
         I.start(state, "synthetic")
@@ -797,6 +806,36 @@ class ExtraGuards(Base):
 
         with patch("office_backend.ps_run", side_effect=run):
             B._word(src, pdf, {}, self.d)
+
+
+
+class TellUser(unittest.TestCase):
+    """What the user is told comes as plain sentences, never instructions meant for the agent."""
+
+    def test_each_kind_reads_as_one_whole_sentence_for_the_user(self):
+        from delivery import tell_user
+
+        warnings = [
+            {"code": "RENDERER_FALLBACK", "message": "指定用 Word 渲染，但它这次用不了，实际是用 LibreOffice 分页和检查的。"
+                                                     "用户点名要某个软件时要告诉用户；能修好那个软件就修好后重新 run。"},
+            {"code": "REF_SUPPORT_UNCONFIRMED", "message": "这些引用的原文摘录没能在读得到的原文里对上，支撑关系只有你的判断："
+                                                           "[2] 引用句“快速排序平均更快”／摘录“quicksort is 37% faster on aver”（NOT_FOUND）。逐条核对引用句和摘录。"},
+            {"code": "REF_CITATION_MISMATCH", "message": "这些引用号标的句子和对应文献看起来说的不是一回事，可能标错了序号：[3] “天气很好”。逐条核对。"},
+            {"code": "MARGIN_TOO_SMALL", "message": "页边距 left 只有 0.30 厘米：多数打印机印不到离纸边 0.5 厘米以内的地方。是用户要求的就在回复里提醒用户。"},
+            {"code": "STYLE_HARD_TO_READ", "message": "正文（body）的文字颜色是 FFFFFF，在白纸上几乎看不见。确认是用户要的就在回复里提醒用户。"},
+            {"code": "FONT_MARKS", "message": "p3/r0: “重要提示”带删除线，是原稿里的格式，成品保留了原样（模板没有这种格式）。"},
+            {"code": "HEADING_NUMBERING", "message": "标题“第一章 绪论”的编号和它的级别（h1）对不上：一级用“一、”。先看 mapping.json。"},
+            {"code": "ORIGINAL_PAGE_NUMBERS_DROPPED", "message": "原稿页脚有页码。要在回复里告诉用户；写 footer_page_numbers。"},
+        ]
+        lines = tell_user(warnings)
+        self.assertEqual(len(lines), len(warnings))
+        for line in lines:
+            for internal in ("用户点名", "你的判断", "review.json", "mapping.json", "job.json", "NOT_FOUND", "(body)", "（body）", "重新 run"):
+                self.assertNotIn(internal, line)
+            self.assertTrue(line.endswith(("。", "）")), line)
+        self.assertIn("第 2 条文献确认真实存在", lines[1])
+        self.assertIn("Word 这次用不了", lines[0])
+        self.assertIn("0.30 厘米", lines[3])
 
 
 if __name__ == "__main__":

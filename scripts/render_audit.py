@@ -143,7 +143,8 @@ def _lines(page):
     result = []
     for block in page.get_text("rawdict")["blocks"]:
         for line in block.get("lines", []):
-            chars = [dict(c, size=span["size"]) for span in line["spans"] for c in span["chars"] if c["c"].strip()]
+            chars = [dict(c, size=span["size"], bold=bool(span["flags"] & 16) or "bold" in span["font"].lower())
+                     for span in line["spans"] for c in span["chars"] if c["c"].strip()]
             if not chars:
                 continue
             boxes = [c["bbox"] for c in chars]
@@ -155,6 +156,8 @@ def _lines(page):
                              max(b[2] for b in boxes), max(b[3] for b in boxes)),
                     "ink_right": max(c["bbox"][2] for c in body),
                     "chars": [(c["bbox"][0], c["bbox"][2], c["origin"][1], c["size"]) for c in chars],
+                    # Weight is only told apart for Latin letters: CJK fonts rarely ship a bold face.
+                    "latin_bold": [c["bold"] for c in chars if c["c"].isascii() and c["c"].isalpha()],
                 }
             )
     return result
@@ -310,7 +313,7 @@ def _placements(doc, template, request, adopted):
     ``start``: where the first line should begin, from the left text edge; ``pitch``: the fixed
     line pitch (exact line spacing) or None.  From the template contract, or, for a hand-edited
     copy, from the copy's own paragraph settings (its deviations are reported statically)."""
-    from audit_helpers import contract
+    from audit_helpers import contract, FIXED_WEIGHT
     from customization import ROLE_STYLES
     from style_model import paragraph_properties, run_properties, style_chain
 
@@ -327,15 +330,19 @@ def _placements(doc, template, request, adopted):
             jc = paragraph_properties(p, "jc").get("val", "left")
             runs = [r for r in p._p.xpath(".//w:r") if "".join(r.xpath("./w:t/text()"))]
             styled = [v for st in style_chain(p.style) for v in st.element.xpath("./w:rPr/w:sz/@w:val")]
-            sizes = {int(run_properties(p, runs[0]).get("sz") or 21) / 2 if runs else None,
-                     int(styled[-1]) / 2 if styled else None, None}
+            first = run_properties(p, runs[0]) if runs else {}
+            sizes = {int(first.get("sz") or 21) / 2 if runs else None, int(styled[-1]) / 2 if styled else None, None}
+            font_size, bold = (int(first.get("sz") or 21) / 2 if runs else None), first.get("b")
         else:
             rule = rules[role]["pPr"]
             ind, spacing, jc = rule.get("ind", {}), rule.get("spacing", {}), rule.get("jc", {}).get("val", "left")
             sizes = {rules[role]["font"]["size_half_points"] / 2}
+            font_size = rules[role]["font"]["size_half_points"] / 2
+            bold = True if rules[role]["font"].get("bold_required") else (False if role in FIXED_WEIGHT else None)
         size = max((z for z in sizes if z), default=None)
         exact = spacing.get("lineRule") == "exact" and spacing.get("line")
         placed.append((text, role, {"jc": jc, "start": _starts(ind, sizes), "right": _twips(ind, "right", size),
+                                    "size": font_size, "bold": bold,
                                     "pitch": int(spacing["line"]) / PT if exact else None}))
     return placed
 
@@ -349,9 +356,11 @@ def _visual_lines(lines):
         if row and abs(row["chars"][0][2] - line["chars"][0][2]) < 1 and line["bbox"][0] >= row["bbox"][2] - 1:
             row["spans"][0]["text"] += line["spans"][0]["text"]
             row["chars"] += line["chars"]
+            row["latin_bold"] += line.get("latin_bold", [])
             row["bbox"] = (row["bbox"][0], min(row["bbox"][1], line["bbox"][1]), line["bbox"][2], max(row["bbox"][3], line["bbox"][3]))
         else:
-            rows.append({"spans": [{"text": line["spans"][0]["text"]}], "chars": list(line["chars"]), "bbox": line["bbox"]})
+            rows.append({"spans": [{"text": line["spans"][0]["text"]}], "chars": list(line["chars"]), "bbox": line["bbox"],
+                         "latin_bold": list(line.get("latin_bold", []))})
     return rows
 
 
@@ -359,7 +368,9 @@ def _placement_issues(index, lines, placed, left, right):
     """First lines that start at the wrong place, centred lines off the axis, and body lines whose
     pitch differs from the fixed line spacing.  Lines are recognised by their text."""
     issues, pitches = [], []
-    names = {"body": "正文", "caption": "图表标题", "reference_title": "参考文献标题"}
+    names = {"body": "正文", "caption": "图表标题", "reference_title": "参考文献标题", "preface": "序言标题",
+             "title_zh": "摘要页题目", "title_en": "英文题目", "abstract_label_zh": "“摘要”标题",
+             "abstract_label_en": "“Abstract”标题", "toc_title": "“目录”标题"}
     ordered = _visual_lines(lines)
     owner = []
     for line in ordered:
@@ -373,6 +384,16 @@ def _placement_issues(index, lines, placed, left, right):
         text, role, want = hit
         name = names.get(role, "标题" if role.startswith("h") else role)
         x0, x1 = line["bbox"][0], line["bbox"][2]
+        if role != "body" and want["size"]:  # body size is judged over the whole document (BODY_SIZE_RENDERED)
+            size = Counter(round(c[3] * 2) / 2 for c in line["chars"]).most_common(1)[0][0]
+            if abs(size - want["size"]) > 0.3:
+                issues.append(_issue("error", "SIZE_RENDERED", index, f"{name}显示出来的字号不对。", where=line["spans"][0]["text"][:30],
+                                     expected=f"{want['size']:g} 磅", actual=f"{size:g} 磅", bbox=line["bbox"]))
+        weights = line.get("latin_bold", [])
+        if want["bold"] is not None and len(weights) >= 2 and all(w != want["bold"] for w in weights):
+            issues.append(_issue("error", "WEIGHT_RENDERED", index, f"{name}显示出来{'没有加粗' if want['bold'] else '被加粗了'}。",
+                                 where=line["spans"][0]["text"][:30], expected="加粗" if want["bold"] else "不加粗",
+                                 actual="加粗" if weights[0] else "不加粗", bbox=line["bbox"]))
         if want["jc"] == "center" and key == text:
             axis = (left + want["start"][0] + right - want["right"]) / 2
             if abs((x0 + x1) / 2 - axis) > INDENT_TOLERANCE:
@@ -587,6 +608,11 @@ def audit(docx, pdf, adopted=False):
                         errors.append(_issue("error", "TEXT_OVER_IMAGE", index, "文字压在图片上。",
                                              where=text[:30], bbox=box))
             for rect in drawings:
+                if cover and (rect.x0 < left - EDGE_TOLERANCE or rect.x1 > right + EDGE_TOLERANCE):
+                    errors.append(_issue("error", "COVER_OUTSIDE_MARGINS", index, "封面信息栏的下划线（或封面上的线条）伸出了左右页边距。",
+                                         expected=f"{left:.1f}–{right:.1f}pt", actual=f"{rect.x0:.1f}–{rect.x1:.1f}pt",
+                                         bbox=tuple(rect)))
+                    break
                 if rect.x0 < left - EDGE_TOLERANCE or rect.x1 > right + EDGE_TOLERANCE:
                     errors.append(_issue("error", "TABLE_OUTSIDE_MARGINS", index, "表格框线或图形伸出了左右页边距。",
                                          expected=f"{left:.1f}–{right:.1f}pt", actual=f"{rect.x0:.1f}–{rect.x1:.1f}pt",

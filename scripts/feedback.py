@@ -135,8 +135,11 @@ HINTS = {
     "CAPTION_SEPARATED": ("图题或表题和它的图、表被分页拆开了。通常是图表太大放不进剩下的空间，或题注前后有手动空行。", "去掉题注前后的空行；表格很长时可以拆成两张表（续表），图片太高就请用户同意缩小（content.json 里 image 块写 \"width_cm\": 厘米数）；改完重新 run。"),
     "COVER_TITLE_MISALIGNED": ("封面题目折成几行后对不齐：通常是渲染时没有模板字体（宋体/黑体），替代字体的字宽不同，或题目里有不能断开的长英文。", "先看有没有 FONT_SUBSTITUTED 提示：有就按缺字体处理（换装有字体的 Word/WPS 渲染，或问用户）；题目里有长英文串就请用户同意在合适的位置断开或缩短。"),
     "BODY_IN_MARGIN": ("正文文字落到了上边距或下边距里（页眉页脚区），打印时会和页眉页码挤在一起：常见于原稿的浮动对象或文本框、段落的负间距，或 job.json 改小了 page_twips 的上下边距、改大了行距。", "已有 Word 时核对这一段在 mapping.json 里的 role，有浮动对象就请用户改成嵌入型；改过 page_twips 或 styles 的行距/段距就核对它们，然后重新 run。"),
-    "INDENT_RENDERED": ("渲染出来的首行缩进或左缩进和模板要求不一样：通常是原稿这一段带着自己的缩进设置（或用空格、Tab 顶出来的缩进），或这一段的 role 标错了。", "已有 Word 时核对这一段在 mapping.json 里的 role；原文开头有空格或全角空格就是原稿用空格缩进，问用户后在 mapping.json 用 delete/approved_changes 去掉；用户要别的缩进就写 job.json 的 format.styles.<role>.chars。"),
+    "INDENT_RENDERED": ("渲染出来的首行缩进或左缩进和模板要求不一样：通常是原稿这一段带着自己的缩进设置（或用空格、Tab 顶出来的缩进），或这一段的 role 标错了。", "已有 Word 时核对这一段在 mapping.json 里的 role；段首用空格、全角空格或 Tab 打出来的缩进脚本会自动去掉，仍偏就是原稿段落自带缩进或 role 不对；用户要别的缩进就写 job.json 的 format.styles.<role>.chars。"),
     "NOT_CENTERED": ("应该居中的标题或图表标题显示出来没有居中：通常是原稿这一段带着自己的缩进或对齐，或 role 标错了。", "核对这一段在 mapping.json 里的 role；改过 format.styles 的 align/left/chars 就核对它们，然后重新 run。"),
+    "COVER_OUTSIDE_MARGINS": ("封面信息栏的下划线伸出了版心：通常是 job.json 的 page_twips 把左右边距改大了，或封面信息太长。", "核对 job.json 的 format.page_twips 左右边距（1 厘米=567）；封面信息太长就问用户能否缩短，然后重新 run。"),
+    "SIZE_RENDERED": ("标题、图表题等显示出来的字号和模板（或 job.json 的要求）不同：通常是原稿这一段带着自己的字号，或 role 标错了。", "核对这一段在 mapping.json / content.json 里的级别和 role；用户要别的字号就写 job.json 的 format.styles.<role>.size，然后重新 run。"),
+    "WEIGHT_RENDERED": ("标题、英文题目等显示出来的加粗和模板要求不同（只看得出英文字母的粗细）。", "核对这一段的 role；用户要加粗或不加粗就写 job.json 的 format.styles.<role>.bold，然后重新 run。"),
     "LINE_PITCH_RENDERED": ("正文显示出来的行距和要求的固定行距不同：通常是原稿段落自带行距设置盖过了模板，或 job.json 的 line/line_rule 写法不对。", "核对 job.json 的 format.styles.body.line 和 line_rule（固定 20 磅是 line 400 + exact）；已有 Word 时核对 mapping.json 里这些段的 role，然后重新 run。"),
     "TEXT_AT_PAPER_EDGE": ("页眉或页脚距离（page_twips.header / footer）几乎是 0，文字贴着纸边。B 版模板本来没有页眉页脚，加页码或页眉后最容易这样。", "在 job.json 的 format 里设 \"page_twips\": {\"footer\": 992}（页眉太靠上就设 header，单位 twip，992 约 1.75 厘米），然后重新 run。"),
     "CAPTION_DETACHED": ("表题（在表格上方）或图题（在图片下方）和它的表格/图片之间夹着空段落，常见于原稿里多敲的回车或分页符。", "把夹在中间的空段落删掉：mapping.json 里把它的 role 设为 \"delete\"（content.json 里就删掉那个空块），然后重新 run。"),
@@ -263,7 +266,10 @@ def explain(errors, docx=None, root=None, stage="格式检查"):
                 item["where"]["text"] = text[:40] or "（空段落）"
                 item["where"]["style"] = p.style.name if p.style is not None else ""
                 source = _input_hint(root, text)
-                if source:
+                styled = _job_style(root, p.style.name if p.style is not None else "") if code in STYLE_CODES else None
+                if styled:  # the paragraph's look comes from job.json, not from its words
+                    item["where"]["edit"] = styled + (f"（问题出在这一段：{source}）" if source else "")
+                elif source:
                     item["where"]["edit"] = source
                 gap = _mapping_gap(root, text) if code == "CAPTION_DETACHED" and root else []
                 if gap:
@@ -274,6 +280,25 @@ def explain(errors, docx=None, root=None, stage="格式检查"):
             item["actual"] = x.group("actual").strip()
         issues.append(item)
     return with_job_suspects(root, issues)
+
+
+# Static codes about how a paragraph looks: when job.json restyles its role, that is the input to edit.
+STYLE_CODES = {"LINE_TOO_TIGHT", "FONT_SIZE", "FONT_CN", "FONT_EN", "FONT_BOLD", "FONT_COLOR", "FONT_ITALIC",
+               "FONT_UNDERLINE", "PARAGRAPH", "PARAGRAPH_EXTRA", "OBJECT_HEIGHT"}
+
+
+def _job_style(root, style_name):
+    """'job.json 的 format.styles.body（line=200、size=16）' when job.json restyles this paragraph's role."""
+    from customization import ROLE_STYLES
+
+    role = next((r for r, name in ROLE_STYLES.items() if name == style_name), None)
+    try:
+        patch = (read_json(Path(root) / "job.json").get("format") or {}).get("styles", {}).get(role) if root and role else None
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(patch, dict) or not patch:
+        return None
+    return f"job.json 的 format.styles.{role}（" + "、".join(f"{k}={v}" for k, v in patch.items()) + "）"
 
 
 def _mapping_gap(root, previous):
@@ -345,7 +370,8 @@ GEOMETRY = {"OFF_PAGE", "TEXT_OUTSIDE_MARGINS", "TEXT_AT_PAPER_EDGE", "IMAGE_OFF
             "TABLE_OUTSIDE_MARGINS", "TEXT_OVERLAP", "TEXT_OVER_IMAGE", "LINE_TOO_TIGHT", "HEADER_OVERFLOW",
             "HEADER_WRAPPED", "BLANK_PAGE", "HEADING_AT_PAGE_BOTTOM", "CAPTION_SEPARATED", "PAGE_NUMBER_MISSING",
             "TABLE_WIDTH", "IMAGE_WIDTH", "CELL_WIDTH", "OBJECT_HEIGHT", "BODY_IN_MARGIN", "INDENT_RENDERED",
-            "NOT_CENTERED", "LINE_PITCH_RENDERED"}
+            "NOT_CENTERED", "LINE_PITCH_RENDERED", "SIZE_RENDERED", "WEIGHT_RENDERED",
+            "COVER_OUTSIDE_MARGINS"}
 
 
 def _job_changes(root):
@@ -448,7 +474,10 @@ _MESSAGE_HINTS = (
 
 
 def from_message(message, root=None, stage="排版"):
-    """A layout ValueError -> one located issue, so it is counted and fixed like any other failure."""
+    """A layout ValueError -> located issues (one per line), counted and fixed like any other failure."""
+    if "\n" in message.strip():
+        return [item for line in message.strip().splitlines() if line.strip()
+                for item in from_message(line.strip(), root, stage)]
     cause, fix = "排版脚本拒绝了这份输入。", "按上面的说明改 job.json / content.json / mapping.json 后重新 run。"
     for pattern, c, f in _MESSAGE_HINTS:
         if re.search(pattern, message):
@@ -554,8 +583,11 @@ def render_text(issues, limit=12):
 
 
 def _fingerprint(item):
+    """One issue as it stands: a different block, place or measured value is a different issue,
+    so a fix that moves the problem or improves the value counts as progress."""
     where = item.get("where") or {}
-    return "|".join(str(x) for x in (item["code"], where.get("page"), where.get("location"), where.get("text")))
+    return "|".join(str(x) for x in (item["code"], item.get("message"), where.get("page"), where.get("location"),
+                                      where.get("text"), where.get("edit"), item.get("actual")))
 
 
 def stopped(root):
@@ -595,7 +627,7 @@ def record_round(root, issues):
     now = sorted({_fingerprint(i) for i in issues})
     before = data.get("last_issues")
     rounds = int(data.get("failed_rounds", 0)) + 1 if issues else 0
-    progress = before is None or bool(set(before) - set(now))
+    progress = not before or bool(set(before) - set(now))  # after a pass, a new failure is not a stall
     stalled = 0 if not issues or progress else int(data.get("stalled", 0)) + 1
     repeated = bool(issues) and now == before
     path.write_text(json.dumps({"failed_rounds": rounds, "stalled": stalled, "last_issues": now,

@@ -366,13 +366,48 @@ TELL_USER = {"ORIGINAL_PAGE_NUMBERS_DROPPED", "ORIGINAL_HEADER_FOOTER_REPLACED",
              "STYLE_HARD_TO_READ", "FONT_MARKS", "RENDERER_FALLBACK", "REF_CITATION_MISMATCH", "REF_SUPPORT_UNCONFIRMED"}
 
 
+def _user_line(w):
+    """A warning as one plain sentence for the user: what happened to their document, no instructions
+    meant for the agent, no internal codes, nothing cut off mid-word."""
+    code = w["code"]
+    message = re.sub(r"^[pt]\d+\S*:\s*", "", w.get("message", ""))
+    quoted = re.findall(r"“([^”]+)”", message)
+    first = quoted[0] if quoted else ""
+    if code == "ORIGINAL_HEADER_FOOTER_REPLACED":
+        return "原稿页眉页脚里的“" + "”“".join(quoted[:3]) + "”没有保留，页眉页脚按模板重新生成了；想保留原来的页眉文字可以告诉我。"
+    if code == "ORIGINAL_PAGE_NUMBERS_DROPPED":
+        return "原稿页脚有页码，这次按模板默认没有显示页码；需要页码可以告诉我。"
+    if code == "HEADING_NUMBERING":
+        return f"标题“{first}”的编号和模板的写法（一级“一、”、二级“（一）”、三级“1.”）不一样，按原稿保留了。"
+    if code == "MARGIN_TOO_SMALL":
+        size = re.search(r"只有 ([\d.]+) 厘米", message)
+        return f"按要求设的页边距只有 {size.group(1) if size else '不到 0.5'} 厘米，多数打印机印不到这么靠边，边上的文字可能被裁掉。"
+    if code == "STYLE_HARD_TO_READ":
+        return "按你的要求设置后，" + re.sub(r"（[a-z_0-9]+）", "", message.split("确认是用户要的")[0]).strip()
+    if code == "FONT_MARKS":
+        marks = re.search(r"带(.+?)，是原稿", message)
+        return f"原稿里“{first}”等文字带有{marks.group(1) if marks else '特殊格式'}，模板没有这种格式，成品按原稿保留了。"
+    if code == "RENDERER_FALLBACK":
+        names = re.search(r"指定用 (.+?) 渲染.*实际是用 (.+?) 分页", message)
+        if names:
+            return f"指定的 {names.group(1)} 这次用不了，版面是用 {names.group(2)} 分页和检查的，和 {names.group(1)} 里的分页可能略有不同。"
+    if code == "REF_CITATION_MISMATCH":
+        numbers = sorted(set(re.findall(r"[\[［](\d+)[\]］]", message)), key=int)
+        which = f"（第 {'、'.join(numbers)} 条）" if numbers else ""
+        return f"有几处引用号所在的句子和所引文献{which}的主题看起来不太一致，我逐条核对过，建议你再看一眼。"
+    if code == "REF_SUPPORT_UNCONFIRMED":
+        numbers = re.findall(r"[\[［](\d+)[\]］] 引用句", message)
+        which = f"第 {'、'.join(numbers)} 条" if numbers else "有几条"
+        return f"{which}文献确认真实存在，但它是否支持正文里引用它的那句话，没能在能读到的原文里确认（核实清单里标为未确认），建议你核对。"
+    return re.split(r"要在回复里告诉用户|。逐条核对|用户点名|确认是用户要的", message)[0].strip()
+
+
 def tell_user(warnings):
-    """One line per kind of warning the user must be told about (first message of each kind)."""
+    """One plain sentence per kind of warning the user must be told about (first of each kind)."""
     seen = {}
     for w in warnings:
         if w.get("code") in TELL_USER and w["code"] not in seen:
-            text = re.sub(r"^[pt]\d+\S*:\s*", "", w.get("message", ""))
-            seen[w["code"]] = text.split("要在回复里告诉用户")[0].split("。逐条核对")[0].strip()[:160]
+            seen[w["code"]] = _user_line(w)
     return list(seen.values())
 
 
@@ -651,6 +686,11 @@ def adopt(workspace, docx, note):
                                "做不到就告诉用户这项要求会带来什么问题，问用户怎么取舍。")
             raise AcceptanceFailed("手工修改", issues)
         explained = explain(deviations, final, root, stage="手工修改")
+        # One line per paragraph and kind of change, not one per text run.
+        unique = {}
+        for e, x in zip(deviations, explained):
+            unique.setdefault(_plain_deviation(x), (e, x))
+        deviations, explained = [e for e, _ in unique.values()], [x for _, x in unique.values()]
         try:
             preview = render(final, root / "preview")
         except OfficeUnavailable as exc:

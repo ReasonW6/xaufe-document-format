@@ -12,6 +12,22 @@ from table_layout import walk_tables, raw_rows, cell_margin
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def page_contract(template, request=None):
+    """Page box, margins and header/footer distances from the independent baseline plus the user's
+    page_twips; a header or page numbers added to B without a distance get A's distances."""
+    data = json.loads((ROOT / "assets/checks/audit-baseline.json").read_text(encoding="utf-8"))["pages"]
+    request = request or {}
+    page = dict(data[template])
+    asked = request.get("page_twips") or {}
+    page.update(asked)
+    added = data["added_header_or_page_numbers_distance"]
+    if (request.get("header") or {}).get("enabled") is True and "header" not in asked and page["header"] < 200:
+        page["header"] = added["header"]
+    if request.get("footer_page_numbers") and "footer" not in asked and page["footer"] < 200:
+        page["footer"] = added["footer"]
+    return page
+
+
 def contract(template, request=None):
     data = json.loads((ROOT / "assets/checks/audit-baseline.json").read_text(encoding="utf-8"))
     result = deepcopy(data["roles"])

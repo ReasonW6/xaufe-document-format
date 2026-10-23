@@ -157,6 +157,19 @@ class MergeTests(Fixture):
         with self.assertRaises(ValueError):
             C.merge_request({}, {"cover_fonts": {"madeup": None}})
 
+    def test_independent_page_baseline_agrees_with_the_generator(self):
+        from audit_helpers import page_contract
+
+        for template in ("A", "B"):
+            for request in ({}, {"footer_page_numbers": True}, {"header": {"enabled": True}},
+                            {"page_twips": {"left": 1418, "right": 1418}},
+                            {"footer_page_numbers": True, "page_twips": {"footer": 300}}):
+                with self.subTest(template=template, request=request):
+                    self.assertEqual(page_contract(template, request), C.effective_profile(template, request)["page_twips"])
+        # Hand-checked values, not copied from layout.json.
+        self.assertEqual((page_contract("B")["left"], page_contract("B")["right"]), (1701, 1247))
+        self.assertEqual((page_contract("A")["left"], page_contract("A")["header"]), (1800, 851))
+
     def test_label_multiturn_merge(self):
         a = {"keyword_labels": {"zh": {"size": 12, "italic": True}}}
         self.assertEqual(

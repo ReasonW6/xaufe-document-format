@@ -10,12 +10,15 @@ signs a visual review.
 """
 
 from __future__ import annotations
-import argparse, contextlib, io, json, shutil, sys
+import argparse, contextlib, io, json, os, shutil, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import xaufe as X
+
+# Layout acceptance only: the report-only online check of the originals' references has its own tests.
+os.environ.setdefault("XAUFE_SKIP_REF_CHECK", "1")
 import delivery as D
 
 LONG = {

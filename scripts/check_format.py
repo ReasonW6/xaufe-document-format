@@ -11,6 +11,7 @@ import engine as E
 from intake import require as require_intake, digest
 from audit_helpers import (
     contract,
+    page_contract,
     paragraph_check,
     run_check,
     tables_check,
@@ -306,6 +307,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         if isinstance(patch.get("size"), (int, float)) and patch["size"] < 5:
             warn("STYLE_HARD_TO_READ", f"{ROLE_NAMES.get(role, role)}（{role}）的字号只有 {patch['size']:g} 磅，打印出来几乎看不清。"
                  "确认是用户要的就在回复里提醒用户；不是就改 job.json 的 format.styles。")
+    page_rule = page_contract(spec["id"], request)  # independent of assets/*/layout.json
     for i, s in enumerate(doc.sections):
         for attr, key in [
             ("page_width", "width"),
@@ -319,7 +321,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             ("gutter", "gutter"),
         ]:
             actual = getattr(s, attr)
-            if actual is None or actual.twips != spec["page_twips"][key]:
+            if actual is None or actual.twips != page_rule[key]:
                 err("PAGE", f"第{i+1}节 {attr} 与本次有效格式（默认值加用户覆盖）不一致。")
             elif i == 0 and key in ("top", "bottom", "left", "right") and actual.twips < 284:
                 warn("MARGIN_TOO_SMALL", f"页边距 {key} 只有 {actual.twips / 567:.2f} 厘米：多数打印机印不到离纸边 0.5 厘米以内的地方，"

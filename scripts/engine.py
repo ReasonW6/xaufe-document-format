@@ -971,16 +971,22 @@ def validate_data(data):
     import jsonschema
 
     schema = load_json(ROOT / "assets/checks/content.schema.json")
-    try:
-        jsonschema.Draft202012Validator(schema).validate(data)
-    except jsonschema.ValidationError as exc:
-        fail(_schema_message(schema, data, exc))
-    for i, b in enumerate(data["blocks"]):
-        if b["type"] == "table":
-            bad = [n for n, row in enumerate(b["rows"]) if len(row) != len(b["header"])]
+    # Every broken block at once (one line each), so one repair round can fix them all.
+    groups = {}
+    for exc in jsonschema.Draft202012Validator(schema).iter_errors(data):
+        groups.setdefault(tuple(exc.absolute_path)[:2], []).append(exc)
+    problems = [_schema_message(schema, data, jsonschema.exceptions.best_match(found)) for _, found in sorted(
+        groups.items(), key=lambda item: [str(x).zfill(6) for x in item[0]])]
+    blocks = data.get("blocks") if isinstance(data, dict) and isinstance(data.get("blocks"), list) else []
+    for i, b in enumerate(blocks):
+        if isinstance(b, dict) and b.get("type") == "table" and isinstance(b.get("rows"), list) \
+                and isinstance(b.get("header"), list) and ("blocks", i) not in groups:
+            bad = [n for n, row in enumerate(b["rows"]) if isinstance(row, list) and len(row) != len(b["header"])]
             if bad:
-                fail(f"content.json 的 blocks[{i}]（表格）: rows[{bad[0]}] 有 {len(b['rows'][bad[0]])} 格，"
-                     f"表头有 {len(b['header'])} 格；每行格数要和表头相同（空格子写 \"\"）。")
+                problems.append(f"content.json 的 blocks[{i}]（表格）: rows[{bad[0]}] 有 {len(b['rows'][bad[0]])} 格，"
+                                f"表头有 {len(b['header'])} 格；每行格数要和表头相同（空格子写 \"\"）。")
+    if problems:
+        fail("\n".join(dict.fromkeys(problems)))
     if not SPEC["english_abstract"]:
         if any(k in data for k in ("abstract_en", "keywords_en")) or data.get("metadata", {}).get(
             "title_en"
@@ -1160,6 +1166,33 @@ def inventory(input_path):
         "blocks": blocks,
         "instructions": "paragraph id 的角色映射必须根据完整清单确认；block_index 仅用于明确的封面替换范围。",
     }
+
+
+# Roles whose first-line position the template sets: blanks typed in front of the text to fake an
+# indent would push it further (code and table cells keep theirs).
+INDENTED_ROLES = {"body", "abstract_zh", "abstract_en", "h1", "h2", "h3", "h4", "preface", "caption",
+                  "reference", "title_zh", "title_en", "keywords_zh", "keywords_en", "equation"}
+LEADING_BLANKS = " \t\u3000\u00a0"
+
+
+def strip_typed_indent(p):
+    """Remove spaces, full-width spaces and tabs typed before the first character; return how many."""
+    removed = 0
+    for node in list(p._p.iter()):
+        if node.tag == qn("w:tab") and node.getparent() is not None and node.getparent().tag == qn("w:r"):
+            node.getparent().remove(node)
+            removed += 1
+        elif node.tag == qn("w:t"):
+            text = node.text or ""
+            kept = text.lstrip(LEADING_BLANKS)
+            removed += len(text) - len(kept)
+            node.text = kept
+            if kept:
+                break
+        elif node.tag in (qn("w:drawing"), qn("w:pict"), qn("w:fldChar"), qn("w:instrText"), qn("w:sym"),
+                          qn("w:br"), qn("w:cr"), qn("m:oMath"), qn("m:oMathPara"), qn("w:object")):
+            break
+    return removed
 
 
 def content_signature(doc, root=None):
@@ -1462,6 +1495,11 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
                 fail(f"原稿 p{i}“{p.text.strip()[:15]}”（role {roles.get(f'p{i}', default)}）：{exc}")
             if change:
                 spacing_changes.append(dict(change, paragraph=f"p{i}"))
+    # The template indents; a typed indent is layout, not text (the source comparison ignores it too).
+    indent_changes = []
+    for i, p in enumerate(doc.paragraphs):
+        if roles.get(f"p{i}", default) in INDENTED_ROLES and strip_typed_indent(p):
+            indent_changes.append(f"p{i}“{p.text.strip()[:15]}”")
     for i, p in enumerate(doc.paragraphs):
         role = roles.get(f"p{i}", default)
         wanted = m["metadata"].get(role, "") if role in ("title_zh", "title_en") else None
@@ -1576,5 +1614,6 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         "deleted_paragraphs": deleted,
         "body_preservation": "passed; includes payload hashes and post-cover-replacement body check",
         "keyword_spacing_changes": spacing_changes,
+        "typed_indent_removed": indent_changes,
         "message": "重排初稿已生成；内容保全检查通过。",
     }

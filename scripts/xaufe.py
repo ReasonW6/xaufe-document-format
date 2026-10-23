@@ -66,6 +66,41 @@ def cmd_compare(_args):
 
 
 # ---------------------------------------------------------------- new
+def _previous_job(source):
+    """job.json of an earlier output of this skill, read back from the file itself: template, logo,
+    format request, cover on/off, cover values and blanks, date.  None for any other file."""
+    import docx
+    import engine as E
+    from check_format import _cover_values
+    from customization import effective_profile
+
+    if Path(source).suffix.lower() != ".docx":
+        return None
+    doc = docx.Document(source)
+    vv = E.get_vars(doc)
+    template = vv.get("XAUFE_TEMPLATE")
+    if template not in ("A", "B"):
+        return None
+    recorded = json.loads(vv.get("XAUFE_FORMAT_REQUEST", "{}"))
+    request = dict(recorded)
+    job = {"task": "format", "template": template}
+    if "logo" in request:
+        job["logo"] = request.pop("logo")
+    if vv.get("XAUFE_HAS_COVER") == "1":
+        values = _cover_values(doc, effective_profile(template, recorded))
+        job["info"] = {k: v for k, v in values.items() if v}
+        if vv.get("XAUFE_EFFECTIVE_DATE"):
+            job["info"]["date"] = vv["XAUFE_EFFECTIVE_DATE"]
+        blank = [k for k, v in values.items() if not v]
+        if blank:
+            job["blank"] = blank
+    else:
+        job["cover"] = False
+    if request:
+        job["format"] = request
+    return job
+
+
 def cmd_new(args):
     import delivery as D
 
@@ -73,6 +108,17 @@ def cmd_new(args):
     work = job["workspace"]
     print(f"WORK = {work}")
     print(f"最终 Word 将保存到：{job['destination']}")
+    for source in args.source or []:
+        try:
+            previous = _previous_job(source)
+        except Exception:  # an unreadable file is the inspect step's business, not new's
+            previous = None
+        if previous:
+            _write(Path(work) / "job.json", previous)
+            print(f"原稿是本技能以前生成的成品：已按它记录的设置恢复 {Path(work) / 'job.json'}（版式、校徽、封面信息、全部格式要求）。"
+                  "这是修改旧成品：只改用户这次说的那一项，其余保持不动；task 默认为 format，要改内容就改成 write。")
+            print(json.dumps(previous, ensure_ascii=False, indent=1))
+            break
     print("下一步：")
     print(f"  1. 写 {Path(work) / 'job.json'}（写法见 references/job.md）")
     print(f"  2. 运行 check --work \"{work}\" 看还缺什么封面信息")
@@ -434,6 +480,30 @@ def _document_references(root):
     return []
 
 
+def _auto_original_refs(root):
+    """Format only: check the original's references once (report only, the text is never changed),
+    so finish can tell the user what was found.  Skipped when the agent already ran refs."""
+    import os
+    import refcheck as R
+
+    if os.environ.get("XAUFE_SKIP_REF_CHECK") or (root / "refs.json").exists() or (root / "refs-result.json").exists() \
+            or (root / "refs-offline.json").exists():
+        return None
+    lines = _document_references(root)
+    if not lines:
+        return None
+    if not R._online():
+        _write(root / "refs-offline.json", {"references": len(lines)})
+        return "原文参考文献：这台机器连不上文献核对服务，没有核对（finish 会如实告诉用户；联网后可以运行 refs --from-document 再核对）。"
+    entries = [R.parse_line(line) for line in lines]
+    _write(root / "refs.json", entries)
+    results = R.check_all(entries)
+    _write(root / "refs-result.json", {"refs_sha256": hashlib.sha256((root / "refs.json").read_bytes()).hexdigest(),
+                                       "min": 0, "results": results})
+    return ("原文参考文献已自动核对（只报告，不改原文；finish 会把结果给用户）：\n"
+            + R.report(results, entries, 0, report_only=True))
+
+
 def _original_reference_report(root):
     """Format only: what the refs check found about the user's own references (nothing was changed)."""
     import refcheck as R
@@ -443,7 +513,8 @@ def _original_reference_report(root):
             count = len(_document_references(root))
         except (OSError, ValueError):
             count = 0
-        return (f"这是只排版：文中的 {count} 条参考文献按原文保留，只统一了格式，没有核对它们是否真实存在、"
+        why = "这次连不上文献核对服务，" if (root / "refs-offline.json").is_file() else ""
+        return (f"这是只排版：文中的 {count} 条参考文献按原文保留，只统一了格式；{why}没有核对它们是否真实存在、"
                 "信息是否准确。需要的话可以再帮你逐条核对。") if count else None
     saved = _read(root / "refs-result.json", "refs-result.json")
     lines = ["| 序号 | 文献（原文） | 核对结果 | 说明 |", "|---|---|---|---|"]
@@ -794,6 +865,10 @@ def _build(root, level):
             print(f"按 mapping 删除了 {len(result['deleted_paragraphs'])} 段（role 为 delete 或 old_toc）：")
             for text in result["deleted_paragraphs"]:
                 print("  - " + (text or "（空段）"))
+        if result.get("typed_indent_removed") and level == 0:
+            shown = result["typed_indent_removed"]
+            print(f"去掉了 {len(shown)} 段段首用空格/全角空格/Tab 打出来的缩进（模板自带首行缩进，文字没动）："
+                  + "、".join(shown[:5]) + ("等" if len(shown) > 5 else ""))
     else:
         raise ValueError("还没有内容：新写文档请写 content.json；已有 Word 请先运行 inspect。")
     return draft
@@ -943,6 +1018,10 @@ def cmd_run(args):
         print("\n需要处理的提示：")
         for w in result["warnings"]:
             print("  - " + F.warning_text(w))
+    if _task(root) == "format":
+        checked = _auto_original_refs(root)
+        if checked:
+            print("\n" + checked)
     review = root / "review.json"
     if result["validation_scope"] == "static-only":
         print(f"\n→ 下一步：这次没有页图。核对内容和格式后，把 {review} 里所有“请填写”换成你的实际检查结果，然后运行 finish。")
