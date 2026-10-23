@@ -104,7 +104,7 @@ class InstructionClarity(unittest.TestCase):
         self.complete("A", {"english_abstract": False})
         with self.assertRaises(ValueError) as cm:
             self.build(self.sample(abstract_en="Synthetic abstract."))
-        self.assertIn("本次有效格式未启用", str(cm.exception))
+        self.assertIn("本次版式不含英文摘要", str(cm.exception))
         self.assertNotIn("红色模板", str(cm.exception))
 
     def test_b_enabled_english_is_accepted(self):

@@ -132,6 +132,92 @@ class FormatTests(unittest.TestCase):
         self.assertCode(r, "FOOTER")
         self.assertCode(r, "FOOTER_FIELD")
 
+    def test_bold_heading_rejected(self):
+        def heading(d):
+            next(p for p in d.paragraphs if p.style.name == "Heading 1").runs[0].bold = True
+
+        self.assertCode(self.changed(heading), "FONT_BOLD")
+
+    def test_bold_words_in_body_allowed(self):
+        def word(d):
+            body = next(p for p in d.paragraphs if p.style.name == "XAUFE Body")
+            body.add_run("强调").bold = True
+
+        self.assertTrue(self.changed(word)["passed"])
+
+    def test_wholly_bold_body_paragraph_flagged(self):
+        def whole(d):
+            body = next(p for p in d.paragraphs if p.style.name == "XAUFE Body")
+            body.add_run("这是一整段都加粗的合成正文，用来检查整段加粗的提示。")
+            for r in body.runs:
+                r.bold = True
+
+        r = self.changed(whole)
+        self.assertIn("FONT_BOLD_PARAGRAPH", {w["code"] for w in r["warnings"]})
+
+    def test_caption_cut_off_from_its_table_by_a_blank_rejected(self):
+        data = deepcopy(self.data)
+        data["blocks"].append({"type": "table", "caption": "表1 测试表", "header": ["甲", "乙"], "rows": [["1", "2"]]})
+
+        def mutate(d):
+            caption = next(p for p in d.paragraphs if p.text == "表1 测试表")
+            caption._p.addnext(OxmlElement("w:p"))
+
+        p = self.make(data)
+        self.assertTrue(check(p)["passed"])
+        d = Document(p)
+        mutate(d)
+        d.save(p)
+        r = check(p)
+        self.assertCode(r, "CAPTION_DETACHED")
+
+    def test_same_numbering_at_two_heading_levels_rejected(self):
+        data = deepcopy(self.data)
+        data["blocks"].append({"type": "heading", "level": 2, "text": "二、错设成二级的标题"})
+        r = check(self.make(data))
+        self.assertCode(r, "HEADING_LEVEL")
+        self.assertIn("二、错设成二级的标题", " ".join(e["message"] for e in r["errors"]))
+
+    def test_heading_at_a_level_owned_by_another_numbering_rejected(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、测试标题"},
+                          {"type": "paragraph", "text": "保留原文。"},
+                          {"type": "heading", "level": 1, "text": "（二）错设成一级的标题"}]
+        r = check(self.make(data))
+        self.assertIn("另一种编号", " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL"))
+
+    def test_swapped_heading_levels_rejected_unless_user_owns_the_numbering(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 2, "text": "一、本该是一级的标题"},
+                          {"type": "paragraph", "text": "保留原文。"},
+                          {"type": "heading", "level": 1, "text": "（一）本该是二级的标题"},
+                          {"type": "paragraph", "text": "保留原文。"}]
+        r = check(self.make(data))
+        found = " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL")
+        self.assertIn("本该是一级", found)
+        self.assertIn("本该是二级", found)
+        src = self.d / "own.json"
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        session = self.session_for(data.get("metadata", {}), name="own.intake.json")
+        intake.customize(session, {"heading_numbering": "own"}, "用户确认原稿就是这样编号")
+        out = self.d / "own.docx"
+        engine.build(src, out, intake_path=session)
+        self.assertNotIn("HEADING_LEVEL", {e["code"] for e in check(out)["errors"]})
+
+    def test_lost_heading_in_body_rejected_but_numbered_list_allowed(self):
+        data = deepcopy(self.data)
+        data["blocks"] += [{"type": "heading", "level": 3, "text": "1.三级标题"},
+                           {"type": "paragraph", "text": "2.数据来源"},
+                           {"type": "paragraph", "text": "这一段是正文，说明数据从哪里来。"}]
+        r = check(self.make(data))
+        self.assertIn("2.数据来源", " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL"))
+        listed = deepcopy(self.data)
+        listed["blocks"] += [{"type": "heading", "level": 3, "text": "1.三级标题"},
+                             {"type": "paragraph", "text": "2.准确性"}, {"type": "paragraph", "text": "3.完整性"},
+                             {"type": "paragraph", "text": "以上两点是要求。"}]
+        r = check(self.make(listed, name="list.docx"))
+        self.assertNotIn("HEADING_LEVEL", {e["code"] for e in r["errors"]})
+
     def test_wrong_body_size_rejected(self):
         def mutate(d):
             next(p for p in d.paragraphs if p.style.name == "XAUFE Body").runs[0].font.size = Pt(12)
@@ -185,6 +271,18 @@ class FormatTests(unittest.TestCase):
         p = self.make(data)
         self.assertTrue(check(p)["passed"])
         self.assertCode(check(p, final=True), "TOC_UNRESOLVED")
+
+    def test_abstract_tagged_as_body_named_as_abstract(self):
+        data = json.loads((ROOT / "examples/A/content.json").read_text())
+        data["blocks"] = [b for b in data["blocks"] if b["type"] != "image"]
+        p = self.make(data)
+        d = Document(p)
+        abstract = next(q for q in d.paragraphs if q.style.name == "XAUFE Abstract Chinese")
+        abstract.style = d.styles["XAUFE Body"]
+        d.save(p)
+        mismatches = [e["message"] for e in check(p)["errors"] if e["code"] in ("ROLE_MISMATCH", "PART_ORDER")]
+        self.assertTrue(mismatches)
+        self.assertTrue(all("abstract_zh" in m and "关键词之间" in m for m in mismatches), mismatches)
 
     def test_master_contains_no_filled_personal_fields(self):
         d = Document(ROOT / "assets/A/format-master.docx")
@@ -338,6 +436,26 @@ class FormatTests(unittest.TestCase):
         d = Document(out)
         self.assertTrue(engine.content_signature(d)["text"].endswith(before["text"]))
         self.assertTrue(check(out)["passed"])
+
+
+
+class ColumnWidths(unittest.TestCase):
+    def test_long_text_column_gets_the_room_and_total_is_exact(self):
+        import engine
+
+        rows = [["编号", "说明", "数值"]] + [[str(i), "一段较长的说明文字，需要更宽的列才不至于每行一个字。", "3.5"] for i in range(5)]
+        widths = engine.column_widths(rows, 8958)
+        self.assertEqual(sum(widths), 8958)
+        self.assertGreater(widths[1], 2 * max(widths[0], widths[2]))
+        self.assertTrue(all(w - 216 >= 210 for w in widths))
+
+    def test_explicit_ratios_and_short_tables(self):
+        import engine
+
+        self.assertEqual(engine.column_widths([["a", "b", "c"]], 9000, [1, 1, 2]), [2250, 2250, 4500])
+        even = engine.column_widths([["甲", "乙"], ["1", "2"]], 8958)
+        self.assertEqual(sum(even), 8958)
+        self.assertLessEqual(abs(even[0] - even[1]), 1)
 
 
 if __name__ == "__main__":

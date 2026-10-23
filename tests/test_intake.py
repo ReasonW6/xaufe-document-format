@@ -461,7 +461,30 @@ class ProfileTests(unittest.TestCase):
             d.element.body.insert(15, p)
 
         r = self.mutate(change, mode="paper")
-        self.assertIn("PART_ORDER", [e["code"] for e in r["errors"]])
+        order = [e for e in r["errors"] if e["code"] == "PART_ORDER"]
+        self.assertTrue(order)
+        # The message names the paragraph, so the feedback can point at its mapping row.
+        import feedback as F
+
+        issue = F.explain(order)[0]
+        self.assertRegex(issue["where"]["location"], r"^成品第\d+段$")
+        self.assertIn("目录", order[0]["message"])
+        self.assertIn("role", issue["fix"])
+
+    def test_job_errors_name_the_json_path_and_the_nearest_key(self):
+        from customization import effective_profile
+
+        for request, words in (({"styles": {"h1": {"szie": 12}}}, ("format.styles.h1", "“size”")),
+                               ({"styles": {"h1": {"size": 200}}}, ("format.styles.h1.size",)),
+                               ({"stlyes": {}}, ("format 里", "“styles”")),
+                               ({"page_twips": {"left": -1}}, ("format.page_twips.left", "567"))):
+            with self.subTest(request=request), self.assertRaises(ValueError) as caught:
+                effective_profile("A", request)
+            for word in words:
+                self.assertIn(word, str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            I.from_job({"task": "format", "template": "A", "tempalte": "A"}, self.d / "x.json")
+        self.assertIn("“template”", str(caught.exception))
 
     def test_wrong_template_logo_rejected(self):
         def change(d):

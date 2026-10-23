@@ -82,7 +82,24 @@ def verify(root: Path) -> dict:
     return {"passed": not bad, "files": len(listed), "errors": bad}
 
 
+def write_manifest(root: Path) -> int:
+    """Regenerate SHA256SUMS from the files on disk (maintainers, after a deliberate change)."""
+    root = Path(root).resolve()
+    manifest = root / "SHA256SUMS"
+    names = sorted(
+        p.relative_to(root).as_posix()
+        for p in root.rglob("*")
+        if p.is_file() and p != manifest and not ignored(p.relative_to(root))
+    )
+    lines = [hashlib.sha256((root / n).read_bytes()).hexdigest() + "  " + n for n in names]
+    manifest.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    return len(names)
+
+
 def main() -> int:
+    if "--update" in sys.argv[1:]:
+        print(f"已重写 SHA256SUMS：{write_manifest(ROOT)} 个文件。先确认这些改动都是有意的。")
+        return 0
     result = verify(ROOT)
     if not result["passed"]:
         print("\n".join(result["errors"]), file=sys.stderr)

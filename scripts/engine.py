@@ -17,6 +17,7 @@ from docx.text.paragraph import Paragraph
 
 ROOT = Path(__file__).resolve().parents[1]
 from profiles import load_profile
+from textio import read_text_any
 from customization import (
     effective_profile,
     apply_cover,
@@ -27,7 +28,7 @@ from customization import (
 from intake import require as require_intake, digest
 from table_layout import fit_table, resize_inline
 from keywords import normalize as normalize_keywords, split_label_runs
-from style_model import run_properties
+from style_model import run_properties, paragraph_properties, on
 from cover_date import apply as position_cover_date
 
 SPEC: dict = {}
@@ -56,19 +57,6 @@ ROLES = ROLE_STYLES
 
 def fail(message: str) -> None:
     raise ValueError(message)
-
-
-def read_text_any(path: str | Path) -> str:
-    """UTF-8 (with or without BOM); also UTF-16 and GBK files written by Windows tools."""
-    raw = Path(path).read_bytes()
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return raw.decode("utf-16")
-    for encoding in ("utf-8-sig", "gbk"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    fail(f"{Path(path).name} 的编码无法识别，请用 UTF-8 重新保存。")
 
 
 def load_json(path: str | Path) -> dict:
@@ -224,8 +212,22 @@ def configure_style(
     return st
 
 
+def builtin_style_names(doc):
+    """LibreOffice and WPS write built-in styles as "Heading 1"; Word and python-docx look them up as
+    "heading 1".  Without this, the template's Heading 1 would be added a second time with the same
+    styleId and Word would pick either one."""
+    from docx.styles import BabelFish
+
+    internal = {i for _, i in BabelFish.style_aliases}
+    for name in doc.styles.element.xpath("./w:style/w:name"):
+        value = name.get(qn("w:val")) or ""
+        if value != value.lower() and value.lower() in internal:
+            name.set(qn("w:val"), value.lower())
+
+
 def install_styles(doc):
     require_profile()
+    builtin_style_names(doc)
     # Some masters have no default paragraph style; then an unstyled paragraph
     # has style None. Make the existing Normal style the default.
     from docx.enum.style import WD_STYLE_TYPE as _T
@@ -313,6 +315,11 @@ def style_paragraph(p, role, *, preserve_num=False, style_name=None):
         if previous.get("vanish") or previous.get("webHidden") or previous.get("specVanish"):
             fail("原文含隐藏文字；必须先明确是否显示或保留，不自动揭示或删除隐藏内容。")
         font(rp, cn, size, bold or preserve_bold, latin=role_latin(role))
+        # Look-only decorations are not part of the template; marks that can carry meaning
+        # (strike, caps, emphasis dots) stay and are reported by the check instead.
+        for tag in ("w:highlight", "w:shd", "w:emboss", "w:imprint", "w:outline", "w:shadow", "w:effect"):
+            for node in rp.findall(qn(tag)):
+                rp.remove(node)
         if (
             role in ("body", "reference", "table_text", "code")
             and previous.get("i")
@@ -582,6 +589,49 @@ def safe_out(input_path, output, force=False):
     return output
 
 
+FRONT_ROLES = {"title_zh", "title_en", "abstract_label_zh", "abstract_label_en", "abstract_zh", "abstract_en",
+               "keywords_zh", "keywords_en", "toc_title", "toc1", "toc2", "toc3", "toc4"}
+MAIN_ROLES = {"preface", "h1", "h2", "h3", "h4", "body", "reference_title", "reference"}
+
+
+def number_sections(doc):
+    """Front matter (abstracts, TOC) numbered I, II, ...; body from 1, continuing to the end."""
+    names = {name: role for role, name in ROLES.items()}
+    current, front_seen, main_seen = set(), False, False
+    for el in doc.element.body:
+        if el.tag == qn("w:p"):
+            current.add(names.get(Paragraph(el, doc._body).style.name))
+            sect = el.find(qn("w:pPr") + "/" + qn("w:sectPr"))
+        else:
+            sect = el if el.tag == qn("w:sectPr") else None
+        if sect is None:
+            continue
+        if main_seen or current & MAIN_ROLES:
+            page = element(sect, "w:pgNumType", fmt="decimal")
+            page.attrib.pop(qn("w:start"), None)
+            if not main_seen:
+                page.set(qn("w:start"), "1")
+            main_seen = True
+        elif current & FRONT_ROLES:
+            page = element(sect, "w:pgNumType", fmt="upperRoman")
+            page.attrib.pop(qn("w:start"), None)
+            if not front_seen:
+                page.set(qn("w:start"), "1")
+            front_seen = True
+        current = set()
+
+
+def number_plain_sections(doc, has_cover):
+    """A document without paper structure: arabic numbers from 1 after the cover, continuing to the end."""
+    for i, section in enumerate(doc.sections):
+        if has_cover and i == 0:
+            continue
+        page = element(section._sectPr, "w:pgNumType", fmt="decimal")
+        page.attrib.pop(qn("w:start"), None)
+        if i == (1 if has_cover else 0):
+            page.set(qn("w:start"), "1")
+
+
 def finalize(doc, out, meta, has_cover, mode, state=None):
     if state and "include_cover" in state and state["include_cover"] != bool(has_cover):
         fail(
@@ -589,6 +639,11 @@ def finalize(doc, out, meta, has_cover, mode, state=None):
         )
     set_page(doc)
     headers_footers(doc, meta, has_cover)
+    front = {ROLES["toc_title"], ROLES["abstract_label_zh"], ROLES["abstract_label_en"]}
+    if mode == "paper" or any(p.style is not None and p.style.name in front for p in doc.paragraphs):
+        number_sections(doc)  # also an earlier output of this skill revised as a "document"
+    else:
+        number_plain_sections(doc, has_cover)
     if has_cover:
         apply_cover(doc, SPEC)
         position_cover_date(doc, SPEC)
@@ -691,6 +746,14 @@ def add_text(p, b):
     if "runs" in b:
         for item in b["runs"]:
             r = p.add_run(item["text"])
+            if item.get("link"):
+                # A real external hyperlink around the run; the run keeps the paragraph's formatting.
+                from docx.opc.constants import RELATIONSHIP_TYPE as RT
+
+                link = OxmlElement("w:hyperlink")
+                link.set(qn("r:id"), p.part.relate_to(item["link"], RT.HYPERLINK, is_external=True))
+                r._r.addprevious(link)
+                link.append(r._r)
             if item.get("superscript"):
                 r.font.superscript = True
             if item.get("subscript"):
@@ -763,78 +826,213 @@ def format_table(table, *, repeat_header=False):
     )
 
 
+def _display_units(text):
+    """Width in half-em units at the body size: a CJK character is 2, a Latin letter 1."""
+    return sum(2 if ord(ch) > 0x2E80 else 1 for ch in str(text))
+
+
+def column_widths(rows, total, ratios=None):
+    """Split ``total`` twips between columns by content (or explicit ``widths`` ratios).
+
+    Short columns get what their longest cell needs; long text columns share the
+    rest, so a description column is not squeezed to one character per line while
+    a numeric column wastes space.  Cell margins (2 × 108 twips) are included.
+    """
+    n = len(rows[0])
+    if ratios:
+        weights = [float(x) for x in ratios]
+    else:
+        unit, margin = 105, 216  # half of a 10.5 pt character, default left+right cell margins
+        desired, minimum = [], []
+        for c in range(n):
+            cells = [str(row[c]) for row in rows]
+            longest = max(_display_units(x) for x in cells)
+            word = max((_display_units(w) for x in cells for w in re.findall(r"[A-Za-z0-9_.%-]+", x)), default=0)
+            desired.append(min(longest, 60) * unit + margin)
+            minimum.append(max(4, min(word, 16)) * unit + margin)
+        if sum(desired) <= total:
+            weights = desired
+        elif sum(minimum) >= total:
+            weights = minimum
+        else:
+            # Columns that fit in a fair share get their full width; long-text
+            # columns share what is left, never below their minimum.
+            weights, open_, remaining = [0.0] * n, set(range(n)), float(total)
+            while open_:
+                share = remaining / len(open_)
+                fixed = [c for c in open_ if desired[c] <= share]
+                if not fixed:
+                    break
+                for c in fixed:
+                    weights[c] = desired[c]
+                    remaining -= desired[c]
+                    open_.discard(c)
+            if open_:
+                need = sum(desired[c] for c in open_)
+                for c in open_:
+                    weights[c] = max(minimum[c], remaining * desired[c] / need)
+    scale = total / sum(weights)
+    widths = [int(w * scale) for w in weights]
+    widths[-1] += total - sum(widths)
+    return widths
+
+
 def add_blocks(doc, blocks, base, entries):
     heading_iter = iter([e for e in entries if e[0] != "_xaufe_references"])
-    for b in blocks:
-        typ = b["type"]
-        if typ == "heading":
-            role = "preface" if b.get("preface") else "h" + str(b["level"])
-            p = doc.add_paragraph(b["text"], ROLES[role])
-            name, _, _ = next(heading_iter)
-            bookmark(p, name, int(name.rsplit("_", 1)[-1]) + 10)
-        elif typ in ("paragraph", "code", "equation"):
-            p = doc.add_paragraph(style=ROLES["body" if typ == "paragraph" else typ])
-            add_text(p, b)
-        elif typ == "image":
-            f = (base / b["path"]).resolve()
-            if not f.is_file():
-                fail(f"图片缺失：{f}。禁止用占位图替代。")
-            if b.get("caption") and not isinstance(b["caption"], str):
-                fail("图题必须是字符串。")
-            p = doc.add_paragraph(style=ROLES["figure"])
-            r = p.add_run()
-            width = Cm(b.get("width_cm", WIDTH / 1440 * 2.54))
-            if width > Twips(WIDTH):
-                fail("图片宽度超过版心，必须等比缩小。")
-            shape = r.add_picture(str(f), width=width)
-            for key in ("distT", "distB", "distL", "distR"):
-                shape._inline.set(key, "0")
-            maxheight = Pt(580)
-            if shape.height > maxheight:
-                ratio = maxheight / shape.height
-                shape.width = int(shape.width * ratio)
-                shape.height = int(maxheight)
-            shape._inline.docPr.set("descr", b.get("alt", b.get("caption", "文档插图")))
-            if b.get("caption"):
-                doc.add_paragraph(b["caption"], ROLES["caption"])
-            else:
-                p.paragraph_format.keep_with_next = False
-        elif typ == "table":
-            if b.get("caption"):
-                p = doc.add_paragraph(b["caption"], ROLES["caption"])
-                p.paragraph_format.keep_with_next = True
-            rows = [b["header"]] + b["rows"]
-            n = len(rows[0])
-            t = doc.add_table(rows=len(rows), cols=n)
-            t.style = "Table Grid"
-            for col in t.columns:
-                col.width = Twips(WIDTH // n)
-            for ri, row in enumerate(rows):
-                for ci, value in enumerate(row):
-                    t.cell(ri, ci).text = value
-            format_table(t, repeat_header=True)
-        elif typ == "page_break":
-            p = doc.add_paragraph(style=ROLES["spacer"])
-            p.paragraph_format.line_spacing = Pt(1)
-            p.add_run().add_break(WD_BREAK.PAGE)
+    for index, b in enumerate(blocks):
+        try:
+            _add_block(doc, b, base, heading_iter)
+        except ValueError as exc:
+            what = str(b.get("caption") or b.get("text") or "")[:15]
+            raise ValueError(f"content.json 的 blocks[{index}]（{b.get('type')}{'“' + what + '”' if what else ''}）：{exc}") from exc
+
+
+def _add_block(doc, b, base, heading_iter):
+    typ = b["type"]
+    if typ == "heading":
+        role = "preface" if b.get("preface") else "h" + str(b["level"])
+        p = doc.add_paragraph(b["text"], ROLES[role])
+        name, _, _ = next(heading_iter)
+        bookmark(p, name, int(name.rsplit("_", 1)[-1]) + 10)
+    elif typ in ("paragraph", "code", "equation"):
+        p = doc.add_paragraph(style=ROLES["body" if typ == "paragraph" else typ])
+        add_text(p, b)
+    elif typ == "image":
+        f = (base / b["path"]).resolve()
+        if not f.is_file():
+            fail(f"图片缺失：{f}。禁止用占位图替代。")
+        if b.get("caption") and not isinstance(b["caption"], str):
+            fail("图题必须是字符串。")
+        p = doc.add_paragraph(style=ROLES["figure"])
+        r = p.add_run()
+        width = Cm(b.get("width_cm", WIDTH / 1440 * 2.54))
+        if width > Twips(WIDTH):
+            fail("图片宽度超过版心，必须等比缩小。")
+        shape = r.add_picture(str(f), width=width)
+        for key in ("distT", "distB", "distL", "distR"):
+            shape._inline.set(key, "0")
+        maxheight = Pt(580)
+        if shape.height > maxheight:
+            ratio = maxheight / shape.height
+            shape.width = int(shape.width * ratio)
+            shape.height = int(maxheight)
+        shape._inline.docPr.set("descr", b.get("alt", b.get("caption", "文档插图")))
+        if b.get("caption"):
+            doc.add_paragraph(b["caption"], ROLES["caption"])
         else:
-            fail(f"未实现的块类型：{typ}")
+            p.paragraph_format.keep_with_next = False
+    elif typ == "table":
+        if b.get("caption"):
+            p = doc.add_paragraph(b["caption"], ROLES["caption"])
+            p.paragraph_format.keep_with_next = True
+        rows = [b["header"]] + b["rows"]
+        n = len(rows[0])
+        t = doc.add_table(rows=len(rows), cols=n)
+        t.style = "Table Grid"
+        for col, width in zip(t.columns, column_widths(rows, WIDTH, b.get("widths"))):
+            col.width = Twips(width)
+        for ri, row in enumerate(rows):
+            for ci, value in enumerate(row):
+                t.cell(ri, ci).text = value
+        format_table(t, repeat_header=True)
+    elif typ == "page_break":
+        p = doc.add_paragraph(style=ROLES["spacer"])
+        p.paragraph_format.line_spacing = Pt(1)
+        p.add_run().add_break(WD_BREAK.PAGE)
+    else:
+        fail(f"未实现的块类型：{typ}")
 
 
-def validate_data(data):
+def _schema_message(schema, data, exc):
+    """A content.json schema error as "where: what is wrong, what is allowed" (for a block, checked
+    against the one shape its type asks for, not the list of all shapes)."""
+    import jsonschema
+
+    path = list(exc.absolute_path)
+    if len(path) >= 2 and path[0] == "blocks" and isinstance(path[1], int):
+        block = data["blocks"][path[1]]
+        shapes = schema["properties"]["blocks"]["items"]["oneOf"]
+        kinds = lambda shape: [shape["properties"]["type"]["const"]] if "const" in shape["properties"]["type"] \
+            else shape["properties"]["type"]["enum"]
+        where = f"content.json 的 blocks[{path[1]}]"
+        if not isinstance(block, dict) or block.get("type") not in [k for sh in shapes for k in kinds(sh)]:
+            got = block.get("type") if isinstance(block, dict) else block
+            return f"{where}: type={got!r} 不认识，可用的 type：" + "、".join(k for sh in shapes for k in kinds(sh)) + "。"
+        shape = next(sh for sh in shapes if block["type"] in kinds(sh))
+        inner = jsonschema.Draft202012Validator(shape).iter_errors(block)
+        first = min(inner, key=lambda e: len(list(e.absolute_path)), default=None)
+        allowed = "、".join(shape["properties"])
+        if first is None:
+            return f"{where}: 写法不对（{block['type']} 可用的字段：{allowed}）。"
+        field = "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in first.absolute_path)
+        if first.validator == "additionalProperties":
+            extra = sorted(set(block) - set(shape["properties"])) if not first.absolute_path else []
+            return f"{where}{field}: 多了不认识的字段 {'、'.join(extra) or first.message}；{block['type']} 可用的字段：{allowed}。"
+        if first.validator == "oneOf" and not first.absolute_path:
+            return f"{where}: text 和 runs 要写一个（只写一个）；{block['type']} 可用的字段：{allowed}。"
+        if first.validator == "required":
+            return f"{where}{field}: 缺少必填字段 {first.message.split()[0]}；{block['type']} 可用的字段：{allowed}。"
+        if first.validator == "type":
+            kind = {"boolean": "true 或 false", "string": "文字（加引号）", "integer": "整数", "number": "数字",
+                    "array": "列表 [...]", "object": "{...} 对象"}.get(str(first.validator_value), first.validator_value)
+            return f"{where}{field}: 现在是 {first.instance!r}，应为 {kind}。"
+        return f"{where}{field}: {_schema_words(first)}；{block['type']} 可用的字段：{allowed}。"
+    field = ".".join(map(str, path)) or "顶层"
+    return f"content.json 的 {field}: {_schema_words(exc)}（content.json 的写法见 references/content.md）。"
+
+
+def _schema_words(err):
+    """A jsonschema error in Chinese (the common validators; others keep jsonschema's text)."""
+    v, value, got = err.validator, err.validator_value, err.instance
+    words = {
+        "maximum": lambda: f"现在是 {got!r}，最大只能是 {value}",
+        "minimum": lambda: f"现在是 {got!r}，最小是 {value}",
+        "exclusiveMaximum": lambda: f"现在是 {got!r}，要小于 {value}",
+        "exclusiveMinimum": lambda: f"现在是 {got!r}，要大于 {value}",
+        "enum": lambda: f"现在是 {got!r}，只能是 " + "、".join(map(repr, value)),
+        "const": lambda: f"现在是 {got!r}，应为 {value!r}",
+        "minLength": lambda: "不能是空的" if value == 1 else f"至少要 {value} 个字",
+        "maxLength": lambda: f"最多 {value} 个字",
+        "minItems": lambda: "不能是空列表" if value == 1 else f"至少要有 {value} 项",
+        "maxItems": lambda: f"最多 {value} 项",
+        "pattern": lambda: f"写法不对：{got!r}",
+    }
+    return words[v]() if v in words else err.message
+
+
+def validate_data(data, base=None):
     import jsonschema
 
     schema = load_json(ROOT / "assets/checks/content.schema.json")
-    try:
-        jsonschema.Draft202012Validator(schema).validate(data)
-    except jsonschema.ValidationError as exc:
-        fail("内容结构错误 " + ".".join(map(str, exc.path)) + ": " + exc.message)
+    # Every broken block at once (one line each), so one repair round can fix them all.
+    groups = {}
+    for exc in jsonschema.Draft202012Validator(schema).iter_errors(data):
+        groups.setdefault(tuple(exc.absolute_path)[:2], []).append(exc)
+    problems = [_schema_message(schema, data, jsonschema.exceptions.best_match(found)) for _, found in sorted(
+        groups.items(), key=lambda item: [str(x).zfill(6) for x in item[0]])]
+    blocks = data.get("blocks") if isinstance(data, dict) and isinstance(data.get("blocks"), list) else []
+    for i, b in enumerate(blocks):
+        if isinstance(b, dict) and b.get("type") == "table" and isinstance(b.get("rows"), list) \
+                and isinstance(b.get("header"), list) and ("blocks", i) not in groups:
+            bad = [n for n, row in enumerate(b["rows"]) if isinstance(row, list) and len(row) != len(b["header"])]
+            if bad:
+                problems.append(f"content.json 的 blocks[{i}]（表格）: rows[{bad[0]}] 有 {len(b['rows'][bad[0]])} 格，"
+                                f"表头有 {len(b['header'])} 格；每行格数要和表头相同（空格子写 \"\"）。")
+        # Missing image files too, so they do not first show up in the run after the schema is fixed.
+        if base is not None and isinstance(b, dict) and b.get("type") == "image" and isinstance(b.get("path"), str) \
+                and not (Path(base) / b["path"]).resolve().is_file():
+            problems.append(f"content.json 的 blocks[{i}]（图片）: 图片文件 {b['path']} 不存在（路径相对 content.json 所在的文件夹）；"
+                            "请用户提供图片，不能用占位图代替。")
+    if problems:
+        fail("\n".join(dict.fromkeys(problems)))
     if not SPEC["english_abstract"]:
         if any(k in data for k in ("abstract_en", "keywords_en")) or data.get("metadata", {}).get(
             "title_en"
         ):
             fail(
-                "本次有效格式未启用英文摘要，但输入含英文摘要或英文题目。用户已要求保留或增加时，先记录english_abstract=true；已明确要求不纳入输出时按该范围处理，否则只询问这部分的去留。不因校徽颜色决定摘要语言。"
+                "content.json 里有英文摘要、英文关键词或英文题目（title_en），但本次版式不含英文摘要。问用户："
+                "要保留就在 job.json 的 format 写 \"english_abstract\": true；不要就从 content.json 去掉 abstract_en、keywords_en 和 metadata.title_en。"
+                "不要按校徽颜色猜。"
             )
     if data.get("mode", "paper") == "paper":
         required = ["abstract_zh", "keywords_zh", "references"]
@@ -846,9 +1044,9 @@ def validate_data(data):
                     f"mode=paper 需要 {key}。用户要求写作就写好这一部分；只排版且原文没有这部分，就把 content.json 的 mode 改成 document。"
                 )
         if not data["blocks"] or data["blocks"][0]["type"] != "heading":
-            fail("完整文档正文第一块应标记为标题或序言。")
+            fail("content.json 的 blocks 第一块要是标题（type heading）或序言：正文从标题开始。")
         if not data["metadata"].get("title_zh"):
-            fail("完整文档必须提供正文所用题目，封面可单独留空。")
+            fail("content.json 的 metadata 要写 title_zh（论文题目，摘要页用）；封面可以不填。")
         if SPEC["english_abstract"] and not data["metadata"].get("title_en"):
             fail("本次包含英文摘要，需要在 content.json 的 metadata 里写 title_en（英文题目）。用户要求写作或翻译时由你写好；只排版且原文没有，就问用户。")
     for lang in ("zh", "en"):
@@ -857,18 +1055,18 @@ def validate_data(data):
                 fail("关键词词项不能是空白或自带分隔符；英文短语内的单个空格可以保留。")
     for b in data["blocks"]:
         if b["type"] == "heading" and b["level"] > SPEC.get("heading_levels", 3):
-            fail("第四级标题需要用户明确heading_levels=4，不自动扩展原模板。")
+            fail("content.json 有四级标题（level 4），模板只到三级：改成三级以内，或用户同意后在 job.json 的 format 写 \"heading_levels\": 4。")
         if b["type"] == "heading" and b.get("preface") and b["level"] != 1:
-            fail("序言必须使用level=1，不能生成不一致的目录层级。")
-        if b["type"] == "table" and any(len(row) != len(b["header"]) for row in b["rows"]):
-            fail("表格行列数不一致。")
+            fail("content.json 里序言（preface）的 level 要写 1。")
+        if b["type"] == "table" and b.get("widths") is not None and len(b["widths"]) != len(b["header"]):
+            fail("表格 widths 的个数要和列数相同（每列一个比例数字）。")
     if any(re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", str(x)) for x in data["metadata"].values()):
         fail("元数据包含无效控制字符。")
 
 
 def add_abstract(doc, data, meta, english=False):
     if english and not SPEC["english_abstract"]:
-        fail("本次有效格式未启用英文摘要；用户明确要求时先记录english_abstract覆盖。")
+        fail("本次版式不含英文摘要：用户要英文摘要就在 job.json 的 format 写 \"english_abstract\": true 再 run。")
     sp = ROLES["abstract_spacer"]
     doc.add_paragraph("", sp)
     doc.add_paragraph(
@@ -911,7 +1109,7 @@ def build(input_path, output, force=False, intake_path=None, cover_min_level=0):
     asset_check()
     data = load_json(input_path)
     data["metadata"] = merge_metadata(data.get("metadata", {}), state)
-    validate_data(data)
+    validate_data(data, Path(input_path).parent)
     out = safe_out(input_path, output, force)
     meta = data["metadata"]
     mode = data.get("mode", "paper")
@@ -957,7 +1155,9 @@ def build(input_path, output, force=False, intake_path=None, cover_min_level=0):
         p = doc.add_paragraph("参 考 文 献", ROLES["reference_title"])
         bookmark(p, "_xaufe_references", 100000)
         for i, text in enumerate(data["references"], 1):
-            prefix = "" if re.match(r"^\s*[\[［]\d+[\]］]", text) else f"[{i}] "
+            # Already numbered ("[1]", "1.", "1、", "（1）"): keep the user's number, never add a second one.
+            numbered = re.match(r"^\s*(?:[\[［]\d+[\]］]|\d+\s*[.．、](?!\d)|[(（]\d+[)）])", text)
+            prefix = "" if numbered else f"[{i}] "
             doc.add_paragraph(prefix + text, ROLES["reference"])
     finalize(doc, out, meta, has_cover, mode, state)
     return {
@@ -973,6 +1173,9 @@ def inventory(input_path):
     doc = Document(input_path)
     blocks = []
     pno = tno = 0
+    from numbering import list_labels
+
+    labels = list_labels(doc)
     for bi, el in enumerate(doc.element.body):
         if el.tag == qn("w:p"):
             p = Paragraph(el, doc._body)
@@ -988,6 +1191,8 @@ def inventory(input_path):
                     "equations": len(el.xpath(".//m:oMath")),
                     "section_break": bool(el.xpath("./w:pPr/w:sectPr")),
                     "has_fields": bool(el.xpath(".//w:instrText|.//w:fldSimple")),
+                    "numbered": el in labels,  # an auto number or bullet Word shows before the text
+                    "list_label": labels.get(el) or "",
                 }
             )
             pno += 1
@@ -1008,6 +1213,150 @@ def inventory(input_path):
         "blocks": blocks,
         "instructions": "paragraph id 的角色映射必须根据完整清单确认；block_index 仅用于明确的封面替换范围。",
     }
+
+
+# Roles whose first-line position the template sets: blanks typed in front of the text to fake an
+# indent would push it further (code and table cells keep theirs).
+INDENTED_ROLES = {"body", "abstract_zh", "abstract_en", "h1", "h2", "h3", "h4", "preface", "caption",
+                  "reference", "title_zh", "title_en", "keywords_zh", "keywords_en", "equation"}
+NEW_PAGE_SECTIONS = {None, "nextPage", "oddPage", "evenPage"}
+
+
+def blank_page_breaks(doc):
+    """Page starts with nothing visible since the page before started: Word shows an empty page at
+    each, even where LibreOffice folds the breaks together.  Yields (paragraph index, what, the
+    break that can go, text before it): two page breaks in a row, a page break and then a paragraph
+    set to start a new page, a page break and then an empty paragraph ending the section, a page
+    break at the very end.  ``None`` as the break means it is a style or section, not a w:br."""
+    state, last, text, index = None, None, "", -1  # state "break"/"section": a page has just started
+    for el in doc.element.body.iterchildren():
+        if el.tag == qn("w:tbl"):
+            state = None
+            continue
+        if el.tag != qn("w:p"):
+            continue
+        index += 1
+        before = paragraph_properties(Paragraph(el, doc._body), "pageBreakBefore")
+        if before and on(before.get("val")):
+            if state == "break":
+                yield index, "紧跟着设了“段前分页”的段落", last, text
+            state, last = "break", None
+        own = ""
+        for node in el.iter(qn("w:t"), qn("w:br"), qn("w:drawing"), qn("w:pict"), qn("w:object"), qn("m:oMath")):
+            if node.tag == qn("w:br"):
+                if node.get(qn("w:type")) == "page":
+                    if state in ("break", "section"):
+                        yield index, "又是一个分页符", node, own if own.strip() else text
+                    state, last = "break", node
+            elif node.tag != qn("w:t"):
+                state = None
+            else:
+                own += node.text or ""
+                state = None if own.strip() else state
+        text = own if own.strip() else text
+        sect = el.find(f"./{qn('w:pPr')}/{qn('w:sectPr')}")
+        if sect is not None:
+            kind = sect.find(qn("w:type"))
+            if kind is None or kind.get(qn("w:val")) in NEW_PAGE_SECTIONS:
+                if state == "break" and not el.xpath('.//w:br[@w:type="page"]'):
+                    yield index, "紧跟着分节符（下一页）", last, text
+                state = "section"
+    if state == "break" and last is not None and not doc.paragraphs[-1]._p.xpath('.//w:br[@w:type="page"]'):
+        yield index, "就是文档结尾", last, text
+
+
+def drop_blank_page_breaks(doc):
+    """Remove the page breaks that only make an empty page; [(paragraph index, text before)]."""
+    removed = []
+    while True:
+        found = next(((i, node, text) for i, _, node, text in blank_page_breaks(doc) if node is not None), None)
+        if not found:
+            return removed
+        i, node, text = found
+        node.getparent().remove(node)
+        removed.append((i, text))
+
+
+def keep_list_numbering(p):
+    """A bullet or number that comes from the paragraph's style ("List Bullet") would vanish when the
+    template style replaces it: copy it onto the paragraph.  True when the paragraph is numbered."""
+    from style_model import style_chain
+
+    if p._p.xpath("./w:pPr/w:numPr"):
+        return True
+    for style in reversed(style_chain(p.style) if p.style is not None else []):
+        num = style.element.find(f"{qn('w:pPr')}/{qn('w:numPr')}")
+        if num is not None:
+            if num.xpath('./w:numId[@w:val="0"]'):
+                return False
+            ppr = p._p.get_or_add_pPr()
+            ppr.insert(1 if ppr.find(qn("w:pStyle")) is not None else 0, deepcopy(num))
+            return True
+    return False
+
+
+# Roles whose auto number becomes typed text: the template numbers headings and references in
+# the text itself, and the TOC, the heading-number check and the citation check all read text.
+LIVE_LIST_ROLES = {"body", "table_text", "code", "cover", "spacer", "abstract_spacer", "preserve"}
+
+
+def freeze_list_labels(doc, roles, default, ids):
+    """Turn the auto number of headings, references etc. into the same visible text.
+
+    Returns {"p<i>": "p<i>“label text…”"} for the paragraphs changed; the reader sees the same
+    characters as before (the source comparison counts list labels as text on both sides)."""
+    from numbering import list_labels
+
+    labels = list_labels(doc)
+    frozen = {}
+    for i, p in enumerate(doc.paragraphs):
+        role = roles.get(ids[i], default)
+        if role in LIVE_LIST_ROLES or p._p not in labels:
+            continue
+        label = labels[p._p]
+        if label is None:
+            fail(f"原稿 {ids[i]}“{p.text.strip()[:15]}”（role {role}）用的是自动编号，但编号格式认不出来，"
+                 "转不成文字。请用户在 Word 里把自动编号转成文字（选中这些段落，复制后“选择性粘贴→只保留文本”），"
+                 "或者在 mapping.json 里把它改成 body。")
+        ppr = p._p.get_or_add_pPr()
+        for num in ppr.findall(qn("w:numPr")):
+            ppr.remove(num)
+        if not label:
+            continue
+        run = OxmlElement("w:r")
+        first = p._p.find(f".//{qn('w:r')}/{qn('w:rPr')}")
+        if first is not None:
+            run.append(deepcopy(first))
+        t = OxmlElement("w:t")
+        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        t.text = label
+        run.append(t)
+        ppr.addnext(run)
+        frozen[f"{ids[i]}"] = f"{ids[i]}“{label}{p.text[len(label):].strip()[:12]}”"
+    return frozen
+
+
+LEADING_BLANKS = " \t\u3000\u00a0"
+
+
+def strip_typed_indent(p):
+    """Remove spaces, full-width spaces and tabs typed before the first character; return how many."""
+    removed = 0
+    for node in list(p._p.iter()):
+        if node.tag == qn("w:tab") and node.getparent() is not None and node.getparent().tag == qn("w:r"):
+            node.getparent().remove(node)
+            removed += 1
+        elif node.tag == qn("w:t"):
+            text = node.text or ""
+            kept = text.lstrip(LEADING_BLANKS)
+            removed += len(text) - len(kept)
+            node.text = kept
+            if kept:
+                break
+        elif node.tag in (qn("w:drawing"), qn("w:pict"), qn("w:fldChar"), qn("w:instrText"), qn("w:sym"),
+                          qn("w:br"), qn("w:cr"), qn("m:oMath"), qn("m:oMathPara"), qn("w:object")):
+            break
+    return removed
 
 
 def content_signature(doc, root=None):
@@ -1136,7 +1485,10 @@ def structure_paper(doc, has_cover, meta, additions):
         elif current == "lead" and role not in ("spacer", "abstract_spacer"):
             fail("正文前有分不到摘要或正文里的段落：" + "".join(el.xpath(".//w:t/text()"))[:40])
         if order.index(target) < order.index(current):
-            fail("原稿里摘要、英文摘要、正文的先后顺序和所选版式不同；请改用 mode=document，或先和用户确认。")
+            names = {"lead": "开头", "abstract_zh": "中文摘要", "abstract_en": "英文摘要", "body": "正文"}
+            text = "".join(el.xpath(".//w:t/text()")).strip()[:20]
+            fail(f"“{text}”（role={role}）排在{names[current]}后面，但它属于{names[target]}：摘要、英文摘要、正文的先后顺序和所选版式不同。"
+                 "先看这一段的 role 是否标错；没标错就改用 mode=document，或先和用户确认。")
         current = target
         parts[current].append(el)
     if not parts["abstract_zh"]:
@@ -1161,11 +1513,14 @@ def structure_paper(doc, has_cover, meta, additions):
             head.append(Paragraph(OxmlElement("w:p"), doc._body))
             head[-1].add_run(title)
             head[-1].style = ROLES[title_role]
+        label = []
         if label_role not in roles:
-            head.append(Paragraph(OxmlElement("w:p"), doc._body))
-            head[-1].add_run("Abstract" if english else "内 容 摘 要")
-            head[-1].style = ROLES[label_role]
-        sequence = [p._p for p in head] + elements
+            label.append(Paragraph(OxmlElement("w:p"), doc._body))
+            label[-1].add_run("Abstract" if english else "内 容 摘 要")
+            label[-1].style = ROLES[label_role]
+        # A generated label goes after the paper's own title, never above it.
+        after = max((i + 1 for i, role in enumerate(roles) if role == title_role), default=0)
+        sequence = [p._p for p in head] + elements[:after] + [p._p for p in label] + elements[after:]
         # Same blank lines as the template's abstract page: before the title and
         # between title / label / text / keywords, only where none exists yet.
         spaced, previous = [], None
@@ -1241,11 +1596,13 @@ def structure_paper(doc, has_cover, meta, additions):
 
 
 def _delete_marked(doc, roles, mapping):
-    """Remove paragraphs the user agreed to delete (role "delete"); renumber the rest."""
+    """Remove paragraphs the user agreed to delete (role "delete") and the old TOC the
+    template replaces (role "old_toc").  Returns the mapping id of each paragraph left (messages
+    and roles keep using the ids the user saw in mapping.json) and the deleted texts."""
     old = list(doc.paragraphs)
-    marked = [p for i, p in enumerate(old) if roles.get(f"p{i}") == "delete"]
+    marked = [p for i, p in enumerate(old) if roles.get(f"p{i}") in ("delete", "old_toc")]
     if not marked:
-        return roles, []
+        return [f"p{i}" for i in range(len(old))], []
     body = list(doc.element.body)
     end = mapping.get("replace_cover_before")
     shift = 0
@@ -1256,13 +1613,12 @@ def _delete_marked(doc, roles, mapping):
         if isinstance(end, int) and not isinstance(end, bool) and body.index(p._p) < end:
             shift += 1
         deleted.append(p.text[:60])
-    keep = [(i, p) for i, p in enumerate(old) if roles.get(f"p{i}") != "delete"]
+    ids = [f"p{i}" for i, p in enumerate(old) if roles.get(f"p{i}") not in ("delete", "old_toc")]
     for p in marked:
         p._p.getparent().remove(p._p)
-    renumbered = {f"p{new}": roles[f"p{i}"] for new, (i, _) in enumerate(keep) if f"p{i}" in roles}
     if shift:
         mapping["replace_cover_before"] = end - shift
-    return renumbered, deleted
+    return ids, deleted
 
 
 def restyle(input_path, map_path, output, force=False, intake_path=None, cover_min_level=0):
@@ -1286,8 +1642,11 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
     # These require a dedicated OOXML preservation workflow; do not flatten them via python-docx.
     if any(x.tag not in (qn("w:p"), qn("w:tbl"), qn("w:sectPr")) for x in doc.element.body):
         fail("存在内容控件或其他复杂顶层对象。请采用保全OOXML的专门流程，不静默跳过。")
-    if doc.element.body.xpath(".//w:ins|.//w:del|.//w:altChunk"):
-        fail("存在修订或嵌入文档。请先确认修订处理方式；本通用排版脚本不自动接受、拒绝或丢弃。")
+    tracked = doc.element.body.xpath(".//w:ins|.//w:del|.//w:altChunk")
+    if tracked:
+        from unsupported import where
+        fail(f"原稿有修订或嵌入文档（{where(doc, tracked)}）：脚本不会替用户接受、拒绝或丢弃。"
+             "请用户在 Word 的“审阅”里接受或拒绝这些修订后重新给原稿。")
     from unsupported import unsupported_reasons
 
     problems = unsupported_reasons(doc)
@@ -1295,28 +1654,66 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         fail("；".join(problems))
     roles = dict(m.get("roles", {}))
     default = m.get("default_role")
-    roles, deleted = _delete_marked(doc, roles, m)
+    if m.get("rebuild_structure"):
+        # An earlier output made with the other template: drop its section breaks after the cover
+        # so the parts can be laid out again in this template's order.
+        start = m.get("replace_cover_before") or 0
+        for el in list(doc.element.body)[start:]:
+            for sect in el.xpath("./w:pPr/w:sectPr"):
+                sect.getparent().remove(sect)
+        # and the TOC bookmarks it put on the headings: the new TOC sets its own.
+        for mark in doc.element.body.xpath('.//w:bookmarkStart[starts-with(@w:name, "_xaufe_")]'):
+            ident = mark.get(qn("w:id"))
+            for end in doc.element.body.xpath(f'.//w:bookmarkEnd[@w:id="{ident}"]'):
+                end.getparent().remove(end)
+            mark.getparent().remove(mark)
+    ids, deleted = _delete_marked(doc, roles, m)
     spacing_changes = []
     # Only this explicit formatting whitelist is allowed to change visible ASCII spaces.
     for i, p in enumerate(doc.paragraphs):
-        if roles.get(f"p{i}", default) in ("keywords_zh", "keywords_en"):
-            change = normalize_keywords(p, m.get("keyword_items", {}).get(f"p{i}"))
+        if roles.get(ids[i], default) in ("keywords_zh", "keywords_en"):
+            try:
+                change = normalize_keywords(p, m.get("keyword_items", {}).get(ids[i]))
+            except ValueError as exc:
+                fail(f"原稿 {ids[i]}“{p.text.strip()[:15]}”（role {roles.get(ids[i], default)}）：{exc}")
             if change:
-                spacing_changes.append(dict(change, paragraph=f"p{i}"))
+                spacing_changes.append(dict(change, paragraph=ids[i]))
+    # The template indents; a typed indent is layout, not text (the source comparison ignores it too).
+    indent_changes = []
+    for i, p in enumerate(doc.paragraphs):
+        if roles.get(ids[i], default) in INDENTED_ROLES and strip_typed_indent(p):
+            indent_changes.append(f"{ids[i]}“{p.text.strip()[:15]}”")
+    frozen = freeze_list_labels(doc, roles, default, ids)
+    for i, p in enumerate(doc.paragraphs):
+        role = roles.get(ids[i], default)
+        wanted = m["metadata"].get(role, "") if role in ("title_zh", "title_en") else None
+        if wanted and re.sub(r"\s+", "", p.text) != re.sub(r"\s+", "", wanted):
+            fail(f"原稿 {ids[i]} 的题目“{p.text.strip()[:30]}”和 job.json 的 info.{role}“{wanted[:30]}”不一致："
+                 "封面和页眉用的是 job.json 里的题目，两处会对不上。问用户哪个是对的，改 job.json 的 info 或原稿后重新 run。")
     before = content_signature(doc)
     install_styles(doc)
+    styled = None
     for i, p in enumerate(doc.paragraphs):
-        role = roles.get(f"p{i}")
+        role = roles.get(ids[i])
         if role is None:
             if not p.text and not p._p.xpath(".//w:drawing|.//m:oMath"):
                 role = "spacer"
             elif default:
                 role = default
             else:
-                fail(f"p{i} 未标记角色：{p.text[:60]}。请查看 inventory 后补充映射。")
+                fail(f"mapping.json 里没有 {ids[i]}“{p.text.strip()[:30]}”：在 paragraphs 里给它一个 role（正文用 body）。")
         if role == "preserve":
+            if styled is not None and p.text.strip() and not (p.style is not None and p.style.name.lower().startswith("toc ")):
+                fail(f"原稿 {ids[i]}“{p.text.strip()[:15]}”的 role 是 preserve，但它在 {styled}（已经开始排版的内容）后面："
+                     "preserve 只用于开头的旧封面，保留下来的段落用的是原稿样式，模板检查不认。"
+                     "改成它实际的 role（正文 body、标题 h1/h2/h3 等）；旧目录用 old_toc。")
             continue
-        style_paragraph(p, role, preserve_num=bool(p._p.xpath("./w:pPr/w:numPr")))
+        if role != "spacer" and styled is None:
+            styled = ids[i]
+        try:
+            style_paragraph(p, role, preserve_num=ids[i] not in frozen and keep_list_numbering(p))
+        except ValueError as exc:
+            fail(f"原稿 {ids[i]}“{p.text.strip()[:15]}”（role {role}）：{exc}")
         if role == "figure":
             resize_inline(
                 p,
@@ -1339,9 +1736,17 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
             # Restyling resets direct pPr. Rebind a table caption to its table;
             # a figure caption must not pull unrelated following prose along.
             p.paragraph_format.keep_with_next = nxt is not None and nxt.tag == qn("w:tbl")
+    # A page break that only makes an empty page is layout, not content (the template's own
+    # "start on a new page" headings often meet a typed page break).
+    break_changes = [f"“{text.strip()[-15:]}”后面" if text.strip() else f"第 {i + 1} 段"
+                     for i, text in drop_blank_page_breaks(doc)]
     if m.get("format_tables", False):
-        for t in doc.tables:
-            format_table(t)
+        for ti, t in enumerate(doc.tables):
+            try:
+                format_table(t)
+            except ValueError as exc:
+                first = " | ".join(c.text.strip() for c in t.rows[0].cells)[:20] if t.rows else ""
+                fail(f"原稿第 {ti + 1} 个表格 t{ti}“{first}”：{exc}")
     if content_signature(doc) != before:
         fail("正文内容保真检查失败；未写入输出。")
     has_cover = m.get("has_cover", False)
@@ -1404,5 +1809,8 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         "deleted_paragraphs": deleted,
         "body_preservation": "passed; includes payload hashes and post-cover-replacement body check",
         "keyword_spacing_changes": spacing_changes,
+        "typed_indent_removed": indent_changes,
+        "blank_page_breaks_removed": break_changes,
+        "list_labels_frozen": list(frozen.values()),
         "message": "重排初稿已生成；内容保全检查通过。",
     }

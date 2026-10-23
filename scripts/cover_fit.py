@@ -168,6 +168,10 @@ def plan(doc, spec, values, level=None, min_level=0):
     label_w = width(tp.runs[0].text, label_size)
     available = max(value_size * 20, text_width - first - label_w)
     title_lines = balanced_lines(title, value_size, available) if title else [""]
+    # A: continuation lines hang under the first character of the value (the A master's
+    # title line is left-aligned with a first-line indent). B: the master's title line is
+    # centred, so a wrapped title stays a centred paragraph, exactly as Word wraps it in
+    # the master; its lines share the centre axis, not a left edge.
     result["title"] = {
         "lines": title_lines,
         "indent": (
@@ -202,8 +206,9 @@ def plan(doc, spec, values, level=None, min_level=0):
     max_zone = text_width - label_end - pad
     widths = {key: width(values.get(key, ""), size) for key in field_ps}
     widest = max(widths.values(), default=0)
-    if widest > default_zone:
-        new_right = text_width if widest > max_zone else min(text_width, label_end + widest + 2 * pad)
+    # Narrower margins than the master's (job.json page_twips) pull the underline zone in with the column.
+    if widest > default_zone or right_tab > text_width:
+        new_right = text_width if widest > max_zone else min(text_width, max(label_end + widest + 2 * pad, right_tab))
         result["field_tabs"] = {"center": round((label_end + new_right) / 2), "right": round(new_right)}
     for key in field_ps:
         value = values.get(key, "")

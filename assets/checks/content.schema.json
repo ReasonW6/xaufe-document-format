@@ -159,6 +159,10 @@
                     },
                     "bold": {
                       "type": "boolean"
+                    },
+                    "link": {
+                      "type": "string",
+                      "pattern": "^https?://"
                     }
                   }
                 }
@@ -223,6 +227,13 @@
               },
               "caption": {
                 "type": "string"
+              },
+              "widths": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
               }
             }
           },
