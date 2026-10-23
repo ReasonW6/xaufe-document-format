@@ -212,8 +212,22 @@ def configure_style(
     return st
 
 
+def builtin_style_names(doc):
+    """LibreOffice and WPS write built-in styles as "Heading 1"; Word and python-docx look them up as
+    "heading 1".  Without this, the template's Heading 1 would be added a second time with the same
+    styleId and Word would pick either one."""
+    from docx.styles import BabelFish
+
+    internal = {i for _, i in BabelFish.style_aliases}
+    for name in doc.styles.element.xpath("./w:style/w:name"):
+        value = name.get(qn("w:val")) or ""
+        if value != value.lower() and value.lower() in internal:
+            name.set(qn("w:val"), value.lower())
+
+
 def install_styles(doc):
     require_profile()
+    builtin_style_names(doc)
     # Some masters have no default paragraph style; then an unstyled paragraph
     # has style None. Make the existing Normal style the default.
     from docx.enum.style import WD_STYLE_TYPE as _T
@@ -1141,7 +1155,9 @@ def build(input_path, output, force=False, intake_path=None, cover_min_level=0):
         p = doc.add_paragraph("参 考 文 献", ROLES["reference_title"])
         bookmark(p, "_xaufe_references", 100000)
         for i, text in enumerate(data["references"], 1):
-            prefix = "" if re.match(r"^\s*[\[［]\d+[\]］]", text) else f"[{i}] "
+            # Already numbered ("[1]", "1.", "1、", "（1）"): keep the user's number, never add a second one.
+            numbered = re.match(r"^\s*(?:[\[［]\d+[\]］]|\d+\s*[.．、](?!\d)|[(（]\d+[)）])", text)
+            prefix = "" if numbered else f"[{i}] "
             doc.add_paragraph(prefix + text, ROLES["reference"])
     finalize(doc, out, meta, has_cover, mode, state)
     return {
@@ -1638,6 +1654,19 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         fail("；".join(problems))
     roles = dict(m.get("roles", {}))
     default = m.get("default_role")
+    if m.get("rebuild_structure"):
+        # An earlier output made with the other template: drop its section breaks after the cover
+        # so the parts can be laid out again in this template's order.
+        start = m.get("replace_cover_before") or 0
+        for el in list(doc.element.body)[start:]:
+            for sect in el.xpath("./w:pPr/w:sectPr"):
+                sect.getparent().remove(sect)
+        # and the TOC bookmarks it put on the headings: the new TOC sets its own.
+        for mark in doc.element.body.xpath('.//w:bookmarkStart[starts-with(@w:name, "_xaufe_")]'):
+            ident = mark.get(qn("w:id"))
+            for end in doc.element.body.xpath(f'.//w:bookmarkEnd[@w:id="{ident}"]'):
+                end.getparent().remove(end)
+            mark.getparent().remove(mark)
     ids, deleted = _delete_marked(doc, roles, m)
     spacing_changes = []
     # Only this explicit formatting whitelist is allowed to change visible ASCII spaces.

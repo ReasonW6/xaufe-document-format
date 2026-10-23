@@ -816,7 +816,15 @@ def cmd_inspect(args):
     values = set(roles.values())
     # A full paper (abstract + headings) gets the template's structure: its own TOC,
     # abstract pages and page numbering. An earlier output of this skill already has it.
-    paper = (
+    # An earlier output of this skill made with the other template has that template's part order
+    # (A: TOC before the abstract, B: after): take its structure apart and build the new one.
+    previous = E.get_vars(__import__("docx").Document(source)).get("XAUFE_TEMPLATE") if own_output else None
+    rebuild = bool(previous) and previous != state.get("template") and "abstract_zh" in values
+    if rebuild:
+        for b in inv["blocks"]:
+            if b["kind"] == "paragraph" and roles.get(b["id"]) in ("toc_title", "toc1", "toc2", "toc3", "toc4"):
+                roles[b["id"]] = "old_toc"
+    paper = rebuild or (
         not own_output
         and "abstract_zh" in values
         and bool(values & {"h1", "h2", "h3", "preface"})
@@ -832,6 +840,7 @@ def cmd_inspect(args):
         "source": str(source),
         "input_sha256": inv["input_sha256"],
         "mode": "paper" if paper else "document",
+        **({"rebuild_structure": True} if rebuild else {}),
         "format_tables": True,
         "replace_cover_before": (cover_end if cover_end is not None else 0) if wants_cover else None,
         "paragraphs": [
@@ -859,6 +868,9 @@ def cmd_inspect(args):
         print("  注意：原稿开头有封面，但用户不要封面。先和用户确认；脚本不会自动删除封面。")
     elif wants_cover:
         print("  原稿没有封面，会在最前面加上所选模板的封面。")
+    if rebuild:
+        print(f"  原稿是这个技能之前用 {previous} 版排的，这次换成 {state.get('template')} 版："
+              "旧目录和分节会拆掉，按新版式重新排摘要、目录的顺序和页码。")
     if paper:
         print("  原稿有摘要和标题：按完整论文结构排（mode=paper），会自动生成目录、摘要单独成页。")
         if "old_toc" in roles.values():
@@ -907,6 +919,8 @@ def _resolve_mapping(root):
         resolved["replace_cover_before"] = mapping["replace_cover_before"]
     if mapping.get("add"):
         resolved["add"] = mapping["add"]
+    if mapping.get("rebuild_structure"):
+        resolved["rebuild_structure"] = True
     _write(root / "mapping.resolved.json", resolved)
     return Path(mapping["source"]), root / "mapping.resolved.json"
 

@@ -423,7 +423,7 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
 # finish puts them in the notice that must go into the reply, so they cannot be dropped.
 TELL_USER = {"RENDERER_DIFFERENCE", "ORIGINAL_PAGE_NUMBERS_DROPPED", "ORIGINAL_HEADER_FOOTER_REPLACED", "ORIGINAL_HIGHLIGHT_REMOVED", "HEADING_NUMBERING", "MARGIN_TOO_SMALL",
              "STYLE_HARD_TO_READ", "FONT_MARKS", "RENDERER_FALLBACK", "REF_CITATION_MISMATCH", "REF_SUPPORT_UNCONFIRMED",
-             "CAPTION_POSITION"}
+             "CAPTION_POSITION", "PAPER_STRUCTURE_SKIPPED"}
 
 
 def _user_line(w):
@@ -445,6 +445,8 @@ def _user_line(w):
         return "原稿页脚有页码，这次按模板默认没有显示页码；需要页码可以告诉我。"
     if code == "HEADING_NUMBERING":
         return f"标题“{first}”的编号和模板的写法（一级“一、”、二级“（一）”、三级“1.”）不一样，按原稿保留了。"
+    if code == "PAPER_STRUCTURE_SKIPPED":
+        return "这次按普通文档排的：没有生成目录，摘要也没有单独成页（模板的完整论文结构里有这些）；需要的话可以告诉我。"
     if code == "CAPTION_POSITION":
         return message + "按原稿位置保留了，没有替你挪；需要的话可以告诉我。"
     if code == "MARGIN_TOO_SMALL":

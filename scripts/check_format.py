@@ -130,9 +130,9 @@ def caption_position_check(p, label, text, warn):
     is_table = lambda e: e is not None and e.tag == qn("w:tbl")
     is_figure = lambda e: e is not None and bool(e.xpath(".//w:drawing|.//w:pict"))
     if text.startswith("表") and is_table(before) and not is_table(after):
-        warn("CAPTION_POSITION", f"{label}: 表题“{text[:15]}”在表格下面；模板的表题在表格上方。")
+        warn("CAPTION_POSITION", f"表题“{text[:15]}”在表格下面；模板的表题在表格上方。")
     elif text.startswith("图") and is_figure(after) and not is_figure(before):
-        warn("CAPTION_POSITION", f"{label}: 图题“{text[:15]}”在图片上面；模板的图题在图片下方。")
+        warn("CAPTION_POSITION", f"图题“{text[:15]}”在图片上面；模板的图题在图片下方。")
 
 
 HEADING_STYLE_NUMBER = {
@@ -679,10 +679,23 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
     audit_toc(doc, spec, err)
     table_count = tables_check(doc, E.WIDTH, err)
     if mode == "document":
-        if any(reverse.get(p.style.name) in ("toc_title", "abstract_label_zh", "abstract_label_en") for p in doc.paragraphs):
+        roles = [reverse.get(p.style.name) for p in doc.paragraphs]
+        if any(r in ("toc_title", "abstract_label_zh", "abstract_label_en") for r in roles):
             numbering_check(doc, reverse, err)  # an earlier output of this skill, revised
+            # Its parts must still come in this template's order (A puts the TOC first, B after the abstract).
+            order = [r for part in spec["parts"] for r in {"toc": ["toc_title"], "abstract_zh": ["abstract_label_zh"],
+                                                            "abstract_en": ["abstract_label_en"]}.get(part, [])]
+            seen = [r for r in order if r in roles]
+            for a, b in zip(seen, seen[1:]):
+                if roles.index(b) < roles.index(a):
+                    err("PART_ORDER", f"p{roles.index(b)}: “{doc.paragraphs[roles.index(b)].text.strip()[:10]}”排在了"
+                        f"“{doc.paragraphs[roles.index(a)].text.strip()[:10]}”（p{roles.index(a)}）前面，和所选版式的前置部分顺序不一致。")
+                    break
         else:
             plain_numbering_check(doc, has_cover, err)
+            if {"abstract_zh", "keywords_zh"} & set(roles) and {"h1", "h2", "preface"} & set(roles):
+                warn("PAPER_STRUCTURE_SKIPPED", "原稿有摘要和章节标题，但这次按普通文档排：没有生成目录，摘要没有单独成页，"
+                     "也没有摘要标题。这是模板完整论文结构的一部分；不是用户要求的就把 mapping.json 的 mode 改回 paper。")
     if mode == "paper":
         front = []
         for part in spec["parts"]:
