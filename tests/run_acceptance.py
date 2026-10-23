@@ -216,8 +216,10 @@ def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, off
         code, text, err = call("run", "--work", work, *(["--office", office] if office else []))
         (target / "run-output.txt").write_text(text + err, encoding="utf-8")
         if retry:
-            if code != X.EXIT_NOT_ACCEPTED or retry[0] not in text:
+            codes = retry[0] if isinstance(retry[0], tuple) else (retry[0],)
+            if code != X.EXIT_NOT_ACCEPTED or not any(c in text for c in codes):
                 raise RuntimeError(f"{name}: 第一次应被 {retry[0]} 拦下，实际退出码 {code}：{(err or text)[-800:]}")
+            blocked = next(c for c in codes if c in text)
             retry[1](job)
             (work / "job.json").write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
             code, text2, err = call("run", "--work", work, *(["--office", office] if office else []))
@@ -242,7 +244,7 @@ def run_case(out_dir, name, job, content=None, docx=None, mapping_edit=None, off
         state = D.load(work)[1]
         audit = json.loads((work / "render-audit.json").read_text(encoding="utf-8")) if (work / "render-audit.json").exists() else {}
         row = {"case": name, "pages": len(state.get("pages", [])), "scope": state["validation_scope"],
-               **({"fixed_after": retry[0]} if retry else {}),
+               **({"fixed_after": blocked} if retry else {}),
                "render_audit": "passed" if audit.get("passed") else ("not-run" if not audit else "failed"),
                "render_warnings": sorted({w["code"] for w in audit.get("warnings", [])}),
                "cover_fit": __import__("engine").get_vars(__import__("docx").Document(work / "final.docx")).get("XAUFE_COVER_FIT")}
@@ -307,11 +309,24 @@ def main():
     job["info"]["title_zh"] = "普通文档合成标题"
     job["format"] = {"footer_page_numbers": True}
     rows.append(run_case(out, "11-B-plain-word-cover-page-numbers", job, docx=plain_word(out / "plain-word.docx")))
+    # A title just past one header line: the wrapped header is refused (LibreOffice pushes the second line
+    # into the text, so it may surface as HEADER_OVERFLOW), and the short header the user picks passes.
+    job, content = example("A")
+    job["info"]["title_zh"] = "基于多源数据融合与用户行为分析的高校图书馆座位预约与服务质量评价系统的设计与实现——以某财经类高校为例"
+    content["metadata"]["title_zh"] = job["info"]["title_zh"]
+
+    def short_library_header(job):
+        job.setdefault("format", {})["header"] = {"right": "图书馆座位预约系统设计研究"}
+
+    rows.append(run_case(out, "14-A-header-one-line-too-long", job, content,
+                         retry=(("HEADER_WRAPPED", "HEADER_OVERFLOW"), short_library_header)))
     # Defects that must never be delivered.
     job, content = example("B")
     job["format"] = {"styles": {"body": {"size": 15, "line": 200, "line_rule": "exact"}}}
     rows.append(run_case(out, "12-defect-lines-overlap", job, content, expect="LINE_TOO_TIGHT"))
-    rows.append(run_case(out, "13-defect-blank-page", *example("B")[:1], docx=blank_page_paper(out / "blank-page.docx"),
+    job, _ = example("B")
+    job["info"]["title_zh"] = "空白页合成文档"
+    rows.append(run_case(out, "13-defect-blank-page", job, docx=blank_page_paper(out / "blank-page.docx"),
                          expect="BLANK_PAGE"))
     (out / "summary.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     bad = [r for r in rows if "refused" not in r and (

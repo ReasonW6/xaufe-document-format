@@ -163,7 +163,7 @@ def compare_originals(root, state, result):
     if strict and found:
         fix = ("只排版不能改原文：已有 Word 时看 mapping.json 里这段的 role（delete 会删掉整段）；content.json 时照原稿逐字改回，"
                "数字、标点、大小写、段落顺序都要一样。用户明确同意的增删，把改动的完整文字写进 job.json 的 approved_changes"
-               "（{\"text\": \"完整的那段文字\", \"why\": \"用户怎么说的\"}；图片、表格等对象写明“图片”“表格”）。")
+               "（{\"text\": \"完整的那段文字\", \"why\": \"用户怎么说的\"}；图片、表格等对象写明种类和数量，如“删去图片 1 张”）。")
         what = {"changed": ("SOURCE_CHANGED", "原稿这段文字在成品里被改了。"),
                 "missing": ("SOURCE_MISSING", "原稿这段文字在成品里找不到。"),
                 "added": ("SOURCE_ADDED", "成品里这段文字在原稿里没有。"),
@@ -177,7 +177,7 @@ def compare_originals(root, state, result):
             if d["kind"] == "objects":
                 item["fix"] = ("把原稿里的对象原样带上：content.json 里图片用 image 块、表格用 table 块（行列和原稿一样）、"
                                "链接写在 runs 的 link 里；已有 Word 时看 mapping.json 里图片、公式所在段落是不是被设成了 delete。"
-                               "用户同意去掉的，在 job.json 的 approved_changes 里写明（text 里写“图片”“表格”等字样）。")
+                               "用户同意去掉的，在 job.json 的 approved_changes 里写明种类和数量（如 {\"text\": \"删去图片 1 张\", \"why\": \"用户的原话\"}）。")
             if "original" in d:
                 item["expected"] = d["original"]
             if "output" in d:
@@ -539,11 +539,26 @@ ADOPTABLE = {
 REPROVED = {"TOC_PROOF_STALE", "TOC_UNRESOLVED"}
 
 
+CN_SIZES = {84: "初号", 72: "小初", 52: "一号", 48: "小一", 44: "二号", 36: "小二", 32: "三号", 30: "小三",
+            28: "四号", 24: "小四", 21: "五号", 18: "小五", 15: "六号"}
+
+
+def _size_text(value):
+    """'28' / '28半磅' (half-points, as the checks report sizes) -> '四号（14 磅）' for people."""
+    def one(match):
+        half = int(match.group(1))
+        pt = f"{half / 2:g} 磅"
+        return f"{CN_SIZES[half]}（{pt}）" if half in CN_SIZES else pt
+    return re.sub(r"(\d+)\s*(?:半磅)?", one, str(value))
+
+
 def _plain_deviation(issue):
     where = issue.get("where") or {}
     place = f"“{where['text']}”" if where.get("text") else (where.get("location") or "")
     what = ADOPTABLE.get(issue["code"], issue["code"])
-    detail = f"（模板：{issue['expected']}；现在：{issue['actual']}）" if "expected" in issue and "actual" in issue else ""
+    shown = _size_text if issue["code"] in ("FONT_SIZE", "TOC_FONT_SIZE") else str
+    detail = (f"（模板：{shown(issue['expected'])}；现在：{shown(issue['actual'])}）"
+              if "expected" in issue and "actual" in issue else "")
     return (f"{place}的{what}" if place else what) + "和模板默认不同" + detail
 
 
@@ -697,6 +712,10 @@ def attest(workspace, review):
         for page in s["pages"]:
             if sha(root / "preview" / page["png"]) != page["png_sha256"]:
                 raise ValueError("页图已变化；请重新运行 run 后再看图。")
+        unseen = _notes_without_page_text(root / "preview" / "final.pdf", pages)
+        if unseen:
+            raise ValueError("这些页的记录没有提到页面上的任何文字：" + "、".join(f"“{k}”" for k in unseen)
+                             + "。每条记录至少照抄一处在那几页上看到的文字（4 个字以上，比如标题或第一句），证明真的打开看过。")
         visual = "passed_agent_review"
     else:
         if any(_real_text(v) for v in pages.values()):
@@ -714,6 +733,26 @@ def attest(workspace, review):
     s["stage"] = "ready"
     write_json(root / MARKER, s)
     return {"visual_review": visual}
+
+
+def _notes_without_page_text(pdf, pages):
+    """Keys of review notes that quote nothing from the pages they cover (pages with almost no text excepted)."""
+    import pymupdf as fitz
+
+    try:
+        with fitz.open(pdf) as doc:
+            texts = [re.sub(r"\s+", "", page.get_text()) for page in doc]
+    except Exception:
+        return []
+    flat = lambda t: re.sub(r"\s+", "", str(t))
+    unseen = []
+    for key, note in pages.items():
+        a, _, b = str(key).replace("–", "-").replace("~", "-").partition("-")
+        seen = "".join(texts[n - 1] for n in range(int(a), int(b or a) + 1) if 0 < n <= len(texts))
+        note = flat(note)
+        if len(seen) >= 4 and not any(note[i:i + 4] in seen for i in range(len(note) - 3)):
+            unseen.append(str(key))
+    return unseen
 
 
 def clean(workspace):

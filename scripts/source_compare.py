@@ -33,7 +33,7 @@ PART_LABELS = {"摘要", "内容摘要", "中文摘要", "abstract", "参考文�
 OBJECT_LABELS = (("images", "图片"), ("tables", "表格"), ("equations", "公式"), ("links", "链接"))
 
 
-def norm(text):
+def norm(text, exact_spaces=False):
     """The text to keep, character for character (full-/half-width punctuation counts).
 
     Only layout noise is ignored: the reference number the template prints, line
@@ -45,6 +45,8 @@ def norm(text):
     text = NUMBER.sub("", unicodedata.normalize("NFC", str(text or "")))
     if KEYWORDS.match(text):
         return re.sub(r"[\s;,、；，]+", "", text.lower().replace("：", ":"))
+    if exact_spaces:  # Word to Word: every space inside a paragraph is the user's text
+        return text.strip(" \t\r\n\u3000")
     text = re.sub(r"\s+", " ", text).strip()
     return re.sub(r"(?<![A-Za-z0-9]) | (?![A-Za-z0-9])", "", text)
 
@@ -276,6 +278,15 @@ def dropped_margins(sources, docx):
     return out
 
 
+def _approved_count(approved, label):
+    """How many objects of this kind the user agreed to add or drop, by the numbers next to the label."""
+    count = 0
+    for text in approved:
+        for match in re.finditer(rf"(\d+)\s*[张个幅处条项份]?\s*{label}|{label}\s*(\d+)\s*[张个幅处条项份]", text):
+            count += int(match.group(1) or match.group(2))
+    return count
+
+
 def compare(sources, docx, *, approved=(), generated=(), replaced=None, old_toc=()):
     """Differences between the readable originals and the output.
 
@@ -306,7 +317,9 @@ def compare(sources, docx, *, approved=(), generated=(), replaced=None, old_toc=
     differences = []
     if not wanted:
         return {"sources": reports, "differences": differences}
-    a, b = [norm(t) for _, t in original], [norm(t) for _, _, t in target]
+    # A .txt/.md original may be hard-wrapped, so spaces beside Chinese are noise there; a Word original is exact.
+    exact = all(Path(x["path"]).suffix.lower() == ".docx" for x in sources)
+    a, b = [norm(t, exact) for _, t in original], [norm(t, exact) for _, _, t in target]
     removed, added = [], []
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
         if op != "equal" and "".join(a[i1:i2]) != "".join(b[j1:j2]):  # equal joined = only re-paragraphed
@@ -343,16 +356,19 @@ def compare(sources, docx, *, approved=(), generated=(), replaced=None, old_toc=
     got = objects(docx, _after_cover(Document(docx)))
     for name, label in OBJECT_LABELS:
         values = [w[name] for w in wanted if w and w[name] is not None]
-        if not values or any(label in x for x in approved):
+        if not values:
             continue
         if name in ("tables", "links"):
             want, have = sorted(x for v in values for x in v), sorted(got[name])
             same = want == have
+            delta = len(set(want) ^ set(have)) or abs(len(want) - len(have))
             shown = (", ".join(want) or "无", ", ".join(have) or "无")
         else:
             want, have = sum(values), got[name]
-            same, shown = want == have, (str(want), str(have))
-        if not same:
+            same, shown, delta = want == have, (str(want), str(have)), abs(want - have)
+        # An approval covers objects only when it says how many ("删去图片 1 张"), so one approved
+        # image does not hide every other image that went missing.
+        if not same and delta != _approved_count(approved, label):
             differences.append({"kind": "objects", "location": label, "original": shown[0], "output": shown[1]})
     return {
         "sources": reports,

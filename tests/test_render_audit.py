@@ -27,7 +27,7 @@ class RenderAudit(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def docx(self, template="B", patch=None, cover=True):
+    def docx(self, template="B", patch=None, cover=True, blocks=None):
         folder = Path(tempfile.mkdtemp(dir=self.folder))
         state = folder / "intake.json"
         I.start(state, "SYNTHETIC render audit")
@@ -42,7 +42,7 @@ class RenderAudit(unittest.TestCase):
             meta = {"title_zh": value("测试"), "major": value("测试")}
         I.resolve(state, {"metadata": meta})
         content = folder / "content.json"
-        content.write_text(json.dumps({"mode": "document", "metadata": {}, "blocks": [
+        content.write_text(json.dumps({"mode": "document", "metadata": {}, "blocks": blocks or [
             {"type": "heading", "level": 1, "text": "一、合成"},
             {"type": "paragraph", "text": "合成正文。"}]}, ensure_ascii=False), encoding="utf-8")
         out = folder / "doc.docx"
@@ -216,6 +216,39 @@ class RenderAudit(unittest.TestCase):
         self.assertEqual(wrapped[0]["actual"], "2 行")
         self.assertIn("header", F.HINTS["HEADER_WRAPPED"][1])
 
+    def test_heading_left_alone_at_the_bottom_of_a_page(self):
+        bottom = audit(self.docx(), self.pdf([self.cover(), self.body() + [("text", 90, 760, "一、合成")], self.body()]))
+        hit = [e for e in bottom["errors"] if e["code"] == "HEADING_AT_PAGE_BOTTOM"]
+        self.assertEqual(hit[0]["page"], 2)
+        top = audit(self.docx(), self.pdf([self.cover(), [("text", 90, 120, "一、合成")] + self.body(), self.body()]))
+        self.assertNotIn("HEADING_AT_PAGE_BOTTOM", self.codes(top))
+        # The last page may end with anything.
+        last = audit(self.docx(), self.pdf([self.cover(), self.body() + [("text", 90, 760, "一、合成")]]))
+        self.assertNotIn("HEADING_AT_PAGE_BOTTOM", self.codes(last))
+
+    def test_table_caption_left_at_the_bottom_of_a_page(self):
+        doc = self.docx(blocks=[{"type": "heading", "level": 1, "text": "一、合成"},
+                                {"type": "table", "caption": "表1 合成数据表", "header": ["甲", "乙"], "rows": [["1", "2"]]}])
+        result = audit(doc, self.pdf([self.cover(), self.body() + [("text", 90, 760, "表1 合成数据表")], self.body()]))
+        hit = [e for e in result["errors"] if e["code"] == "CAPTION_SEPARATED"]
+        self.assertTrue(hit and "表题" in hit[0]["message"], result["errors"])
+
+    def test_wrapped_cover_title_must_line_up(self):
+        doc = self.docx("A")
+        first = ("text", 125, 340, "论文题目：基于某某数据的")
+        aligned = audit(doc, self.pdf([[first, ("text", 177.5, 356, "方法研究")], self.body()]))
+        self.assertNotIn("COVER_TITLE_MISALIGNED", self.codes(aligned))
+        drift = audit(doc, self.pdf([[first, ("text", 240, 356, "方法研究")], self.body()]))
+        hit = [e for e in drift["errors"] if e["code"] == "COVER_TITLE_MISALIGNED"]
+        self.assertEqual(hit[0]["page"], 1)
+        self.assertIn("177.5", hit[0]["expected"])
+
+    def test_every_overlap_on_a_page_is_reported(self):
+        pairs = [("text", 90, 200, "第一行文字"), ("text", 90, 203, "第二行文字"),
+                 ("text", 90, 400, "第三行文字"), ("text", 90, 403, "第四行文字")]
+        result = audit(self.docx(), self.pdf([self.cover(), pairs]))
+        self.assertEqual(len([e for e in result["errors"] if e["code"] == "TEXT_OVERLAP"]), 2)
+
     def test_page_with_only_a_drawing_is_not_blank(self):
         result = audit(self.docx(), self.pdf([self.cover(), [("line", 100, 300, 300)]]))
         self.assertNotIn("BLANK_PAGE", self.codes(result))
@@ -256,6 +289,17 @@ class RenderAudit(unittest.TestCase):
         self.assertEqual(issue["where"]["location"], "成品 p1、p2")
         self.assertIn("p1、p2", issue["where"]["edit"])
         self.assertIn("delete", issue["fix"])
+
+    def test_blank_page_points_at_the_page_break_blocks_of_content_json(self):
+        folder = Path(tempfile.mkdtemp(dir=self.folder))
+        (folder / "content.json").write_text(json.dumps({"blocks": [
+            {"type": "heading", "level": 1, "text": "一、引言"}, {"type": "paragraph", "text": "前一页最后一句。"},
+            {"type": "page_break"}, {"type": "page_break"}, {"type": "paragraph", "text": "后一页。"}]},
+            ensure_ascii=False), encoding="utf-8")
+        audit_result = {"errors": [{"code": "BLANK_PAGE", "page": 2, "message": "空白页",
+                                    "where": "紧跟在“前一页最后一句。”之后"}]}
+        issue = F.from_render(audit_result, folder, self.folder / "missing.docx")[0]
+        self.assertEqual(issue["where"]["edit"], "content.json 的 blocks[2]、blocks[3]（page_break）")
 
     def test_stop_rule_counts_runs_without_progress(self):
         def issue(page):
@@ -401,7 +445,7 @@ class RenderAuditRealOffice(unittest.TestCase):
             self.assertNotIn("TOC_PROOF_STALE", out)
             review = json.loads((work / "review.json").read_text(encoding="utf-8"))
             self.assertIn("MANUAL_EDIT", review["warnings"])
-            review.update(vision=True, pages={k: "单元测试合成记录：正文为蓝色" for k in review["pages"]},
+            review.update(vision=True, pages={k: "一、引言下面这是合成正文，颜色为蓝色" for k in review["pages"]},
                           content_check="单元测试合成记录：已核对", layout_check="单元测试合成记录：已核对",
                           delivery_check="单元测试合成记录：已核对",
                           warnings={k: "单元测试合成记录：已处理" for k in review["warnings"]})

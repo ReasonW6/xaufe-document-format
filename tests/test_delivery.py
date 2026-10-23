@@ -636,6 +636,11 @@ class DeliveryGuards(Base):
         self.assertNotIn("更新域", D.user_notice(dict(base, renderer="wps", has_toc=False)))
         self.assertIn("WPS", D.user_notice(dict(base, renderer="wps", has_toc=False)))
 
+    def test_adopted_size_deviation_reads_as_chinese_sizes(self):
+        text = D._plain_deviation({"code": "FONT_SIZE", "expected": "21", "actual": "28半磅", "where": {"text": "一、引言"}})
+        self.assertIn("五号（10.5 磅）", text)
+        self.assertIn("四号（14 磅）", text)
+
     def test_does_not_delete_unrelated_output_files(self):
         w, src, s, r = self.job()
         folder = self.d / "output"

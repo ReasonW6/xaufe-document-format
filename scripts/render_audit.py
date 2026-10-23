@@ -103,7 +103,8 @@ def _expectations(doc):
         spec = effective_profile(template, json.loads(vv.get("XAUFE_FORMAT_REQUEST", "{}")))
         header = bool(spec["header"]["enabled"])
         footer = bool(spec["footer"].get("page_numbers"))
-    return {"has_cover": vv.get("XAUFE_HAS_COVER") == "1", "header": header, "page_numbers": footer}
+    return {"has_cover": vv.get("XAUFE_HAS_COVER") == "1", "header": header, "page_numbers": footer,
+            "template": template}
 
 
 def _margins(sections):
@@ -242,6 +243,67 @@ def _header_overflow(lines, top, texts):
     return last if last["bbox"][3] > top + 1 else None
 
 
+HEADING_STYLES = {"Heading 1", "Heading 2", "Heading 3", "Heading 4", "XAUFE Preface", "XAUFE References Title"}
+
+
+def _flat(text):
+    return re.sub(r"\s+", "", text)
+
+
+def _keep_together(doc):
+    """(headings, table captions above their table, figure captions below their figure) as plain text."""
+    headings, above, below = [], [], []
+    for p in doc.paragraphs:
+        text = _flat(p.text)
+        if not text:
+            continue
+        if p.style.name in HEADING_STYLES:
+            headings.append(text)
+        elif p.style.name == "XAUFE Caption":
+            nxt, prev = p._p.getnext(), p._p.getprevious()
+            if nxt is not None and nxt.tag == qn("w:tbl"):
+                above.append(text)
+            elif prev is not None and prev.xpath(".//w:drawing|.//w:pict"):
+                below.append(text)
+    return headings, above, below
+
+
+def _is_part(line, texts):
+    """The line is one of these texts, or the first/last line of one that wrapped."""
+    key = _flat(line["spans"][0]["text"])
+    return bool(key) and any(key == t or (len(key) >= 6 and (t.startswith(key) or t.endswith(key))) for t in texts)
+
+
+def _cover_title_misaligned(lines, template):
+    """A wrapped cover title whose continuation lines drift: A hangs them under the first
+    character of the value, B keeps them on one centre axis.  None when they line up."""
+    ordered = sorted(lines, key=lambda l: l["bbox"][1])
+    head = next((i for i, l in enumerate(ordered) if re.match(r"^(论文)?题\s*目\s*[:：]", l["spans"][0]["text"])), None)
+    if head is None:
+        return None
+    first = ordered[head]
+    text = first["spans"][0]["text"]
+    colon = max(text.find("："), text.find(":"))
+    if colon < 0 or colon + 1 >= len(first["chars"]):
+        return None
+    value_x, size = first["chars"][colon + 1][0], first["chars"][-1][3]
+    rest, bottom = [], first["bbox"][3]
+    for line in ordered[head + 1:]:
+        if re.search(r"[:：]", line["spans"][0]["text"]) or line["bbox"][1] - bottom > 1.5 * size:
+            break
+        rest.append(line)
+        bottom = line["bbox"][3]
+    if not rest:
+        return None
+    if template == "A":
+        off = [l for l in rest if abs(l["bbox"][0] - value_x) > 3]
+        return (off[0], f"续行左端 {off[0]['bbox'][0]:.1f}pt", f"和第一行题目文字左端对齐（{value_x:.1f}pt）") if off else None
+    centres = [(l["bbox"][0] + l["bbox"][2]) / 2 for l in rest]
+    if max(centres) - min(centres) > 0.5 * size:
+        return rest[-1], f"续行中心 {min(centres):.1f}–{max(centres):.1f}pt", "各续行居中在同一条中线上"
+    return None
+
+
 ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100}
 
 
@@ -293,6 +355,7 @@ def audit(docx, pdf):
     cover_margins = _margins(sections[:1])
     header_texts = _header_texts(doc)
     header_paragraphs = _header_paragraphs(doc)
+    headings, table_captions, figure_captions = _keep_together(doc)
     errors, warnings = [], []
     used = set()
     previous = ""
@@ -316,6 +379,12 @@ def audit(docx, pdf):
             images = [i["bbox"] for i in page.get_image_info() if i["bbox"][2] > i["bbox"][0]]
             drawings = [d["rect"] for d in page.get_drawings() if d["rect"].width > 0 or d["rect"].height > 0]
 
+            if cover:
+                drift = _cover_title_misaligned(lines, want["template"])
+                if drift:
+                    errors.append(_issue("error", "COVER_TITLE_MISALIGNED", index, "封面题目折行后，续行没有和第一行对齐。",
+                                         where=drift[0]["spans"][0]["text"][:30], expected=drift[2], actual=drift[1],
+                                         bbox=drift[0]["bbox"]))
             for line in lines:
                 x0, y0, x1, y1 = line["bbox"]
                 text = line["spans"][0]["text"]
@@ -398,10 +467,23 @@ def audit(docx, pdf):
                 elif not cover and not want["page_numbers"] and texts:
                     errors.append(_issue("error", "FOOTER_UNEXPECTED", index, "页脚应该是空白，渲染结果里有文字。", where=texts[:30]))
 
-            clash = next(((a, b, gap) for i, a in enumerate(lines) for b in lines[i + 1 :]
-                          for gap in [_line_clash(a, b)] if gap), None)
-            if clash:
-                a, b, (gap, overlap) = clash
+            if body and not cover and index < pages:
+                last = max(body, key=lambda l: l["bbox"][3])
+                if _is_part(last, headings):
+                    errors.append(_issue("error", "HEADING_AT_PAGE_BOTTOM", index, "标题落在页面最底下，它的正文到了下一页。",
+                                         where=last["spans"][0]["text"][:30], bbox=last["bbox"]))
+                elif _is_part(last, table_captions):
+                    errors.append(_issue("error", "CAPTION_SEPARATED", index, "表题在这一页最底下，表格到了下一页。",
+                                         where=last["spans"][0]["text"][:30], bbox=last["bbox"]))
+            if body and not cover:
+                first = min(body, key=lambda l: l["bbox"][1])
+                if _is_part(first, figure_captions) and not any(b[3] <= first["bbox"][1] + 1 for b in images):
+                    errors.append(_issue("error", "CAPTION_SEPARATED", index, "图题在这一页最上面，图片还在上一页。",
+                                         where=first["spans"][0]["text"][:30], bbox=first["bbox"]))
+            # Every clash on the page, so one repair round can fix them all.
+            clashes = [(a, b, gap) for i, a in enumerate(lines) for b in lines[i + 1 :]
+                       for gap in [_line_clash(a, b)] if gap]
+            for a, b, (gap, overlap) in clashes[:10]:
                 errors.append(_issue("error", "TEXT_OVERLAP", index, "两行文字在页面上叠在一起。",
                                      where=a["spans"][0]["text"][:20] + " / " + b["spans"][0]["text"][:20],
                                      expected="上下两行的字形互不重叠（同一字号时基线至少相距约 0.9 倍字号）",

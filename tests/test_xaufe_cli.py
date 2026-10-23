@@ -492,6 +492,15 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         self.assertIn("MARGIN_TOO_SMALL", out)
 
+    def test_self_defeating_styles_are_flagged_for_the_review(self):
+        document = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": CONTENT["blocks"]}
+        job = {**JOB_B, "format": {"styles": {"body": {"color": "FFFFFF"}, "h1": {"size": 1}}}}
+        work = self.new(job, document)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("STYLE_HARD_TO_READ", out)
+        self.assertIn("FFFFFF", out)
+
     def test_format_only_keeps_links_and_figures_of_the_original(self):
         source = self.d / "带链接.md"
         source.write_text("# 一、引言\n\n详见[学校官网](https://www.example.edu.cn/a)。", encoding="utf-8")

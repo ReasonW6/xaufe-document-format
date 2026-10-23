@@ -168,6 +168,10 @@ def plan(doc, spec, values, level=None, min_level=0):
     label_w = width(tp.runs[0].text, label_size)
     available = max(value_size * 20, text_width - first - label_w)
     title_lines = balanced_lines(title, value_size, available) if title else [""]
+    # A: continuation lines hang under the first character of the value (the A master's
+    # title line is left-aligned with a first-line indent). B: the master's title line is
+    # centred, so a wrapped title stays a centred paragraph, exactly as Word wraps it in
+    # the master; its lines share the centre axis, not a left edge.
     result["title"] = {
         "lines": title_lines,
         "indent": (

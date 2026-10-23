@@ -240,6 +240,17 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             warn("INTAKE_NOT_RECHECKED", "本次静态检查未提供交互记录；最终检查必须提供。")
     if has_cover and mode != "template" and len(doc.sections) < 2:
         err("COVER_BREAK", "封面必须独立分节，与后续部分分开。")
+    for role, patch in (request.get("styles") or {}).items():
+        # Allowed but self-defeating: the user may not have meant it, so they are told before delivery.
+        color = str(patch.get("color") or "")
+        if len(color) == 6:
+            r, g, b = (int(color[i:i + 2], 16) for i in (0, 2, 4))
+            if 0.2126 * r + 0.7152 * g + 0.0722 * b > 230:
+                warn("STYLE_HARD_TO_READ", f"{ROLE_NAMES.get(role, role)}（{role}）的文字颜色是 {color}，在白纸上几乎看不见。"
+                     "确认是用户要的就在回复里提醒用户；不是就改 job.json 的 format.styles。")
+        if isinstance(patch.get("size"), (int, float)) and patch["size"] < 5:
+            warn("STYLE_HARD_TO_READ", f"{ROLE_NAMES.get(role, role)}（{role}）的字号只有 {patch['size']:g} 磅，打印出来几乎看不清。"
+                 "确认是用户要的就在回复里提醒用户；不是就改 job.json 的 format.styles。")
     for i, s in enumerate(doc.sections):
         for attr, key in [
             ("page_width", "width"),
@@ -359,7 +370,10 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             ):
                 err("LOGO_CROP", "校徽不得裁切。")
             if p._p.xpath("./w:pPr/w:jc/@w:val") != [spec["logo"]["alignment"]]:
-                err("LOGO_ALIGN", "校徽必须左对齐。")
+                names = {"left": "左对齐", "start": "左对齐", "center": "居中", "right": "右对齐", "end": "右对齐"}
+                want = spec["logo"]["alignment"]
+                err("LOGO_ALIGN", f"校徽应为{names.get(want, want)}（模板默认或用户要求），"
+                    f"现在是{names.get((p._p.xpath('./w:pPr/w:jc/@w:val') or ['left'])[0], '其他')}。")
             if not doc.paragraphs[spec["cover"]["title_paragraph"]].text.startswith(
                 spec["cover"]["title_label"]
             ):

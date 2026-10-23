@@ -131,6 +131,9 @@ HINTS = {
     "IMAGE_OFF_PAGE": ("图片超出纸张。", "把图片改小，或确认这一段 role 是 figure。"),
     "IMAGE_OUTSIDE_MARGINS": ("图片比版心宽，或比一页的版心还高、伸进了上下页边距。", "把图片改小（太高的图请用户裁开或缩小），或确认这一段 role 是 figure（脚本会按版心缩放宽度）。"),
     "TEXT_OVER_IMAGE": ("文字压在图片上：常见于原稿的浮动图片、环绕方式，或图片所在段落是固定行距。", "已有 Word 时把这张图所在段落的 role 设为 figure；仍压字就请用户把图片改成“嵌入型”后再给。"),
+    "HEADING_AT_PAGE_BOTTOM": ("标题和它后面的正文被分页拆开了。模板给标题设了“与下段同页”，通常是标题前后有手动加的空行或分页符，或原稿的段落设置盖过了模板。", "去掉这个标题前后多余的空行或分页符（content.json 里的 page_break 块，或 mapping.json 里设成 delete 的空段）后重新 run；仍然这样就告诉用户这一页的情况。"),
+    "CAPTION_SEPARATED": ("图题或表题和它的图、表被分页拆开了。通常是图表太大放不进剩下的空间，或题注前后有手动空行。", "去掉题注前后的空行；表格很长时可以拆成两张表（续表），图片太高就请用户同意缩小（content.json 里 image 块的 width）；改完重新 run。"),
+    "COVER_TITLE_MISALIGNED": ("封面题目折成几行后对不齐：通常是渲染时没有模板字体（宋体/黑体），替代字体的字宽不同，或题目里有不能断开的长英文。", "先看有没有 FONT_SUBSTITUTED 提示：有就按缺字体处理（换装有字体的 Word/WPS 渲染，或问用户）；题目里有长英文串就请用户同意在合适的位置断开或缩短。"),
     "HEADER_WRAPPED": ("页眉文字太长，一行放不下折成了两行。A 版页眉右侧默认放论文题目，长题目最容易这样。", "在 job.json 的 format 里给页眉写一个短的题目：\"header\": {\"right\": \"简短题目\"}（先问用户用哪个简称；左侧太长就改 left）；或经用户同意缩小页眉字号（styles.header.size）。"),
     "HEADER_OVERFLOW": ("页眉文字太长，折成多行后伸出了上边距，把正文往下挤。A 版页眉右侧默认放论文题目，长题目最容易这样。", "在 job.json 的 format 里给页眉写一个短的题目：\"header\": {\"right\": \"简短题目\"}（先问用户用哪个简称；左侧太长就改 left）；或经用户同意缩小页眉字号（styles.header.size）。"),
     "TABLE_OUTSIDE_MARGINS": ("表格或图形伸出了版心。", "已有 Word 时确认 format_tables 是 true；列太多就请用户拆表；浮动图形请用户改成嵌入式。"),
@@ -252,6 +255,26 @@ def _mapping_gap(root, previous):
     return found
 
 
+def _content_breaks(root, previous):
+    """content.json page_break blocks right after the block holding the text ``previous`` (new document)."""
+    path = Path(root) / "content.json" if root else None
+    if not path or not path.is_file():
+        return []
+    try:
+        blocks = read_json(path).get("blocks", [])
+    except (OSError, ValueError):
+        return []
+    key = re.sub(r"\s+", "", previous)[-12:]
+    text = lambda b: re.sub(r"\s+", "", b.get("text") or "".join(r.get("text", "") for r in b.get("runs") or []))
+    start = next((i for i, b in enumerate(blocks) if key and key in text(b)), None)
+    found = []
+    for i in range(start + 1, min(start + 8, len(blocks))) if start is not None else []:
+        if blocks[i].get("type") != "page_break":
+            break
+        found.append(f"blocks[{i}]")
+    return found
+
+
 def _page_breaks(docx, previous):
     """Output paragraphs that only carry a page break (or start a page) right after the text ``previous``."""
     from docx import Document
@@ -292,6 +315,9 @@ def from_render(audit, root=None, docx=None):
         if e["code"] == "BLANK_PAGE" and docx and quoted:
             breaks = _page_breaks(docx, quoted.group(1))
             rows = _mapping_gap(root, quoted.group(1))
+            blocks = _content_breaks(root, quoted.group(1))
+            if blocks:
+                item["where"]["edit"] = "content.json 的 " + "、".join(blocks) + "（page_break）"
             if breaks:
                 item["where"]["location"] = "成品 " + "、".join(breaks)
                 item["cause"] = f"成品里 {'、'.join(breaks)} 是只有分页符（或分节符）的空段落，连在一起就多出一页空白。"

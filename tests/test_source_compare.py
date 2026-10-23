@@ -64,6 +64,14 @@ class SourceProseTests(unittest.TestCase):
         shown = self.diff("用于格式校准，不提供结论。", "用于格式校准,不提供结论。")[0]
         self.assertIn("，", shown["original"])  # the user's own text is shown, not a normalised copy
 
+    def test_word_original_keeps_every_space(self):
+        # A hard-wrapped .txt may break beside Chinese; a Word paragraph may not gain or lose a space.
+        source = self.docx("　　首行缩进的段落。", "第二段。")
+        same = S.compare([{"path": str(source)}], self.docx("首行缩进的段落。", "第二段。"))["differences"]
+        self.assertEqual(same, [])
+        spaced = S.compare([{"path": str(source)}], self.docx("首 行缩进的段落。", "第二段。"))["differences"]
+        self.assertEqual([d["kind"] for d in spaced], ["changed"])
+
     def test_moved_and_duplicated_paragraphs(self):
         text = "甲段落内容。\n\n乙段落内容。\n\n丙段落内容。"
         self.assertEqual([d["kind"] for d in self.diff(text, "乙段落内容。", "甲段落内容。", "丙段落内容。")], ["moved"])
@@ -74,6 +82,14 @@ class SourceProseTests(unittest.TestCase):
         kinds = {d["location"]: d for d in found if d["kind"] == "objects"}
         self.assertEqual(set(kinds), {"图片", "表格", "链接"})
         self.assertEqual(kinds["链接"]["original"], "https://example.com")
+
+    def test_object_approval_must_say_how_many(self):
+        text = "第一段。\n\n![图](a.png)\n\n![图](b.png)"
+        images = lambda **o: [d for d in self.diff(text, "第一段。", **o) if d["kind"] == "objects"]
+        self.assertEqual(len(images()), 1)
+        self.assertEqual(len(images(approved=["用户说图片不要了"])), 1)  # no count: still reported
+        self.assertEqual(len(images(approved=["删去图片 1 张"])), 1)  # two went missing, one approved
+        self.assertEqual(images(approved=["删去图片 2 张"]), [])
 
     def test_create_registers_actual_original_file(self):
         source = self.root / "original.txt"
