@@ -1469,6 +1469,11 @@
     "added_header_or_page_numbers_distance": {
       "header": 851,
       "footer": 992
+    },
+    "narrowed_margin": {
+      "_source": "用户把上/下页边距改小、没给页眉/页脚距离时：距离 + 一行（300 twip）放不下就缩成 页边距 - 300，最小 280（约 0.5 厘米，多数打印机能印到）。",
+      "line_room": 300,
+      "minimum_distance": 280
     }
   }
 }

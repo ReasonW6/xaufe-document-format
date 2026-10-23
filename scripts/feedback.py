@@ -7,6 +7,7 @@ expected and what was found, the likely cause, and a fix that edits the inputs
 
 from __future__ import annotations
 import json, re
+from collections import Counter
 from pathlib import Path
 from textio import read_json
 
@@ -160,11 +161,40 @@ HINTS = {
     "FOOTER_UNEXPECTED": ("页脚应该空白，渲染结果里有文字。", "用户没要页码时删掉 footer_page_numbers；原稿自带页脚文字时请用户删掉。"),
     "TEXT_OVERLAP": ("两行文字在页面上叠在一起（上下两行的基线距离不到字号的 0.9 倍）：常见于过小的固定行距、文字位置被提升或降低、负的段前段后，或浮动对象。", "打开这一页的页图看是哪两行；检查 job.json 里这类段落的 line/line_rule（固定行距磅数×20 不能小于字号×20）和 size；原稿里文字设了“位置提升/降低”或有浮动对象，就把那一段 role 重新标对后再 run，仍重叠请用户在 Word 里取消这些设置。"),
     "PAGE_NUMBER_SEQUENCE": ("页码跳号、重复，或在不该重新开始的地方重新从 1 开始。脚本会把各节页码设成连续的，所以多半是页脚里另有手写的页码文字，或某一节的页脚不是页码域。", "看这一页的页图和 Word 页脚：原稿页脚里有手打的数字就请用户删掉（只排版时先问）；再重新 run。仍不对就把页码问题和页图如实告诉用户。"),
+    "WORD_BLANK_PAGE": ("两处“从新页开始”之间什么都没有：连着两个分页符、分页符后面紧跟分节符或设了“段前分页”的段落"
+                        "（模板的一级标题等本来就从新页开始）。Word 会多出一页空白，LibreOffice 有时会把它们合并、页图上看不出来。",
+                        "content.json：删掉多余的 page_break 块（标题本来就从新页开始时，它前面不需要 page_break）。"
+                        "已有 Word：脚本排版时会自动去掉这种分页符；仍出现时把位置里只有分页符的空段落在 mapping.json 里设为 delete。"),
     "RENDERER_FALLBACK": ("run --office 指定的软件没装、不能自动调用或导出失败，脚本换了另一个能用的软件。", "在 review.json 的 warnings 里写明实际用的是哪个软件，交付时告诉用户；用户坚持要那个软件，就先让它能用再重新 run。"),
     "FONT_SUBSTITUTED": ("渲染机器上没有文档要求的字体。", "不用改文档。在 review.json 的 warnings 里写明页图是用替代字体看的，交付时告诉用户分页以装有这些字体的 Word 为准。"),
 }
 
 _LABEL = re.compile(r"^(?P<label>(?:p\d+|t\d+(?:/[rcpt]\d+)*|header\d+/\w+/p\d+)(?:/r\d+)?)\s*[:：]\s*(?P<rest>.*)$")
+_SHOWN = re.compile(r"^(?P<label>成品[^:：，。]*?)\s*[:：]\s*(?P<rest>.*)$")
+
+
+def output_place(label):
+    """An output paragraph label ("p39", "t0/r1/c2/p0", "header1/default/p0") as people and agents read it:
+    "成品第40段".  Never "p39", which reads like a mapping.json id (those number the original)."""
+    label = re.sub(r"/r\d+$", "", label)
+    m = re.fullmatch(r"p(\d+)", label)
+    if m:
+        return f"成品第{int(m.group(1)) + 1}段"
+    m = re.fullmatch(r"t(\d+)/r(\d+)/c(\d+)(?:/p\d+)?", label)
+    if m:
+        t, r, c = (int(x) + 1 for x in m.groups())
+        return f"成品第{t}个表格第{r}行第{c}格"
+    m = re.fullmatch(r"header(\d+)/\w+/p\d+", label)
+    if m:
+        return f"成品第{int(m.group(1)) + 1}节的页眉"
+    return f"成品 {label}"
+
+
+def _shown_message(label, message):
+    """The message with output paragraph labels in words (the leading label and any "p12" inside)."""
+    rest = _LABEL.match(message).group("rest")
+    rest = re.sub(r"(?<![\w/])p(\d+)(?![\w/])", lambda m: output_place(m.group(0)), rest)
+    return f"{output_place(label)}：{rest}"
 _EXPECT = re.compile(r"(?P<what>[\w/]+)=(?P<actual>[^，,]+?)(?:半磅)?，应为(?P<expected>[^。]+)。?")
 
 
@@ -259,7 +289,8 @@ def explain(errors, docx=None, root=None, stage="格式检查"):
         item = {"code": code, "stage": stage, "message": message, "cause": cause, "fix": fix}
         m = _LABEL.match(message)
         if m:
-            item["where"] = {"location": m.group("label")}
+            item["message"] = _shown_message(m.group("label"), message)
+            item["where"] = {"location": output_place(m.group("label"))}
             p = _paragraph(doc, m.group("label")) if doc is not None else None
             if p is not None:
                 text = "".join(p._p.xpath(".//w:t/text()")).strip()
@@ -274,6 +305,14 @@ def explain(errors, docx=None, root=None, stage="格式检查"):
                 gap = _mapping_gap(root, text) if code == "CAPTION_DETACHED" and root else []
                 if gap:
                     item["where"]["edit"] = f"mapping.json 里 id 为 {'、'.join(gap)} 的空段落（role 改为 \"delete\"）"
+        if code == "WORD_BLANK_PAGE" and root:
+            previous = re.search(r"前面最后的文字是“(.+?)”", message)
+            blocks = _content_breaks(root, previous.group(1)) if previous else []
+            gap = _mapping_gap(root, previous.group(1)) if previous else []
+            if blocks:
+                item.setdefault("where", {})["edit"] = "content.json 的 " + "、".join(blocks) + "（page_break）"
+            elif gap:
+                item.setdefault("where", {})["edit"] = f"mapping.json 里 id 为 {'、'.join(gap)} 的空段落（role 改为 \"delete\"）"
         x = _EXPECT.search(message)
         if x:
             item["expected"] = x.group("expected").strip()
@@ -371,7 +410,7 @@ GEOMETRY = {"OFF_PAGE", "TEXT_OUTSIDE_MARGINS", "TEXT_AT_PAPER_EDGE", "IMAGE_OFF
             "HEADER_WRAPPED", "BLANK_PAGE", "HEADING_AT_PAGE_BOTTOM", "CAPTION_SEPARATED", "PAGE_NUMBER_MISSING",
             "TABLE_WIDTH", "IMAGE_WIDTH", "CELL_WIDTH", "OBJECT_HEIGHT", "BODY_IN_MARGIN", "INDENT_RENDERED",
             "NOT_CENTERED", "LINE_PITCH_RENDERED", "SIZE_RENDERED", "WEIGHT_RENDERED",
-            "COVER_OUTSIDE_MARGINS"}
+            "COVER_OUTSIDE_MARGINS", "COVER_FONTS_MISSING", "COVER_TOO_LONG"}
 
 
 def _job_changes(root):
@@ -405,7 +444,7 @@ def with_job_suspects(root, issues):
     listed = "、".join(changes[:8]) + ("等" if len(changes) > 8 else "")
     for item in issues:
         if item.get("code") in GEOMETRY or (item.get("code") == "INPUT_REJECTED"
-                                           and re.search(r"封面|校徽|Logo|版心", item.get("message", ""))):
+                                           and re.search(r"封面文字太长|放不下|校徽|Logo|版心", item.get("message", ""))):
             item["cause"] = (f"job.json 改过模板的版面设置：{listed}。模板默认值不会出这个问题，先查这些改动"
                              "（数值是否离谱、单位是否写错：page_twips 单位是 twip，1 厘米=567）。其次才是：" + (item.get("cause") or ""))
             item["fix"] = ("先把不合理的值改回合理范围，或删掉这一项恢复模板默认（用户明确要求的改动要先问用户），再重新 run；"
@@ -435,8 +474,9 @@ def from_render(audit, root=None, docx=None):
             if blocks:
                 item["where"]["edit"] = "content.json 的 " + "、".join(blocks) + "（page_break）"
             if breaks:
-                item["where"]["location"] = "成品 " + "、".join(breaks)
-                item["cause"] = f"成品里 {'、'.join(breaks)} 是只有分页符（或分节符）的空段落，连在一起就多出一页空白。"
+                shown = "、".join(output_place(b) for b in breaks)
+                item["where"]["location"] = shown
+                item["cause"] = f"{shown}是只有分页符（或分节符）的空段落，连在一起就多出一页空白。"
             if rows:
                 item["where"]["edit"] = f"mapping.json 里 id 为 {'、'.join(rows)} 的空段落"
         for key in ("expected", "actual"):
@@ -519,7 +559,7 @@ def warning_text(w):
 def _same_kind(item):
     """Issues that differ only in page or paragraph get one entry: same code, message, expected, actual."""
     message = item.get("message", "")
-    m = _LABEL.match(message)
+    m = _LABEL.match(message) or _SHOWN.match(message)
     where = item.get("where") or {}
     return (item["code"], m.group("rest") if m else message, item.get("expected"), item.get("actual"),
             where.get("text") if where.get("page") else None)
@@ -566,8 +606,9 @@ def render_text(issues, limit=12):
             lines.append(f"   位置：{place}")
         if where.get("edit"):
             lines.append(f"   要改的输入：{where['edit']}")
-        if "expected" in item or "actual" in item:
-            lines.append(f"   实际：{item.get('actual', '（没有）')}；应为：{item.get('expected', '（不应有）')}")
+        shown = [f"{name}：{item[key]}" for key, name in (("actual", "实际"), ("expected", "应为")) if key in item]
+        if shown:
+            lines.append("   " + "；".join(shown))
         same = fixes.get((item.get("cause"), item.get("fix")))
         if same:
             lines.append(f"   可能原因和怎么改：同第 {same} 条。")
@@ -582,12 +623,16 @@ def render_text(issues, limit=12):
     return "\n".join(lines)
 
 
+_PLACE = re.compile(r"成品第\d+(?:段|个表格第\d+行第\d+格|节的页眉)|第\s*\d+\s*页|(?<![\w/])[pt]\d+(?:/[rcpt]\d+)*")
+
+
 def _fingerprint(item):
-    """One issue as it stands: a different block, place or measured value is a different issue,
-    so a fix that moves the problem or improves the value counts as progress."""
+    """One issue as it stands: the code, the input to edit, the text and the measured value.  Where
+    it sits (page, output paragraph number) is left out: an unrelated edit that only moves the problem
+    to another page or paragraph number is not progress."""
     where = item.get("where") or {}
-    return "|".join(str(x) for x in (item["code"], item.get("message"), where.get("page"), where.get("location"),
-                                      where.get("text"), where.get("edit"), item.get("actual")))
+    return "|".join((item["code"], _PLACE.sub("#", str(item.get("message"))), _PLACE.sub("#", str(where.get("text"))),
+                     str(where.get("edit")), str(item.get("actual"))))
 
 
 def stopped(root):
@@ -624,10 +669,10 @@ def record_round(root, issues):
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
-    now = sorted({_fingerprint(i) for i in issues})
+    now = sorted(_fingerprint(i) for i in issues)  # a list: two blank pages, one fixed, is progress
     before = data.get("last_issues")
     rounds = int(data.get("failed_rounds", 0)) + 1 if issues else 0
-    progress = not before or bool(set(before) - set(now))  # after a pass, a new failure is not a stall
+    progress = not before or bool(Counter(before) - Counter(now))  # after a pass, a new failure is not a stall
     stalled = 0 if not issues or progress else int(data.get("stalled", 0)) + 1
     repeated = bool(issues) and now == before
     path.write_text(json.dumps({"failed_rounds": rounds, "stalled": stalled, "last_issues": now,

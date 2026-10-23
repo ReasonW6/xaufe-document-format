@@ -467,7 +467,7 @@ class ProfileTests(unittest.TestCase):
         import feedback as F
 
         issue = F.explain(order)[0]
-        self.assertRegex(issue["where"]["location"], r"^p\d+$")
+        self.assertRegex(issue["where"]["location"], r"^成品第\d+段$")
         self.assertIn("目录", order[0]["message"])
         self.assertIn("role", issue["fix"])
 

@@ -154,6 +154,13 @@ def heading_levels_check(paragraphs, err, own=False):
             err("HEADING_LEVEL", f"{label}: “{text[:20]}”像{name[style]}标题（编号和文档里的 {style} 标题一样，短且没有句末标点），却设成了正文。")
 
 
+def page_break_check(doc, err):
+    """Page breaks that leave an empty page in Word (see ``engine.blank_page_breaks``)."""
+    for index, what, _, text in E.blank_page_breaks(doc):
+        after = f"（前面最后的文字是“{text.strip()[-15:]}”）" if text.strip() else ""
+        err("WORD_BLANK_PAGE", f"p{index}: 分页符后面{what}，中间没有内容，Word 会在这里多出一页空白{after}。")
+
+
 def role_check(p, role, label, visible, err):
     """Catch a paragraph whose role (from mapping.json or content.json) does not fit its content:
     the formatting would then be "correct" for the wrong role and pass unnoticed."""
@@ -591,6 +598,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             if maxh > 254000 and paragraph_properties(p, "spacing").get("lineRule") == "exact":
                 err("OBJECT_HEIGHT", "大图片不能放在固定20磅的普通段落里。")
     heading_levels_check(headings, err, own=request.get("heading_numbering") == "own")
+    page_break_check(doc, err)
     with ZipFile(path) as z:
         for name in z.namelist():
             if name.startswith("word/fonts/"):
@@ -778,6 +786,10 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         "inline_images": len(doc.inline_shapes),
         "toc_unresolved": len(unresolved),
     }
+    # One cause, one issue: a heading set as body is a ROLE_MISMATCH and a HEADING_LEVEL; the
+    # latter also names the level, so it stays.
+    leveled = {e["message"].split(":")[0] for e in errors if e["code"] == "HEADING_LEVEL"}
+    errors[:] = [e for e in errors if not (e["code"] == "ROLE_MISMATCH" and e["message"].split(":")[0] in leveled)]
     return {
         "passed": not errors,
         "document_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),

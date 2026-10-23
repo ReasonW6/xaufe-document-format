@@ -19,6 +19,7 @@ class CoverOverflow(ValueError):
 
     missing_fonts: list = []
     rendered_fonts: list = []
+    too_high = False  # the date sits above its zone: the page area shrank, the cover is not too long
 
 
 def baseline(template, request=None):
@@ -149,9 +150,13 @@ def _verify_pdf(docx, pdf_path):
         top = bottom - rule["frame_height_twips"] / 20
         tolerance = rule["render_tolerance_pt"]
         if box[1] < top - tolerance or box[3] > bottom + tolerance:
-            raise CoverOverflow(
+            exc = CoverOverflow(
                 f"完成日期没有落在封面底部保留区：实际y={box[1]:.2f}至{box[3]:.2f}磅，目标区{top:.2f}至{bottom:.2f}磅。"
             )
+            # Above the zone (and nothing pushed off page 1): the bottom of the text area moved up,
+            # e.g. a footer taller than a narrowed bottom margin.  Tightening the cover cannot help.
+            exc.too_high = box[3] < top - tolerance
+            raise exc
         left = rule["left_twips"] / 20
         right = left + rule["width_twips"] / 20
         if (

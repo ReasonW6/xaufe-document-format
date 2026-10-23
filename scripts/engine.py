@@ -28,7 +28,7 @@ from customization import (
 from intake import require as require_intake, digest
 from table_layout import fit_table, resize_inline
 from keywords import normalize as normalize_keywords, split_label_runs
-from style_model import run_properties
+from style_model import run_properties, paragraph_properties, on
 from cover_date import apply as position_cover_date
 
 SPEC: dict = {}
@@ -962,12 +962,31 @@ def _schema_message(schema, data, exc):
             kind = {"boolean": "true 或 false", "string": "文字（加引号）", "integer": "整数", "number": "数字",
                     "array": "列表 [...]", "object": "{...} 对象"}.get(str(first.validator_value), first.validator_value)
             return f"{where}{field}: 现在是 {first.instance!r}，应为 {kind}。"
-        return f"{where}{field}: {first.message}；{block['type']} 可用的字段：{allowed}。"
+        return f"{where}{field}: {_schema_words(first)}；{block['type']} 可用的字段：{allowed}。"
     field = ".".join(map(str, path)) or "顶层"
-    return f"content.json 的 {field}: {exc.message}（content.json 的写法见 references/content.md）。"
+    return f"content.json 的 {field}: {_schema_words(exc)}（content.json 的写法见 references/content.md）。"
 
 
-def validate_data(data):
+def _schema_words(err):
+    """A jsonschema error in Chinese (the common validators; others keep jsonschema's text)."""
+    v, value, got = err.validator, err.validator_value, err.instance
+    words = {
+        "maximum": lambda: f"现在是 {got!r}，最大只能是 {value}",
+        "minimum": lambda: f"现在是 {got!r}，最小是 {value}",
+        "exclusiveMaximum": lambda: f"现在是 {got!r}，要小于 {value}",
+        "exclusiveMinimum": lambda: f"现在是 {got!r}，要大于 {value}",
+        "enum": lambda: f"现在是 {got!r}，只能是 " + "、".join(map(repr, value)),
+        "const": lambda: f"现在是 {got!r}，应为 {value!r}",
+        "minLength": lambda: "不能是空的" if value == 1 else f"至少要 {value} 个字",
+        "maxLength": lambda: f"最多 {value} 个字",
+        "minItems": lambda: "不能是空列表" if value == 1 else f"至少要有 {value} 项",
+        "maxItems": lambda: f"最多 {value} 项",
+        "pattern": lambda: f"写法不对：{got!r}",
+    }
+    return words[v]() if v in words else err.message
+
+
+def validate_data(data, base=None):
     import jsonschema
 
     schema = load_json(ROOT / "assets/checks/content.schema.json")
@@ -985,6 +1004,11 @@ def validate_data(data):
             if bad:
                 problems.append(f"content.json 的 blocks[{i}]（表格）: rows[{bad[0]}] 有 {len(b['rows'][bad[0]])} 格，"
                                 f"表头有 {len(b['header'])} 格；每行格数要和表头相同（空格子写 \"\"）。")
+        # Missing image files too, so they do not first show up in the run after the schema is fixed.
+        if base is not None and isinstance(b, dict) and b.get("type") == "image" and isinstance(b.get("path"), str) \
+                and not (Path(base) / b["path"]).resolve().is_file():
+            problems.append(f"content.json 的 blocks[{i}]（图片）: 图片文件 {b['path']} 不存在（路径相对 content.json 所在的文件夹）；"
+                            "请用户提供图片，不能用占位图代替。")
     if problems:
         fail("\n".join(dict.fromkeys(problems)))
     if not SPEC["english_abstract"]:
@@ -1069,7 +1093,7 @@ def build(input_path, output, force=False, intake_path=None, cover_min_level=0):
     asset_check()
     data = load_json(input_path)
     data["metadata"] = merge_metadata(data.get("metadata", {}), state)
-    validate_data(data)
+    validate_data(data, Path(input_path).parent)
     out = safe_out(input_path, output, force)
     meta = data["metadata"]
     mode = data.get("mode", "paper")
@@ -1172,6 +1196,64 @@ def inventory(input_path):
 # indent would push it further (code and table cells keep theirs).
 INDENTED_ROLES = {"body", "abstract_zh", "abstract_en", "h1", "h2", "h3", "h4", "preface", "caption",
                   "reference", "title_zh", "title_en", "keywords_zh", "keywords_en", "equation"}
+NEW_PAGE_SECTIONS = {None, "nextPage", "oddPage", "evenPage"}
+
+
+def blank_page_breaks(doc):
+    """Page starts with nothing visible since the page before started: Word shows an empty page at
+    each, even where LibreOffice folds the breaks together.  Yields (paragraph index, what, the
+    break that can go, text before it): two page breaks in a row, a page break and then a paragraph
+    set to start a new page, a page break and then an empty paragraph ending the section, a page
+    break at the very end.  ``None`` as the break means it is a style or section, not a w:br."""
+    state, last, text, index = None, None, "", -1  # state "break"/"section": a page has just started
+    for el in doc.element.body.iterchildren():
+        if el.tag == qn("w:tbl"):
+            state = None
+            continue
+        if el.tag != qn("w:p"):
+            continue
+        index += 1
+        before = paragraph_properties(Paragraph(el, doc._body), "pageBreakBefore")
+        if before and on(before.get("val")):
+            if state == "break":
+                yield index, "紧跟着设了“段前分页”的段落", last, text
+            state, last = "break", None
+        own = ""
+        for node in el.iter(qn("w:t"), qn("w:br"), qn("w:drawing"), qn("w:pict"), qn("w:object"), qn("m:oMath")):
+            if node.tag == qn("w:br"):
+                if node.get(qn("w:type")) == "page":
+                    if state in ("break", "section"):
+                        yield index, "又是一个分页符", node, own if own.strip() else text
+                    state, last = "break", node
+            elif node.tag != qn("w:t"):
+                state = None
+            else:
+                own += node.text or ""
+                state = None if own.strip() else state
+        text = own if own.strip() else text
+        sect = el.find(f"./{qn('w:pPr')}/{qn('w:sectPr')}")
+        if sect is not None:
+            kind = sect.find(qn("w:type"))
+            if kind is None or kind.get(qn("w:val")) in NEW_PAGE_SECTIONS:
+                if state == "break" and not el.xpath('.//w:br[@w:type="page"]'):
+                    yield index, "紧跟着分节符（下一页）", last, text
+                state = "section"
+    if state == "break" and last is not None and not doc.paragraphs[-1]._p.xpath('.//w:br[@w:type="page"]'):
+        yield index, "就是文档结尾", last, text
+
+
+def drop_blank_page_breaks(doc):
+    """Remove the page breaks that only make an empty page; [(paragraph index, text before)]."""
+    removed = []
+    while True:
+        found = next(((i, node, text) for i, _, node, text in blank_page_breaks(doc) if node is not None), None)
+        if not found:
+            return removed
+        i, node, text = found
+        node.getparent().remove(node)
+        removed.append((i, text))
+
+
 LEADING_BLANKS = " \t\u3000\u00a0"
 
 
@@ -1545,6 +1627,10 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
             # Restyling resets direct pPr. Rebind a table caption to its table;
             # a figure caption must not pull unrelated following prose along.
             p.paragraph_format.keep_with_next = nxt is not None and nxt.tag == qn("w:tbl")
+    # A page break that only makes an empty page is layout, not content (the template's own
+    # "start on a new page" headings often meet a typed page break).
+    break_changes = [f"“{text.strip()[-15:]}”后面" if text.strip() else f"第 {i + 1} 段"
+                     for i, text in drop_blank_page_breaks(doc)]
     if m.get("format_tables", False):
         for ti, t in enumerate(doc.tables):
             try:
@@ -1615,5 +1701,6 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         "body_preservation": "passed; includes payload hashes and post-cover-replacement body check",
         "keyword_spacing_changes": spacing_changes,
         "typed_indent_removed": indent_changes,
+        "blank_page_breaks_removed": break_changes,
         "message": "重排初稿已生成；内容保全检查通过。",
     }

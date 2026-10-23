@@ -456,6 +456,55 @@ class CLI(unittest.TestCase):
         self.assertEqual(texts, ["用全角空格顶出来缩进的第一段合成正文。", "用 Tab 顶出来缩进的第二段合成正文。",
                                  "用半角空格顶出来的第三段，Times New Roman 中间的空格要留着。"])
 
+    def test_page_breaks_that_only_make_an_empty_page_in_word(self):
+        # Existing Word: two page breaks in one paragraph (LibreOffice folds them, Word shows a blank page).
+        from docx.enum.text import WD_BREAK
+
+        doc = Document()
+        doc.add_paragraph("第一段合成正文，后面跟着两个分页符。")
+        p = doc.add_paragraph("第二段合成正文。")
+        p.add_run().add_break(WD_BREAK.PAGE)
+        p.add_run().add_break(WD_BREAK.PAGE)
+        doc.add_paragraph("第三段合成正文。")
+        source = self.d / "两个分页符.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("去掉了 1 个只会在 Word 里多出空白页的分页符", out)
+        breaks = [len(q._p.xpath('.//w:br[@w:type="page"]')) for q in Document(work / "final.docx").paragraphs
+                  if "第二段" in q.text]
+        self.assertEqual(breaks, [1])
+        # A new document: two page_break blocks in a row are the agent's own input, so they are pointed at.
+        content = json.loads(json.dumps(CONTENT))
+        content["blocks"][1:1] = [{"type": "paragraph", "text": "分页之前的合成正文。"},
+                                  {"type": "page_break"}, {"type": "page_break"}]
+        work = self.new(JOB_B, content)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("WORD_BLANK_PAGE", out)
+        self.assertIn("又是一个分页符", out)
+        self.assertIn("要改的输入：content.json 的 blocks[2]、blocks[3]（page_break）", out)
+
+    def test_highlight_in_the_original_is_removed_and_the_user_is_told(self):
+        from docx.enum.text import WD_COLOR_INDEX
+
+        doc = Document()
+        p = doc.add_paragraph("第一段合成正文，")
+        p.add_run("这里待补数据").font.highlight_color = WD_COLOR_INDEX.YELLOW
+        p.add_run("。")
+        source = self.d / "高亮.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("ORIGINAL_HIGHLIGHT_REMOVED", out)
+        final = Document(work / "final.docx")
+        self.assertFalse(final.element.body.xpath(".//w:highlight"))
+        self.assertIn("“这里待补数据”", " ".join(D.load(work)[1]["tell_user"]))
+
     def test_mapping_delete_role_removes_only_marked_paragraph(self):
         work = self.new(JOB_B)
         source = self.sample_docx()

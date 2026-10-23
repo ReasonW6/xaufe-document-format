@@ -313,6 +313,12 @@ def effective_profile(template, request=None):
     # The same for page numbers: B's zero footer distance would print them at the paper edge.
     if spec["footer"]["page_numbers"] and "footer" not in pages and m["footer"] < 200:
         m["footer"] = load_profile("A")["page_twips"]["footer"]
+    # Narrowed top/bottom margins with the default header/footer distance: the header or page number
+    # would sit inside the text column, so the distance shrinks with the margin (never closer to the
+    # paper edge than printers reach).  A distance the user gave stays as it is.
+    for side, distance in (("top", "header"), ("bottom", "footer")):
+        if side in pages and distance not in pages and m[distance] >= 200 and m[distance] + 300 > m[side]:
+            m[distance] = max(280, m[side] - 300)
     if "cover_label" in request:
         spec["cover"]["document_label"] = request["cover_label"]
     if "cover_title_label" in request:

@@ -163,12 +163,20 @@ class MergeTests(Fixture):
         for template in ("A", "B"):
             for request in ({}, {"footer_page_numbers": True}, {"header": {"enabled": True}},
                             {"page_twips": {"left": 1418, "right": 1418}},
-                            {"footer_page_numbers": True, "page_twips": {"footer": 300}}):
+                            {"footer_page_numbers": True, "page_twips": {"footer": 300}},
+                            {"footer_page_numbers": True, "page_twips": {"top": 1000, "bottom": 1000}},
+                            {"page_twips": {"top": 300, "bottom": 300}},
+                            {"page_twips": {"bottom": 300, "footer": 992}}):
                 with self.subTest(template=template, request=request):
                     self.assertEqual(page_contract(template, request), C.effective_profile(template, request)["page_twips"])
         # Hand-checked values, not copied from layout.json.
         self.assertEqual((page_contract("B")["left"], page_contract("B")["right"]), (1701, 1247))
         self.assertEqual((page_contract("A")["left"], page_contract("A")["header"]), (1800, 851))
+        # A narrowed margin pulls the default header/footer distance in; one the user gave stays.
+        narrow = page_contract("A", {"page_twips": {"top": 1000, "bottom": 1000}})
+        self.assertEqual((narrow["header"], narrow["footer"]), (700, 700))
+        self.assertEqual(page_contract("A", {"page_twips": {"top": 300, "bottom": 300}})["footer"], 280)
+        self.assertEqual(page_contract("A", {"page_twips": {"bottom": 300, "footer": 992}})["footer"], 992)
 
     def test_label_multiturn_merge(self):
         a = {"keyword_labels": {"zh": {"size": 12, "italic": True}}}

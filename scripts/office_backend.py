@@ -81,7 +81,7 @@ def _word(docx, pdf, candidate, tmp):
     return proc.stdout.strip()
 
 
-def export_pdf(docx, pdf):
+def export_pdf(docx, pdf, fallback=True):
     docx = Path(docx).resolve()
     pdf = Path(pdf).resolve()
     if docx == pdf:
@@ -100,7 +100,7 @@ def export_pdf(docx, pdf):
     failures = []
     # A missing selected application must not hide another installed renderer.
     # Keep the selected engine first, then try remaining real candidates.
-    if report.get("candidates"):
+    if report.get("candidates") and fallback:
         preference = os.environ.get("XAUFE_RENDER_ENGINE")
         try:
             os.environ["XAUFE_RENDER_ENGINE"] = "auto"
@@ -164,3 +164,30 @@ def export_pdf(docx, pdf):
         report,
         failures,
     )
+
+
+def second_opinion(docx, pdf, used):
+    """Render once more with another installed engine than ``used`` (Word first), for comparing
+    page breaks.  None when there is no other callable engine.  The first render's record stays."""
+    report = discover()
+    saved, before = os.environ.get("XAUFE_RENDER_ENGINE"), dict(LAST_BACKEND)
+    manual = os.environ.pop("XAUFE_WPS_MODE", None)
+    try:
+        os.environ["XAUFE_RENDER_ENGINE"] = "auto"
+        others = [c["engine"] for c in usable_candidates(report) if c["engine"] != str(used).lower()]
+        for engine in sorted(dict.fromkeys(others), key=lambda e: e != "word"):
+            os.environ["XAUFE_RENDER_ENGINE"] = engine
+            try:
+                return export_pdf(docx, pdf, fallback=False)
+            except (OfficeUnavailable, OSError, RuntimeError, ValueError):
+                continue
+        return None
+    finally:
+        if saved is None:
+            os.environ.pop("XAUFE_RENDER_ENGINE", None)
+        else:
+            os.environ["XAUFE_RENDER_ENGINE"] = saved
+        if manual is not None:
+            os.environ["XAUFE_WPS_MODE"] = manual
+        LAST_BACKEND.clear()
+        LAST_BACKEND.update(before)

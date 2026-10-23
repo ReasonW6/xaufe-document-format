@@ -118,13 +118,23 @@ def cmd_new(args):
             print(f"原稿是本技能以前生成的成品：已按它记录的设置恢复 {Path(work) / 'job.json'}（版式、校徽、封面信息、全部格式要求）。"
                   "这是修改旧成品：只改用户这次说的那一项，其余保持不动；task 默认为 format，要改内容就改成 write。")
             print(json.dumps(previous, ensure_ascii=False, indent=1))
+            manual = D.previous_manual(source)
+            if manual:
+                print(f"必须处理：上一版交付前有一项是手工处理的（“{manual.get('note', '')}”），它不在上面的设置里，"
+                      "这次重新排版不会自动带上：写得进 job.json 的（字号、对齐、缩进、行距等）就写进 format.styles，"
+                      "写不进的在新成品上重新手工处理后 adopt。run 会把它列进 review.json 的 warnings。")
             break
     print("下一步：")
     print(f"  1. 写 {Path(work) / 'job.json'}（写法见 references/job.md）")
     print(f"  2. 运行 check --work \"{work}\" 看还缺什么封面信息")
-    print(
-        f"  3. 新写文档：写 {Path(work) / 'content.json'}；已有 Word：运行 inspect --work \"{work}\" --docx 原稿.docx"
-    )
+    texts = [s for s in args.source or [] if Path(s).suffix.lower() in (".txt", ".md")]
+    if texts:
+        print(f"  3. 原稿是文本文件：运行 inspect --work \"{work}\" --text \"{texts[0]}\"（逐字导入成 content.json 草稿）；"
+              f"新写文档就直接写 {Path(work) / 'content.json'}")
+    else:
+        print(
+            f"  3. 新写文档：写 {Path(work) / 'content.json'}；已有 Word：运行 inspect --work \"{work}\" --docx 原稿.docx"
+        )
 
 
 # ---------------------------------------------------------------- check
@@ -144,7 +154,10 @@ def _task(root):
 
 
 # ---------------------------------------------------------------- writing checks
-NUMBER = re.compile(r"\d[\d,.]*\s*(?:%|％|‰|元|万|亿|人|名|倍|个百分点|户|家)|百分之")
+NUMBER = re.compile(r"\d[\d,.]*\s*(?:%|％|‰|元|万|亿|人|名|倍|个百分点|户|家)|百分之"
+                    # Chinese numerals with a magnitude ("三千万人", "十几万") or a multiple ("增长一倍")
+                    r"|[一二两三四五六七八九十][一二两三四五六七八九十几余多]*[百千万亿]+[余多]?(?:人|名|元|户|家|吨)?"
+                    r"|[一二两三四五六七八九十]+倍")
 CITE = re.compile(r"[\[［]\d+(?:\s*[,，\-–]\s*\d+)*[\]］]")
 CN_DIGITS = "一二三四五六七八九"
 HEADING_NUMBER = {
@@ -268,6 +281,9 @@ def _writing_problems(root, content):
     result_path = root / "refs-result.json"
     if references and not result_path.is_file():
         problems.append(_problem("参考文献还没有核对：按 references/citations.md 写 refs.json 并运行 refs。", "refs.json"))
+    elif references and _refs_result_forged(root):
+        problems.append(_problem("refs-result.json 不是 refs 命令写出的那一份（被手写或改过）：删掉它，重新运行 refs。"
+                                 "核对结果只能来自 refs，不能自己填。", "refs-result.json"))
     elif references:
         saved = _read(result_path, "refs-result.json")
         refs_json = root / "refs.json"
@@ -318,7 +334,7 @@ def _writing_problems(root, content):
     if references and result_path.is_file():
         problems += _unbacked_figures(content, {_ref_key(r["text"]): r for r in _read(result_path, "refs-result.json").get("results", [])})
     counters = {1: 0, 2: 0, 3: 0}
-    for block in content.get("blocks", []):
+    for i, block in enumerate(content.get("blocks", [])):
         level = block.get("level")
         if block.get("type") != "heading" or block.get("preface") or level not in HEADING_NUMBER:
             continue
@@ -327,7 +343,10 @@ def _writing_problems(root, content):
             continue
         number = _cn_number(match.group(1))
         if number != counters[level] + 1:
-            problems.append(f"标题编号不连续：“{block['text'][:20]}”前面一个同级标题是第 {counters[level]} 个")
+            problems.append(_problem(f"标题编号不连续：“{block['text'][:20]}”前面一个同级标题是第 {counters[level]} 个"
+                                     "（改这个标题的编号，或补上缺的那一节）",
+                                     f"mapping.json 里 id 为 {block['_id']} 的段落" if "_id" in block
+                                     else f"content.json 的 blocks[{i}]"))
         counters[level] = number
         for deeper in range(level + 1, 4):
             counters[deeper] = 0
@@ -480,6 +499,28 @@ def _document_references(root):
     return []
 
 
+def _save_refs_result(root, data):
+    """refs-result.json plus its fingerprint in the workspace record: a result file the refs command
+    did not write (or one edited afterwards) is then caught at run and finish."""
+    import delivery as D
+
+    _write(root / "refs-result.json", data)
+    root, state = D.load(root)
+    state["refs_result_sha256"] = hashlib.sha256((root / "refs-result.json").read_bytes()).hexdigest()
+    D.write_json(root / D.MARKER, state)
+
+
+def _refs_result_forged(root):
+    """True when refs-result.json is not the file the refs command last wrote."""
+    import delivery as D
+
+    path = root / "refs-result.json"
+    if not path.is_file():
+        return False
+    recorded = D.load(root)[1].get("refs_result_sha256")
+    return recorded != hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _auto_original_refs(root):
     """Format only: check the original's references once (report only, the text is never changed),
     so finish can tell the user what was found.  Skipped when the agent already ran refs."""
@@ -498,8 +539,8 @@ def _auto_original_refs(root):
     entries = [R.parse_line(line) for line in lines]
     _write(root / "refs.json", entries)
     results = R.check_all(entries)
-    _write(root / "refs-result.json", {"refs_sha256": hashlib.sha256((root / "refs.json").read_bytes()).hexdigest(),
-                                       "min": 0, "results": results})
+    _save_refs_result(root, {"refs_sha256": hashlib.sha256((root / "refs.json").read_bytes()).hexdigest(),
+                             "min": 0, "results": results})
     return ("原文参考文献已自动核对（只报告，不改原文；finish 会把结果给用户）：\n"
             + R.report(results, entries, 0, report_only=True))
 
@@ -869,6 +910,10 @@ def _build(root, level):
             shown = result["typed_indent_removed"]
             print(f"去掉了 {len(shown)} 段段首用空格/全角空格/Tab 打出来的缩进（模板自带首行缩进，文字没动）："
                   + "、".join(shown[:5]) + ("等" if len(shown) > 5 else ""))
+        if result.get("blank_page_breaks_removed") and level == 0:
+            shown = result["blank_page_breaks_removed"]
+            print(f"去掉了 {len(shown)} 个只会在 Word 里多出空白页的分页符（文字没动）：" + "、".join(shown[:5])
+                  + ("等" if len(shown) > 5 else ""))
     else:
         raise ValueError("还没有内容：新写文档请写 content.json；已有 Word 请先运行 inspect。")
     return draft
@@ -964,8 +1009,24 @@ def cmd_run(args):
             return _not_accepted(root, exc)
         except CoverOverflow as exc:
             used = int(E.get_vars(docx.Document(draft)).get("XAUFE_COVER_FIT", "0"))
-            if used >= MAX_LEVEL and exc.missing_fonts:
+            if exc.too_high:
+                pages = ((_read(root / "job.json", "job.json").get("format") or {}).get("page_twips") or {})
+                changed = "、".join(f"{k}={v}" for k, v in pages.items())
                 return _not_accepted(root, F.AcceptanceFailed("封面", [{
+                    "code": "COVER_DATE_TOO_HIGH", "stage": "封面",
+                    "message": "封面的完成日期在第一页上，但比底部保留区高：" + str(exc),
+                    "where": dict({"location": "第 1 页（封面）"},
+                                  **({"edit": f"job.json 的 format.page_twips（{changed}）"} if changed else {})),
+                    "expected": "日期在第一页版心最底部", "actual": "日期浮在保留区上面",
+                    "cause": ("不是封面太长：页面下方可用的高度变小了。" + (
+                        f"job.json 改了页边距（{changed}），页脚放不进这么窄的下边距，正文区的底边被顶上去了。"
+                        if changed else "页脚比下边距高，或渲染软件的页面设置和文件不同。")),
+                    "fix": ("先核对 page_twips：页脚距离 footer 要比下边距 bottom 至少小 300（一行页脚的高度），"
+                            "不是用户要的值就删掉这项恢复模板默认；用户要的就是这么窄的边距，就问用户是把 footer 改小"
+                            "（不小于 280，再小打印机印不到）还是把 bottom 放宽。不要缩短封面内容，也不用换字体。"),
+                }]))
+            if used >= MAX_LEVEL and exc.missing_fonts:
+                return _not_accepted(root, F.AcceptanceFailed("封面", F.with_job_suspects(root, [{
                     "code": "COVER_FONTS_MISSING", "stage": "封面",
                     "message": "封面在这台机器上放不下：" + str(exc),
                     "where": {"location": "第 1 页（封面）"},
@@ -977,11 +1038,11 @@ def cmd_run(args):
                            "② 用户自己装上" + "、".join(exc.missing_fonts) + "后再 run；"
                            "③ 用户同意这次不做实际分页检查，按静态交付（run --office none，会如实告诉用户哪些检查没做）。"
                            "装好字体或换了软件后仍放不下，才问用户缩短封面内容。",
-                }]))
+                }])))
             if used >= MAX_LEVEL:
                 values = {I.LABELS.get(k, k): str(v) for k, v in state.get("metadata", {}).items() if k != "date" and v}
                 longest = sorted(values.items(), key=lambda kv: -len(kv[1]))[:2]
-                return _not_accepted(root, F.AcceptanceFailed("封面", [{
+                return _not_accepted(root, F.AcceptanceFailed("封面", F.with_job_suspects(root, [{
                     "code": "COVER_TOO_LONG", "stage": "封面",
                     "message": "封面已经收紧到最紧，第一页仍放不下：" + str(exc),
                     "where": {"location": "第 1 页（封面）", "edit": "job.json 的 info"},
@@ -989,7 +1050,7 @@ def cmd_run(args):
                     "actual": "最长的是" + "、".join(f"{k}（{len(v)} 字：“{v[:20]}”）" for k, v in longest),
                     "cause": "封面字段太长，空白和行距已经收到最紧。",
                     "fix": "问用户：缩短这几项，或同意缩小封面字号（job.json 的 format.cover_fonts）。不要自己删改封面内容。",
-                }]))
+                }])))
             level = used + 1
             print(f"封面太长，日期被挤出第一页；自动收紧封面空白（第 {level} 级）后重试……")
     F.record_round(root, [])
@@ -1101,8 +1162,8 @@ def cmd_refs(args):
                 result["provenance"] = _user_provenance(entry, originals)
                 if not result["provenance"]:
                     result["notes"].append("标了 from_user，但登记的原稿里找不到这一条，也没写 user_said（用户给这条文献时的原话）")
-    _write(
-        root / "refs-result.json",
+    _save_refs_result(
+        root,
         {"refs_sha256": hashlib.sha256((root / "refs.json").read_bytes()).hexdigest(), "min": args.min, "results": results},
     )
     only_report = (root / "job.json").is_file() and _task(root) == "format"

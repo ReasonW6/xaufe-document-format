@@ -25,6 +25,7 @@ PT = 20  # twips per point
 EDGE_TOLERANCE = 2.0  # pt; drawing and image edges are exact
 TEXT_TOLERANCE = 6.0  # pt; about half a 五号 glyph, absorbs justification and font metrics
 COVER_SAFE = 28.0  # pt (~1 cm); the school cover centres 36 pt titles on its own measure
+HEADER_ROOM = 24.0  # pt: a header or footer line and its leading, measured from the header/footer distance
 EDGE_SAFE = 14.0  # pt (~0.5 cm); most printers cannot print closer to the paper edge
 HANGING = set("，。、；：！？）》」』”’,.;:!?)")
 
@@ -122,6 +123,8 @@ def _margins(sections):
         "width": max(get(s, "page_width") for s in sections),
         "height": max(get(s, "page_height") for s in sections),
         **{k: min(get(s, k + "_margin") for s in sections) for k in ("left", "right", "top", "bottom")},
+        **{k: max((getattr(s, k + "_distance").twips if getattr(s, k + "_distance") is not None else 0)
+                  for s in sections) / PT for k in ("header", "footer")},
     }
 
 
@@ -576,7 +579,7 @@ def audit(docx, pdf, adopted=False):
                 x0, y0, x1, y1 = line["bbox"]
                 text = line["spans"][0]["text"]
                 ink = line.get("ink_right", x1)
-                if x0 < -0.5 or y0 < -0.5 or x1 > w + 0.5 or y1 > h + 0.5:
+                if x0 < -0.5 or y0 < -0.5 or ink > w + 0.5 or y1 > h + 0.5:
                     errors.append(_issue("error", "OFF_PAGE", index, "文字超出纸张边缘，会被裁掉。",
                                          where=text[:30], bbox=line["bbox"]))
                 elif cover and (x0 < COVER_SAFE or x1 > w - COVER_SAFE):
@@ -619,7 +622,15 @@ def audit(docx, pdf, adopted=False):
                                          bbox=tuple(rect)))
                     break
 
-            body = [l for l in lines if l["bbox"][3] > top and l["bbox"][1] < bottom]
+            # Header and footer: outside the text column, or (margins narrowed below the header/footer
+            # distance plus a line) a short line inside the column that is not the document's own text.
+            band_top = max(top + 1, m["header"] + HEADER_ROOM) if m["header"] else top + 1
+            band_bottom = min(bottom - 1, h - m["footer"] - HEADER_ROOM) if m["footer"] else bottom - 1
+            own = lambda l: len(_flat(l["spans"][0]["text"])) >= 4 and any(
+                _flat(l["spans"][0]["text"]) in t for t, _, _ in placed)
+            head = [l for l in lines if l["bbox"][3] <= top + 1 or (l["bbox"][3] <= band_top and not own(l))]
+            foot = [l for l in lines if l["bbox"][1] >= bottom - 1 or (l["bbox"][1] >= band_bottom and not own(l))]
+            body = [l for l in lines if l["bbox"][3] > top and l["bbox"][1] < bottom and l not in head and l not in foot]
             # Rules, table borders and shapes count as content too; a lone header rule does not.
             body_objects = [b for b in images if b[3] > top and b[1] < bottom] + [
                 r for r in drawings if r.y1 > top + 2 and r.y0 < bottom - 2 and (r.height > 2 or r.y0 > top + 30)]
@@ -629,14 +640,13 @@ def audit(docx, pdf, adopted=False):
             elif body:
                 previous = body[-1]["spans"][0]["text"][-20:]
 
-            head = [l for l in lines if l["bbox"][3] <= top + 1]
-            foot = [l for l in lines if l["bbox"][1] >= bottom - 1]
             if want["header"] is not None:
                 if cover and head:
                     errors.append(_issue("error", "COVER_HEADER_VISIBLE", index, "封面页出现了页眉文字。",
                                          where=head[0]["spans"][0]["text"][:30]))
                 elif not cover and want["header"] and not head:
-                    errors.append(_issue("error", "HEADER_MISSING", index, "这一页应该有页眉，渲染结果里没有。"))
+                    errors.append(_issue("error", "HEADER_MISSING", index, "这一页应该有页眉，渲染结果里没有。",
+                                         expected="页眉文字", actual="（没有）"))
                 elif not cover and want["header"]:
                     spill = _header_overflow(lines, top, header_texts)
                     if spill:
@@ -659,7 +669,7 @@ def audit(docx, pdf, adopted=False):
                     errors.append(_issue("error", "COVER_FOOTER_VISIBLE", index, "封面页出现了页脚文字或页码。", where=texts[:30]))
                 elif not cover and want["page_numbers"] and not re.fullmatch(r"[0-9IVXLCivxlc\-—\s第页]+", texts or "?"):
                     errors.append(_issue("error", "PAGE_NUMBER_MISSING", index, "这一页页脚应该显示页码，渲染结果里没有。",
-                                         actual=texts[:30] or "（空）"))
+                                         expected="页脚里的页码", actual=texts[:30] or "（页脚是空的）"))
                 elif not cover and not want["page_numbers"] and texts:
                     errors.append(_issue("error", "FOOTER_UNEXPECTED", index, "页脚应该是空白，渲染结果里有文字。", where=texts[:30]))
 

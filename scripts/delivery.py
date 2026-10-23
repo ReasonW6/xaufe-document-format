@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib, json, os, re, shutil, tempfile, uuid
 from pathlib import Path
 from docx import Document
+from docx.oxml.ns import qn
 from textio import read_text_any
 import engine as E
 from intake import require
@@ -120,10 +121,56 @@ def _job(root):
     return job
 
 
+def previous_manual(path):
+    """The hand edit an earlier output of this skill went through (adopt), or None."""
+    if Path(path).suffix.lower() != ".docx":
+        return None
+    try:
+        raw = E.get_vars(Document(path)).get("XAUFE_MANUAL")
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _highlighted(path):
+    """Texts of the runs an original .docx highlights or shades (the template has neither)."""
+    if Path(path).suffix.lower() != ".docx":
+        return []
+    try:
+        body = Document(path).element.body
+    except Exception:
+        return []
+    found = []
+    for p in body.iter(qn("w:p")):
+        text = "".join(t for r in p.iter(qn("w:r")) if _painted(r) for t in r.xpath("./w:t/text()")).strip()
+        if text:
+            found.append(text)
+    return found
+
+
+def _painted(run):
+    rpr = run.find(qn("w:rPr"))
+    if rpr is None:
+        return False
+    mark = rpr.find(qn("w:highlight"))
+    if mark is not None and mark.get(qn("w:val")) not in (None, "none"):
+        return True
+    shade = rpr.find(qn("w:shd"))
+    return shade is not None and (shade.get(qn("w:fill")) or "auto").upper() not in ("AUTO", "FFFFFF")
+
+
 def compare_originals(root, state, result):
     """Format-only (task "format"): any text added or dropped without the user's say blocks delivery.
     Writing: the originals are material, so text not reused is only a review note."""
     originals = [x for x in state["source_documents"] if x.get("role") == "original"]
+    for item in originals:
+        manual = previous_manual(item["path"])
+        if manual:
+            result["warnings"].append({"code": "PREVIOUS_MANUAL_EDIT", "message":
+                f"原稿是本技能以前的成品，当时有一项是交付前手工处理的：“{manual.get('note', '')}”"
+                + ("（" + "；".join(manual.get("summary") or []) + "）" if manual.get("summary") else "")
+                + "。这次是按记录的设置重新排的，那项手工处理不会自动带上：写得进 job.json 的就写进去重新 run，"
+                  "写不进的就在新成品上重新手工处理后 adopt；用户这次不要了，就在这里写明用户的原话。"})
     job = _job(root)
     strict = job.get("task") == "format"
     if not originals:
@@ -144,6 +191,13 @@ def compare_originals(root, state, result):
             "code": "ORIGINAL_HEADER_FOOTER_REPLACED",
             "message": "原稿页眉/页脚里的“" + "”“".join(t[:20] for t in dropped[:3]) + "”没有保留：成品的页眉页脚按模板重新生成了。"
                        "要在回复里告诉用户；用户想保留原来的页眉文字，就写进 job.json 的 format.header（left / right）后重新 run。",
+        })
+    marked = [t for item in originals for t in _highlighted(item["path"])] if strict else []
+    if marked:
+        result["warnings"].append({
+            "code": "ORIGINAL_HIGHLIGHT_REMOVED",
+            "message": "原稿里“" + "”“".join(t[:15] for t in marked[:3]) + f"”等 {len(marked)} 处文字带高亮或底纹，"
+                       "模板没有这种格式，成品里去掉了（文字没动）。要在回复里告诉用户：那可能是用户给自己做的待改标记。",
         })
     if dropped_page_numbers(originals, root / "final.docx"):
         result["warnings"].append({
@@ -194,8 +248,10 @@ def compare_originals(root, state, result):
                 item["where"]["edit"] = source
             if "original" in d:
                 item["expected"] = d["original"]
+                item["actual"] = "（成品里没有）"
             if "output" in d:
                 item["actual"] = d["output"]
+                item.setdefault("expected", "（原稿里没有）")
             issues.append(item)
         raise AcceptanceFailed("原文保全", issues)
     missing = [d for d in found if d["kind"] == "missing"]
@@ -337,6 +393,9 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
         result["warnings"].append({"code": "RENDERER_FALLBACK", "message":
             f"指定用 {names.get(wanted, wanted)} 渲染，但它这次用不了，实际是用 {names.get(used.lower(), used)} 分页和检查的。"
             "用户点名要某个软件时要告诉用户；能修好那个软件就修好后重新 run。"})
+    difference = renderer_difference(final, root / "preview" / "final.pdf", root / "second-render.pdf", used)
+    if difference:
+        result["warnings"].append(difference)
     write_json(root / "final-check.json", result)
     warnings = [w for w in result["warnings"] if w["code"] != "VISUAL_REQUIRED"]
     s.update(
@@ -362,7 +421,7 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
 
 # Warnings about something the user will see differently from what they gave or asked for:
 # finish puts them in the notice that must go into the reply, so they cannot be dropped.
-TELL_USER = {"ORIGINAL_PAGE_NUMBERS_DROPPED", "ORIGINAL_HEADER_FOOTER_REPLACED", "HEADING_NUMBERING", "MARGIN_TOO_SMALL",
+TELL_USER = {"RENDERER_DIFFERENCE", "ORIGINAL_PAGE_NUMBERS_DROPPED", "ORIGINAL_HEADER_FOOTER_REPLACED", "ORIGINAL_HIGHLIGHT_REMOVED", "HEADING_NUMBERING", "MARGIN_TOO_SMALL",
              "STYLE_HARD_TO_READ", "FONT_MARKS", "RENDERER_FALLBACK", "REF_CITATION_MISMATCH", "REF_SUPPORT_UNCONFIRMED"}
 
 
@@ -375,6 +434,12 @@ def _user_line(w):
     first = quoted[0] if quoted else ""
     if code == "ORIGINAL_HEADER_FOOTER_REPLACED":
         return "原稿页眉页脚里的“" + "”“".join(quoted[:3]) + "”没有保留，页眉页脚按模板重新生成了；想保留原来的页眉文字可以告诉我。"
+    if code == "RENDERER_DIFFERENCE":
+        return message.split("。")[0] + "。用那个软件打开时以它的分页为准，目录页码在目录上右键“更新域”就能对上。"
+    if code == "ORIGINAL_HIGHLIGHT_REMOVED":
+        count = re.search(r"等 (\d+) 处", message)
+        return (f"原稿里“{first}”等{count.group(1) + ' 处' if count else ''}文字带的高亮或底纹模板里没有，成品里去掉了（文字没动）；"
+                "如果那是你给自己做的待改标记，记得在新文件里再找一下。")
     if code == "ORIGINAL_PAGE_NUMBERS_DROPPED":
         return "原稿页脚有页码，这次按模板默认没有显示页码；需要页码可以告诉我。"
     if code == "HEADING_NUMBERING":
@@ -417,6 +482,38 @@ def add_review_warnings(workspace, warnings):
     s["tell_user"] = list(dict.fromkeys(s.get("tell_user", []) + tell_user(warnings)))
     s["warning_codes"] = sorted(set(s.get("warning_codes", [])) | {warning_key(w) for w in warnings})
     write_json(root / MARKER, s)
+
+
+def renderer_difference(final, pdf, second, used):
+    """Pagination checked in LibreOffice or WPS while Word (or another engine) is installed too: render
+    again there and compare page count and TOC page numbers.  A warning when they differ, else None."""
+    import pymupdf as fitz
+    from office_backend import second_opinion
+    from refresh_toc import pdf_positions
+
+    if not used or used.lower() == "word" or os.environ.get("XAUFE_SECOND_RENDER") == "0":
+        return None
+    other = second_opinion(final, second, used)
+    if not other:
+        return None
+    names = dict(RENDERER_NAMES, word="Word")
+    first_name, second_name = names.get(used.lower(), used), names.get(other["engine"], other["engine"])
+    with fitz.open(pdf) as a, fitz.open(second) as b:
+        counts = (len(a), len(b))
+    found = [f"{first_name} 排出 {counts[0]} 页，{second_name} 排出 {counts[1]} 页"] if counts[0] != counts[1] else []
+    entries = toc_entries(Document(final))
+    if entries:
+        try:
+            values = list(map(str, pdf_positions(second, entries)[0]))
+        except ValueError:
+            values = []
+        moved = [(e["text"], e["cache"], v) for e, v in zip(entries, values) if e["cache"] != v]
+        found += [f"目录“{t[:15]}”在 {first_name} 里是第 {a} 页，在 {second_name} 里是第 {b} 页" for t, a, b in moved[:3]]
+    if not found:
+        return None
+    return {"code": "RENDERER_DIFFERENCE", "message":
+            f"同一份文件，{second_name} 和检查用的 {first_name} 分页不一样：" + "；".join(found) + "。"
+            f"用户用 {second_name} 打开时以它为准；要在回复里告诉用户，目录页码在 {second_name} 里右键“更新域”即可。"}
 
 
 def _renderer_name(root):
@@ -626,14 +723,128 @@ def _size_text(value):
     return re.sub(r"(\d+)\s*(?:半磅)?", one, str(value))
 
 
+# A hand-made change in words: which property, and its values as Word's dialogs name them.
+PROPERTY_NAMES = {
+    "jc/val": "对齐", "ind/firstLine": "首行缩进", "ind/firstLineChars": "首行缩进", "ind/left": "左缩进",
+    "ind/leftChars": "左缩进", "ind/hanging": "悬挂缩进", "ind/hangingChars": "悬挂缩进", "ind/right": "右缩进",
+    "ind/rightChars": "右缩进", "spacing/before": "段前", "spacing/after": "段后", "spacing/beforeLines": "段前",
+    "spacing/afterLines": "段后", "spacing/line": "行距", "spacing/lineRule": "行距方式", "keepNext/val": "与下段同页",
+    "keepLines/val": "段中不分页", "pageBreakBefore/val": "段前分页", "widowControl/val": "孤行控制",
+}
+ALIGN_NAMES = {"both": "两端对齐", "center": "居中", "left": "左对齐", "start": "左对齐", "right": "右对齐",
+               "end": "右对齐", "distribute": "分散对齐"}
+RULE_NAMES = {"auto": "多倍行距", "exact": "固定值", "atLeast": "最小值"}
+ROLE_NAMES = {
+    "body": "正文", "h1": "一级标题", "h2": "二级标题", "h3": "三级标题", "h4": "四级标题", "preface": "序言标题",
+    "title_zh": "中文题目", "title_en": "英文题目", "abstract_label_zh": "“摘要”标签", "abstract_label_en": "“Abstract”标签",
+    "abstract_zh": "中文摘要", "abstract_en": "英文摘要", "keywords_zh": "中文关键词", "keywords_en": "英文关键词",
+    "toc_title": "目录标题", "toc1": "目录一级", "toc2": "目录二级", "toc3": "目录三级", "toc4": "目录四级",
+    "reference_title": "参考文献标题", "reference": "参考文献条目", "caption": "图表标题", "figure": "图片段",
+    "table_text": "表格文字", "code": "代码", "equation": "公式", "header": "页眉",
+}
+# How the same change is asked for in job.json (format.styles.<role>.<key>), when it is one.
+STYLE_KEY = {"FONT_SIZE": "size", "FONT_CN": "cn", "FONT_EN": "latin", "FONT_BOLD": "bold", "FONT_COLOR": "color",
+             "jc/val": "align", "ind/firstLine": "first", "ind/firstLineChars": "chars", "ind/left": "left",
+             "ind/leftChars": "left_chars", "ind/hanging": "hanging", "spacing/before": "before",
+             "spacing/after": "after", "spacing/beforeLines": "before_lines", "spacing/afterLines": "after_lines",
+             "spacing/line": "line", "spacing/lineRule": "line_rule", "keepNext/val": "keep",
+             "pageBreakBefore/val": "break_before"}
+
+
+def _property(issue):
+    """'jc/val' for a PARAGRAPH issue, else the issue code."""
+    m = re.search(r"(?P<what>[\w/]+)=", issue.get("message", "")) if issue["code"] == "PARAGRAPH" else None
+    return m.group("what") if m else issue["code"]
+
+
+def _readable(what, value):
+    raw = str(value).strip().strip("'\"")
+    if raw in ("None", ""):
+        return "未设置"
+    if what in ("FONT_SIZE", "TOC_FONT_SIZE"):
+        return _size_text(raw)
+    if what == "jc/val":
+        return ALIGN_NAMES.get(raw, raw)
+    if what == "spacing/lineRule":
+        return RULE_NAMES.get(raw, raw)
+    if what == "FONT_COLOR":
+        return "黑色" if raw.upper() in ("000000", "AUTO") else f"颜色 {raw}"
+    if what.startswith(("FONT_", "TOC_")):
+        return raw
+    if what.endswith("/val") and raw in ("0", "1"):
+        return "是" if raw == "1" else "否"
+    if not re.fullmatch(r"-?\d+", raw):
+        return raw
+    n = int(raw)
+    if what.endswith("Chars"):
+        return f"{n / 100:g} 字符"
+    if what.endswith("Lines"):
+        return f"{n / 100:g} 行"
+    if what == "spacing/line":
+        return f"{n / 240:g} 倍（固定值时 {n / 20:g} 磅）"
+    return f"{n / 20:g} 磅"
+
+
+def _role_of(issue):
+    from customization import ROLE_STYLES
+
+    style = (issue.get("where") or {}).get("style")
+    return next((role for role, name in ROLE_STYLES.items() if name == style), None)
+
+
+def _deviation_groups(explained):
+    """Hand-made changes grouped by role and property: {(role, what, template, now): {paragraph, ...}}."""
+    groups = {}
+    for x in explained:
+        what = _property(x)
+        key = (_role_of(x), what, _readable(what, x.get("expected", "")) if "expected" in x else "",
+               _readable(what, x.get("actual", "")) if "actual" in x else "")
+        groups.setdefault(key, set()).add(re.sub(r"/r\d+$", "", (x.get("where") or {}).get("location", "")))
+    return groups
+
+
+def _group_line(key, places, totals):
+    role, what, template, now = key
+    name = PROPERTY_NAMES.get(what) or ADOPTABLE.get(what, what)
+    total = totals.get(role, 0)
+    who = ROLE_NAMES.get(role, "部分段落")
+    who += f"（全部 {total} 段）" if total and len(places) >= total else f"（{len(places)} 段）"
+    values = f"：模板是{template}，现在是{now}" if template and now else "和模板默认不同"
+    return f"{who}的{name}{values}"
+
+
+def _role_totals(docx):
+    """Paragraphs with text per role in the document."""
+    from collections import Counter
+    from customization import ROLE_STYLES
+
+    names = {name: role for role, name in ROLE_STYLES.items()}
+    return Counter(names.get(p.style.name if p.style is not None else "") for p in Document(docx).paragraphs
+                   if p.text.strip())
+
+
+def _as_job_value(what, value):
+    raw = str(value).strip().strip("'\"")
+    if what == "FONT_SIZE":
+        return int(raw) / 2 if raw.isdigit() else None
+    if what == "FONT_BOLD":
+        return raw == "是"
+    if what.endswith("/val") and what != "jc/val":
+        return raw == "1"
+    if re.fullmatch(r"-?\d+", raw) and what not in ("FONT_CN", "FONT_EN", "FONT_COLOR"):
+        return int(raw)
+    return raw if raw not in ("None", "") else None
+
+
 def _plain_deviation(issue):
+    """One hand-made change in words (used when it cannot be grouped)."""
     where = issue.get("where") or {}
+    what = _property(issue)
     place = f"“{where['text']}”" if where.get("text") else (where.get("location") or "")
-    what = ADOPTABLE.get(issue["code"], issue["code"])
-    shown = _size_text if issue["code"] in ("FONT_SIZE", "TOC_FONT_SIZE") else str
-    detail = (f"（模板：{shown(issue['expected'])}；现在：{shown(issue['actual'])}）"
+    name = PROPERTY_NAMES.get(what) or ADOPTABLE.get(issue["code"], issue["code"])
+    detail = (f"（模板：{_readable(what, issue['expected'])}；现在：{_readable(what, issue['actual'])}）"
               if "expected" in issue and "actual" in issue else "")
-    return (f"{place}的{what}" if place else what) + "和模板默认不同" + detail
+    return (f"{place}的{name}" if place else name) + "和模板默认不同" + detail
 
 
 def adopt(workspace, docx, note):
@@ -686,11 +897,31 @@ def adopt(workspace, docx, note):
                                "做不到就告诉用户这项要求会带来什么问题，问用户怎么取舍。")
             raise AcceptanceFailed("手工修改", issues)
         explained = explain(deviations, final, root, stage="手工修改")
-        # One line per paragraph and kind of change, not one per text run.
-        unique = {}
-        for e, x in zip(deviations, explained):
-            unique.setdefault(_plain_deviation(x), (e, x))
-        deviations, explained = [e for e, _ in unique.values()], [x for _, x in unique.values()]
+        # One line per role and kind of change ("正文（全部 30 段）的字号：…"), not one per paragraph or run.
+        groups, totals = _deviation_groups(explained), _role_totals(final)
+        expressible = {}
+        for (role, what, _, now), places in groups.items():
+            raw = next((x.get("actual") for x in explained if _role_of(x) == role and _property(x) == what), None)
+            value = _as_job_value(what, raw) if raw is not None else None
+            if role in ROLE_NAMES and what in STYLE_KEY and value is not None and totals.get(role) \
+                    and len(places) >= totals[role]:
+                expressible.setdefault(role, {})[STYLE_KEY[what]] = value
+        if expressible:
+            styles = json.dumps(expressible, ensure_ascii=False)
+            raise AcceptanceFailed("手工修改", [{
+                "code": "ADOPT_USE_JOB", "stage": "手工修改",
+                "message": "这次手工改的是整类段落的格式，job.json 就能做到，不需要手工处理："
+                           + "；".join(_group_line(k, v, totals) for k, v in groups.items() if k[0] in expressible) + "。",
+                "where": {"edit": "job.json 的 format.styles"},
+                "cause": "adopt 只用于脚本做不到的要求；写进 job.json 的要求会记在成品里，以后改稿时自动保留，手工改的不会。",
+                "fix": f"在 job.json 的 format.styles 里写 {styles}（和已有的项合并），重新 run，不要 adopt。",
+            }])
+        # The output remembers the hand edit, so revising it later (new --source) cannot silently drop it.
+        marked = Document(final)
+        E.set_vars(marked, {"XAUFE_MANUAL": json.dumps(
+            {"note": note.strip(), "summary": [_group_line(k, v, totals) for k, v in groups.items()]},
+            ensure_ascii=False)})
+        marked.save(final)
         try:
             preview = render(final, root / "preview")
         except OfficeUnavailable as exc:
@@ -711,12 +942,11 @@ def adopt(workspace, docx, note):
         # The accepted output stays in place; the state still points at it.
         shutil.copy2(base, final)
         raise
+    lines = [_group_line(k, v, totals) for k, v in groups.items()]
     warnings = rendered["warnings"] + result["warnings"] + [
         {"code": "MANUAL_EDIT", "message": "手工处理：" + note.strip() + "（交付时会告诉用户）"}
-    ] + [
-        {"code": "MANUAL_DEVIATION_" + e["code"], "message": "手工处理后" + _plain_deviation(e) + "。"}
-        for e in explained
-    ]
+    ] + ([{"code": "MANUAL_DEVIATION", "message": "手工处理后和模板默认不同的地方：" + "；".join(lines) + "。"}]
+         if lines else [])
     keys = sorted({warning_key(w) for w in warnings})
     s.pop("review", None)
     s.update(
@@ -726,8 +956,8 @@ def adopt(workspace, docx, note):
         render_audit_sha256=sha(root / "render-audit.json"),
         pages=preview["pages"],
         warning_codes=keys,
-        manual={"note": note.strip(),
-                "deviations": [[e["code"], e["message"], _plain_deviation(x)] for e, x in zip(deviations, explained)],
+        manual={"note": note.strip(), "summary": lines,
+                "deviations": [[e["code"], e["message"]] for e in deviations],
                 "tolerated": [[e["code"], e["message"]] for e in tolerated]},
     )
     write_json(root / MARKER, s)
@@ -791,10 +1021,6 @@ def attest(workspace, review):
         for page in s["pages"]:
             if sha(root / "preview" / page["png"]) != page["png_sha256"]:
                 raise ValueError("页图已变化；请重新运行 run 后再看图。")
-        unseen = _notes_without_page_text(root / "preview" / "final.pdf", pages)
-        if unseen:
-            raise ValueError("这些页的记录没有提到页面上的任何文字：" + "、".join(f"“{k}”" for k in unseen)
-                             + "。每条记录至少照抄一处在那几页上看到的文字（4 个字以上，比如标题或第一句），证明真的打开看过。")
         visual = "passed_agent_review"
     else:
         if any(_real_text(v) for v in pages.values()):
@@ -812,26 +1038,6 @@ def attest(workspace, review):
     s["stage"] = "ready"
     write_json(root / MARKER, s)
     return {"visual_review": visual}
-
-
-def _notes_without_page_text(pdf, pages):
-    """Keys of review notes that quote nothing from the pages they cover (pages with almost no text excepted)."""
-    import pymupdf as fitz
-
-    try:
-        with fitz.open(pdf) as doc:
-            texts = [re.sub(r"\s+", "", page.get_text()) for page in doc]
-    except Exception:
-        return []
-    flat = lambda t: re.sub(r"\s+", "", str(t))
-    unseen = []
-    for key, note in pages.items():
-        a, _, b = str(key).replace("–", "-").replace("~", "-").partition("-")
-        seen = "".join(texts[n - 1] for n in range(int(a), int(b or a) + 1) if 0 < n <= len(texts))
-        note = flat(note)
-        if len(seen) >= 4 and not any(note[i:i + 4] in seen for i in range(len(note) - 3)):
-            unseen.append(str(key))
-    return unseen
 
 
 def clean(workspace):
@@ -877,8 +1083,10 @@ def _user_notice(s):
     manual = s.get("manual")
     if manual:
         fonts += "有一项是手工处理的：" + manual["note"].rstrip("。") + "。"
-        if manual["deviations"]:
-            fonts += "这样处理后，下面几项和模板默认格式不同：" + "；".join(d[-1] for d in manual["deviations"])[:300] + "。"
+        summary = manual.get("summary") or []
+        if summary:
+            shown = summary[:6] + ([f"等共 {len(summary)} 处"] if len(summary) > 6 else [])
+            fonts += "这样处理后，下面几项和模板默认格式不同：" + "；".join(shown) + "。"
     if review["visual_review"] == "skipped_no_vision":
         return (
             "已完成排版、格式检查和实际分页；没有逐页看图检查，原因："

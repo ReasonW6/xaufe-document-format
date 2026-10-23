@@ -649,6 +649,12 @@ class DeliveryGuards(Base):
         text = D._plain_deviation({"code": "FONT_SIZE", "expected": "21", "actual": "28半磅", "where": {"text": "一、引言"}})
         self.assertIn("五号（10.5 磅）", text)
         self.assertIn("四号（14 磅）", text)
+        # Paragraph properties in words, not OOXML values.
+        text = D._plain_deviation({"code": "PARAGRAPH", "message": "成品第3段：jc/val='center'，应为'both'。",
+                                   "expected": "'both'", "actual": "'center'", "where": {"text": "合成正文"}})
+        self.assertIn("对齐和模板默认不同（模板：两端对齐；现在：居中）", text)
+        self.assertEqual(D._readable("spacing/line", "'360'"), "1.5 倍（固定值时 18 磅）")
+        self.assertEqual(D._readable("ind/firstLineChars", "'200'"), "2 字符")
 
     def test_does_not_delete_unrelated_output_files(self):
         w, src, s, r = self.job()
@@ -809,6 +815,41 @@ class ExtraGuards(Base):
 
 
 
+class SecondRenderer(unittest.TestCase):
+    """Checked in LibreOffice while Word is installed too: the page count Word gets is compared."""
+
+    def test_a_different_page_count_in_the_other_engine_is_reported(self):
+        import pymupdf as fitz
+        from unittest.mock import patch
+        from docx import Document as New
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            final = folder / "final.docx"
+            New().save(final)
+
+            def pdf(path, pages):
+                doc = fitz.open()
+                for _ in range(pages):
+                    doc.new_page()
+                doc.save(path)
+
+            pdf(folder / "first.pdf", 2)
+
+            def other(docx, target, used):
+                pdf(target, 3)
+                return {"engine": "word"}
+
+            with patch("office_backend.second_opinion", side_effect=other):
+                found = D.renderer_difference(final, folder / "first.pdf", folder / "second.pdf", "libreoffice")
+                self.assertIn("LibreOffice 排出 2 页，Word 排出 3 页", found["message"])
+                self.assertIn("Word 排出 3 页", D.tell_user([found])[0])
+                # Checked in Word already: nothing to compare against.
+                self.assertIsNone(D.renderer_difference(final, folder / "first.pdf", folder / "second.pdf", "word"))
+            with patch("office_backend.second_opinion", return_value=None):
+                self.assertIsNone(D.renderer_difference(final, folder / "first.pdf", folder / "second.pdf", "libreoffice"))
+
+
 class TellUser(unittest.TestCase):
     """What the user is told comes as plain sentences, never instructions meant for the agent."""
 
@@ -826,6 +867,7 @@ class TellUser(unittest.TestCase):
             {"code": "FONT_MARKS", "message": "p3/r0: “重要提示”带删除线，是原稿里的格式，成品保留了原样（模板没有这种格式）。"},
             {"code": "HEADING_NUMBERING", "message": "标题“第一章 绪论”的编号和它的级别（h1）对不上：一级用“一、”。先看 mapping.json。"},
             {"code": "ORIGINAL_PAGE_NUMBERS_DROPPED", "message": "原稿页脚有页码。要在回复里告诉用户；写 footer_page_numbers。"},
+            {"code": "ORIGINAL_HIGHLIGHT_REMOVED", "message": "原稿里“待补数据”等 2 处文字带高亮或底纹，模板没有这种格式，成品里去掉了（文字没动）。要在回复里告诉用户。"},
         ]
         lines = tell_user(warnings)
         self.assertEqual(len(lines), len(warnings))
@@ -836,6 +878,7 @@ class TellUser(unittest.TestCase):
         self.assertIn("第 2 条文献确认真实存在", lines[1])
         self.assertIn("Word 这次用不了", lines[0])
         self.assertIn("0.30 厘米", lines[3])
+        self.assertIn("“待补数据”等2 处文字带的高亮或底纹", lines[-1])
 
 
 if __name__ == "__main__":

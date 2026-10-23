@@ -326,7 +326,7 @@ class RenderAudit(unittest.TestCase):
         audit_result = {"errors": [{"code": "BLANK_PAGE", "page": 2, "message": "空白页",
                                     "where": "紧跟在“前一页最后一句。”之后"}]}
         issue = F.from_render(audit_result, self.folder, out)[0]
-        self.assertEqual(issue["where"]["location"], "成品 p1、p2")
+        self.assertEqual(issue["where"]["location"], "成品第2段、成品第3段")
         self.assertIn("p1、p2", issue["where"]["edit"])
         self.assertIn("delete", issue["fix"])
 
@@ -359,6 +359,13 @@ class RenderAudit(unittest.TestCase):
         self.assertEqual(F.record_round(self.folder, [rejected(3)])[1], 0)
         self.assertEqual(F.record_round(self.folder, [rejected(3, "15 磅")])[1], 0)
         self.assertEqual(F.record_round(self.folder, [rejected(3, "15 磅")])[1:], (1, True))
+        # An unrelated edit that only renumbers the output paragraphs or moves the problem to another
+        # page fixes nothing.
+        moved = lambda n, page: {"code": "FONT_SIZE", "message": f"成品第{n}段：字号=24半磅，应为21。",
+                                 "where": {"location": f"成品第{n}段", "page": page, "text": "合成正文"}}
+        F.record_round(self.folder, [])
+        F.record_round(self.folder, [moved(12, 3)])
+        self.assertEqual(F.record_round(self.folder, [moved(13, 4)])[1], 1)
 
     def numbered(self, *labels):
         doc = self.docx(patch={"footer_page_numbers": True})
@@ -412,6 +419,52 @@ class RenderAuditRealOffice(unittest.TestCase):
         temp = patch("tempfile.gettempdir", return_value=scratch.name)
         temp.start()
         self.addCleanup(temp.stop)
+
+    def narrow(self, template, pages):
+        """run with page numbers and the given page_twips; (exit code, output)."""
+        import contextlib, io
+        import xaufe as X
+
+        def call(*args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                code = X.main([str(a) for a in args])
+            return code, out.getvalue()
+
+        folder = Path(tempfile.mkdtemp(dir=tempfile.gettempdir()))
+        line = "这是一段合成正文，用来把页面撑满，看窄边距下页码和封面日期是否还在该在的地方。" * 3
+        source = folder / "原稿.txt"
+        source.write_text("一、引言\n\n" + "\n\n".join([line] * 30), encoding="utf-8")
+        code, out = call("new", "--out", folder / "成品.docx", "--source", source)
+        work = Path(out.split("WORK = ")[1].splitlines()[0].strip())
+        info = {"title_zh": "合成题目", "student_name": "合成同学", "student_id": "1", "major": "合成专业",
+                "class_name": "合成班", **({"course_name": "合成课程"} if template == "B" else {"supervisor": "合成老师"})}
+        job = {"task": "format", "template": template, "info": info,
+               "format": {"footer_page_numbers": True, "page_twips": pages}}
+        (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+        blocks = [{"type": "heading", "level": 1, "text": "一、引言"}] + [{"type": "paragraph", "text": line}] * 30
+        (work / "content.json").write_text(json.dumps({"mode": "document", "metadata": {"title_zh": "合成题目"},
+                                                       "blocks": blocks}, ensure_ascii=False), encoding="utf-8")
+        result = call("run", "--work", work)
+        call("cancel", "--work", work)
+        return result
+
+    def test_narrowed_margins_keep_page_numbers_and_the_cover_date(self):
+        # 1.76 cm top/bottom: the footer distance shrinks with the margin, the page numbers are found.
+        code, out = self.narrow("B", {"top": 1000, "bottom": 1000})
+        self.assertEqual(code, 0, out)
+        # Very narrow on every side, with a cover: nothing is pushed off the cover.
+        code, out = self.narrow("A", {"top": 300, "bottom": 300, "left": 200, "right": 200})
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("封面太长", out)
+        # A footer distance the user gave that does not fit the margin: the date floats up, and the
+        # issue names the page settings, not the cover length or the fonts.
+        code, out = self.narrow("A", {"bottom": 300, "footer": 992})
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("COVER_DATE_TOO_HIGH", out)
+        self.assertIn("要改的输入：job.json 的 format.page_twips（bottom=300、footer=992）", out)
+        self.assertNotIn("自动收紧封面", out)
+        self.assertNotIn("COVER_FONTS_MISSING", out)
 
     def test_blank_page_from_double_page_break(self):
         from office_backend import export_pdf
@@ -554,26 +607,39 @@ class RenderAuditRealOffice(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             source = folder / "原稿.txt"
-            source.write_text("一、引言\n\n这是合成正文。", encoding="utf-8")
+            source.write_text("一、引言\n\n这是合成正文。\n\n这是合成正文第二段。", encoding="utf-8")
             code, out = call("new", "--out", folder / "成品.docx", "--source", source)
             work = Path(out.split("WORK = ")[1].splitlines()[0].strip())
             job = {"task": "format", "template": "B", "cover": False, "info": {}}
             (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
             content = {"mode": "document", "metadata": {}, "blocks": [
-                {"type": "heading", "level": 1, "text": "一、引言"}, {"type": "paragraph", "text": "这是合成正文。"}]}
+                {"type": "heading", "level": 1, "text": "一、引言"}, {"type": "paragraph", "text": "这是合成正文。"},
+                {"type": "paragraph", "text": "这是合成正文第二段。"}]}
             (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
             code, out = call("run", "--work", work)
             self.assertEqual(code, 0, out)
 
+            # Every body paragraph blue: job.json can ask for that, so adopt says how instead.
             edited = folder / "手工.docx"
+            doc = Document(work / "final.docx")
+            for body in [p for p in doc.paragraphs if p.text.startswith("这是合成正文")]:
+                body.runs[0].font.color.rgb = RGBColor(0x00, 0x55, 0xAA)
+            doc.save(edited)
+            code, out = call("adopt", "--work", work, "--docx", edited, "--note", "正文按用户要求改成蓝色")
+            self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out)
+            self.assertIn("ADOPT_USE_JOB", out)
+            self.assertIn('{"body": {"color": "0055AA"}}', out)
+            self.assertIn("正文（全部 2 段）的文字颜色：模板是黑色，现在是颜色 0055AA", out)
+
+            # One paragraph only: no job.json setting does that, so it is a hand edit.
             doc = Document(work / "final.docx")
             body = [p for p in doc.paragraphs if p.text == "这是合成正文。"][0]
             body.runs[0].font.color.rgb = RGBColor(0x00, 0x55, 0xAA)
             doc.save(edited)
             code, out = call("adopt", "--work", work, "--docx", edited, "--note", "正文按用户要求改成蓝色")
             self.assertEqual(code, 0, out)
-            self.assertIn("MANUAL_DEVIATION_FONT_COLOR", out)
-            self.assertIn("“这是合成正文。”的文字颜色和模板默认不同", out)
+            self.assertIn("MANUAL_DEVIATION", out)
+            self.assertIn("正文（1 段）的文字颜色：模板是黑色，现在是颜色 0055AA", out)
             self.assertNotIn("TOC_PROOF_STALE", out)
             review = json.loads((work / "review.json").read_text(encoding="utf-8"))
             self.assertIn("MANUAL_EDIT", review["warnings"])
@@ -585,7 +651,19 @@ class RenderAuditRealOffice(unittest.TestCase):
             code, out = call("finish", "--work", work)
             self.assertEqual(code, 0, out)
             self.assertIn("正文按用户要求改成蓝色", out)
-            self.assertIn("和模板默认格式不同", out)
+            self.assertIn("和模板默认格式不同：正文（1 段）的文字颜色", out)
+            self.assertNotIn("'", out.split("和模板默认格式不同")[1].split("\n")[0])
+
+            # Revising that output later: the hand edit is not in the recorded settings, so it is flagged.
+            code, out = call("new", "--out", folder / "第二版.docx", "--source", folder / "成品.docx")
+            self.assertIn("必须处理：上一版交付前有一项是手工处理的（“正文按用户要求改成蓝色”）", out)
+            again = Path(out.split("WORK = ")[1].splitlines()[0].strip())
+            (again / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+            code, out = call("run", "--work", again)
+            self.assertEqual(code, 0, out)
+            self.assertIn("PREVIOUS_MANUAL_EDIT", json.loads((again / "review.json").read_text(encoding="utf-8"))["warnings"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                X.main(["cancel", "--work", str(again)])
 
     def test_adopted_body_size_is_not_held_to_the_template_size(self):
         """The user asked for a body size the scripts could not set: the rendered check follows the copy."""
@@ -604,13 +682,14 @@ class RenderAuditRealOffice(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             source = folder / "原稿.txt"
-            source.write_text("一、引言\n\n" + text, encoding="utf-8")
+            source.write_text("一、引言\n\n" + text + "\n\n另一段合成正文。", encoding="utf-8")
             code, out = call("new", "--out", folder / "成品.docx", "--source", source)
             work = Path(out.split("WORK = ")[1].splitlines()[0].strip())
             job = {"task": "format", "template": "B", "cover": False, "info": {}}
             (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
             content = {"mode": "document", "metadata": {}, "blocks": [
-                {"type": "heading", "level": 1, "text": "一、引言"}, {"type": "paragraph", "text": text}]}
+                {"type": "heading", "level": 1, "text": "一、引言"}, {"type": "paragraph", "text": text},
+                {"type": "paragraph", "text": "另一段合成正文。"}]}
             (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
             code, out = call("run", "--work", work)
             self.assertEqual(code, 0, out)
@@ -621,7 +700,7 @@ class RenderAuditRealOffice(unittest.TestCase):
             doc.save(edited)
             code, out = call("adopt", "--work", work, "--docx", edited, "--note", "正文按用户要求改成四号")
             self.assertEqual(code, 0, out)
-            self.assertIn("MANUAL_DEVIATION_FONT_SIZE", out)
+            self.assertIn("正文（1 段）的字号：模板是五号（10.5 磅），现在是四号（14 磅）", out)
             self.assertNotIn("BODY_SIZE_RENDERED", out)
             with contextlib.redirect_stdout(io.StringIO()):
                 X.main(["cancel", "--work", str(work)])

@@ -327,10 +327,19 @@ def main():
     job, content = example("B")
     job["format"] = {"styles": {"body": {"size": 15, "line": 200, "line_rule": "exact"}}}
     rows.append(run_case(out, "12-defect-lines-overlap", job, content, expect="LINE_TOO_TIGHT"))
+    # Two page breaks in a row leave an empty page in Word (LibreOffice may fold them): an existing
+    # Word gets the extra break removed when it is laid out; a new document's extra page_break block
+    # is the agent's own input and is refused with a pointer to it.
     job, _ = example("B")
     job["info"]["title_zh"] = "空白页合成文档"
-    rows.append(run_case(out, "13-defect-blank-page", job, docx=blank_page_paper(out / "blank-page.docx"),
-                         expect="BLANK_PAGE"))
+    row = run_case(out, "13-existing-double-page-break-removed", job, docx=blank_page_paper(out / "blank-page.docx"))
+    if "多出空白页的分页符" not in (out / "13-existing-double-page-break-removed" / "run-output.txt").read_text(encoding="utf-8"):
+        raise RuntimeError("13: 原稿里连着的分页符没有被去掉")
+    rows.append(row)
+    job, content = example("B")
+    at = next(i for i, b in enumerate(content["blocks"]) if b["type"] == "paragraph") + 1
+    content["blocks"][at:at] = [{"type": "page_break"}, {"type": "page_break"}]
+    rows.append(run_case(out, "15-defect-word-blank-page", job, content, expect="WORD_BLANK_PAGE"))
     (out / "summary.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     bad = [r for r in rows if "refused" not in r and (
         r["render_audit"] != ("not-run" if r["case"].startswith("07-") else "passed")

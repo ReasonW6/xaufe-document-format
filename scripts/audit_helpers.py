@@ -25,6 +25,11 @@ def page_contract(template, request=None):
         page["header"] = added["header"]
     if request.get("footer_page_numbers") and "footer" not in asked and page["footer"] < 200:
         page["footer"] = added["footer"]
+    room = data["narrowed_margin"]
+    for side, distance in (("top", "header"), ("bottom", "footer")):
+        if side in asked and distance not in asked and page[distance] >= 200 \
+                and page[distance] + room["line_room"] > page[side]:
+            page[distance] = max(room["minimum_distance"], page[side] - room["line_room"])
     return page
 
 
