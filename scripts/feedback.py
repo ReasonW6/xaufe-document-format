@@ -134,10 +134,14 @@ HINTS = {
     "HEADING_AT_PAGE_BOTTOM": ("标题和它后面的正文被分页拆开了。模板给标题设了“与下段同页”，通常是标题前后有手动加的空行或分页符，或原稿的段落设置盖过了模板。", "去掉这个标题前后多余的空行或分页符（content.json 里的 page_break 块，或 mapping.json 里设成 delete 的空段）后重新 run；仍然这样就告诉用户这一页的情况。"),
     "CAPTION_SEPARATED": ("图题或表题和它的图、表被分页拆开了。通常是图表太大放不进剩下的空间，或题注前后有手动空行。", "去掉题注前后的空行；表格很长时可以拆成两张表（续表），图片太高就请用户同意缩小（content.json 里 image 块写 \"width_cm\": 厘米数）；改完重新 run。"),
     "COVER_TITLE_MISALIGNED": ("封面题目折成几行后对不齐：通常是渲染时没有模板字体（宋体/黑体），替代字体的字宽不同，或题目里有不能断开的长英文。", "先看有没有 FONT_SUBSTITUTED 提示：有就按缺字体处理（换装有字体的 Word/WPS 渲染，或问用户）；题目里有长英文串就请用户同意在合适的位置断开或缩短。"),
+    "BODY_IN_MARGIN": ("正文文字落到了上边距或下边距里（页眉页脚区），打印时会和页眉页码挤在一起：常见于原稿的浮动对象或文本框、段落的负间距，或 job.json 改小了 page_twips 的上下边距、改大了行距。", "已有 Word 时核对这一段在 mapping.json 里的 role，有浮动对象就请用户改成嵌入型；改过 page_twips 或 styles 的行距/段距就核对它们，然后重新 run。"),
+    "INDENT_RENDERED": ("渲染出来的首行缩进或左缩进和模板要求不一样：通常是原稿这一段带着自己的缩进设置（或用空格、Tab 顶出来的缩进），或这一段的 role 标错了。", "已有 Word 时核对这一段在 mapping.json 里的 role；原文开头有空格或全角空格就是原稿用空格缩进，问用户后在 mapping.json 用 delete/approved_changes 去掉；用户要别的缩进就写 job.json 的 format.styles.<role>.chars。"),
+    "NOT_CENTERED": ("应该居中的标题或图表标题显示出来没有居中：通常是原稿这一段带着自己的缩进或对齐，或 role 标错了。", "核对这一段在 mapping.json 里的 role；改过 format.styles 的 align/left/chars 就核对它们，然后重新 run。"),
+    "LINE_PITCH_RENDERED": ("正文显示出来的行距和要求的固定行距不同：通常是原稿段落自带行距设置盖过了模板，或 job.json 的 line/line_rule 写法不对。", "核对 job.json 的 format.styles.body.line 和 line_rule（固定 20 磅是 line 400 + exact）；已有 Word 时核对 mapping.json 里这些段的 role，然后重新 run。"),
     "TEXT_AT_PAPER_EDGE": ("页眉或页脚距离（page_twips.header / footer）几乎是 0，文字贴着纸边。B 版模板本来没有页眉页脚，加页码或页眉后最容易这样。", "在 job.json 的 format 里设 \"page_twips\": {\"footer\": 992}（页眉太靠上就设 header，单位 twip，992 约 1.75 厘米），然后重新 run。"),
     "CAPTION_DETACHED": ("表题（在表格上方）或图题（在图片下方）和它的表格/图片之间夹着空段落，常见于原稿里多敲的回车或分页符。", "把夹在中间的空段落删掉：mapping.json 里把它的 role 设为 \"delete\"（content.json 里就删掉那个空块），然后重新 run。"),
     "FONT_BOLD_PARAGRAPH": ("整段正文、摘要或参考文献都是加粗：通常是原稿整段手动加粗，或 content.json 给整段写了 bold。", "只排版：问用户这段加粗是不是有意的，不是就在 review.json 说明并请用户确认；写作：去掉整段的 bold，只给需要强调的几个词加粗。"),
-    "HEADING_LEVEL": ("标题的级别和文档自己的编号对不上（同样的编号在别处是另一级，或标题被当成了正文），通常是 mapping.json 或 content.json 里这一段的级别填错了。", "按编号改这段的级别：mapping.json 的 role（h1/h2/h3）或 content.json 的 level/type，然后重新 run；不要改标题文字。原稿确实就是这样编号的，先问用户再处理。"),
+    "HEADING_LEVEL": ("标题的级别和编号对不上（用的是模板另一级的编号，或同样的编号在别处是另一级，或标题被当成了正文），通常是 mapping.json 或 content.json 里这一段的级别填错了。", "按编号改这段的级别：mapping.json 的 role（h1/h2/h3）或 content.json 的 level/type，然后重新 run；不要改标题文字。用户确认原稿就按自己的方式编号时，在 job.json 的 format 写 \"heading_numbering\": \"own\" 再 run。"),
     "FONT_DECORATION": ("文字带高亮、底纹或阴影一类的装饰：手工处理的副本或原稿里带来的，脚本排版时会去掉。", "用 run 重新生成就会去掉；这是 adopt 的手工副本时，在 Word 里清除这些格式后重新 adopt。"),
     "FONT_MARKS": ("原稿里有删除线、全部大写、着重号这类可能有含义的标记（全部大写会让显示的字母和原文的大小写不同）。", "不要自己去掉：在 review.json 的 warnings 里写明，并在回复里告诉用户成品保留了这些标记；用户要去掉就请他在原稿里清除后重新给。"),
     "BODY_SIZE_RENDERED": ("Word 文件里写的正文字号没有按预期显示：通常是段落里的直接格式或字符样式盖过了正文样式，或渲染软件对样式继承的理解不同。", "看页图确认正文字号；已有 Word 的原稿里有整段的直接字号就重新 inspect 后 run；仍不对就如实告诉用户这台机器的渲染结果，建议用 Word 打开核对。"),
@@ -340,7 +344,8 @@ def _page_breaks(docx, previous):
 GEOMETRY = {"OFF_PAGE", "TEXT_OUTSIDE_MARGINS", "TEXT_AT_PAPER_EDGE", "IMAGE_OFF_PAGE", "IMAGE_OUTSIDE_MARGINS",
             "TABLE_OUTSIDE_MARGINS", "TEXT_OVERLAP", "TEXT_OVER_IMAGE", "LINE_TOO_TIGHT", "HEADER_OVERFLOW",
             "HEADER_WRAPPED", "BLANK_PAGE", "HEADING_AT_PAGE_BOTTOM", "CAPTION_SEPARATED", "PAGE_NUMBER_MISSING",
-            "TABLE_WIDTH", "IMAGE_WIDTH", "CELL_WIDTH", "OBJECT_HEIGHT"}
+            "TABLE_WIDTH", "IMAGE_WIDTH", "CELL_WIDTH", "OBJECT_HEIGHT", "BODY_IN_MARGIN", "INDENT_RENDERED",
+            "NOT_CENTERED", "LINE_PITCH_RENDERED"}
 
 
 def _job_changes(root):
@@ -358,8 +363,10 @@ def _job_changes(root):
         elif not isinstance(value, (list, str)) or prefix.endswith(("line_rule", "align")):
             found.append(f"{prefix}={value}")
 
-    for key in ("page_twips", "styles"):
+    for key in ("page_twips", "styles", "cover_fonts"):
         walk(f"format.{key}", fmt.get(key) or {})
+    if "logo_width_cm" in fmt:
+        found.append(f"format.logo_width_cm={fmt['logo_width_cm']}")
     return found
 
 
@@ -371,7 +378,8 @@ def with_job_suspects(root, issues):
         return issues
     listed = "、".join(changes[:8]) + ("等" if len(changes) > 8 else "")
     for item in issues:
-        if item.get("code") in GEOMETRY:
+        if item.get("code") in GEOMETRY or (item.get("code") == "INPUT_REJECTED"
+                                           and re.search(r"封面|校徽|Logo|版心", item.get("message", ""))):
             item["cause"] = (f"job.json 改过模板的版面设置：{listed}。模板默认值不会出这个问题，先查这些改动"
                              "（数值是否离谱、单位是否写错：page_twips 单位是 twip，1 厘米=567）。其次才是：" + (item.get("cause") or ""))
             item["fix"] = ("先把不合理的值改回合理范围，或删掉这一项恢复模板默认（用户明确要求的改动要先问用户），再重新 run；"
@@ -422,6 +430,9 @@ _MESSAGE_HINTS = (
     (r"放不下一个五号汉字|列太多|太窄", "表格列太多或某几列太窄，按版心缩放后一列连一个汉字都放不下。",
      "content.json 里给这个表格写 widths（各列宽度比例，长文字列给大、编号列给小），或减少列数、缩短表头、把表拆成两个；"
      "已有 Word 里的表格：请用户减少列数或拆表。用户要求横向页面时脚本做不到，按 references/special-cases.md 的“脚本做不到的要求”处理。"),
+    (r"封面文字太长", "封面上的题目、课程名或某一项太长，自动换行、收紧空白和行距后第一页仍放不下。",
+     "问用户：缩短题目、课程名或过长的封面项（改 job.json 的 info），或同意缩小封面字号（format.cover_fonts）。"),
+    (r"校徽", "校徽比版心宽。", "按报错里的数值把 job.json 的 format.logo_width_cm 改小，或按用户要求调整 page_twips 的左右边距。"),
     (r"隐藏文字", "原稿里有隐藏文字，脚本不会擅自显示或删除。", "问用户这段隐藏文字要不要：要就在 Word 里取消隐藏后重新给，不要就经用户同意把那段 role 设为 delete。"),
     (r"关键词", "关键词段的写法脚本读不懂，或这一段的 role 标成了关键词但其实不是。",
      "核对 mapping.json 里这一段的 role（只有以“关键词：”/“Key words:”开头的段落才是 keywords_zh/keywords_en）；"
@@ -462,7 +473,7 @@ def from_message(message, root=None, stage="排版"):
         where["text"] = quoted.group(1)
     if where:
         item["where"] = where
-    return [item]
+    return with_job_suspects(root, [item])
 
 
 def warning_key(w):

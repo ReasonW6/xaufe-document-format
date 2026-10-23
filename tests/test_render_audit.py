@@ -76,7 +76,7 @@ class RenderAudit(unittest.TestCase):
 
     # B: left 3.00 cm (85 pt), right 2.20 cm -> text column 85..533 pt, no header, no page numbers.
     def body(self, text="合成正文。"):
-        return [("text", 90, 200, text)]
+        return [("text", 106, 200, text)]  # 2-character first-line indent
 
     def cover(self):
         return [("text", 120, 300, "封面")]
@@ -91,6 +91,11 @@ class RenderAudit(unittest.TestCase):
         issue = result["errors"][0]
         self.assertEqual(issue["page"], 2)
         self.assertIn("actual", issue)
+
+    def test_body_text_pushed_past_the_bottom_margin(self):
+        # B: bottom margin 2.54 cm -> the text column ends at 769.9 pt.
+        result = audit(self.docx(), self.pdf([self.cover(), [("text", 106, 780, "合成正文。")]]))
+        self.assertTrue(any("正文伸进了上下页边距" in e["message"] for e in result["errors"]), result["errors"])
 
     def test_one_trailing_punctuation_may_hang(self):
         # The last glyph is a comma just past the column: 行末标点悬挂 is not a defect.
@@ -408,6 +413,37 @@ class RenderAuditRealOffice(unittest.TestCase):
             self.assertIn("BLANK_PAGE", [e["code"] for e in result["errors"]])
 
 
+    def test_typography_that_did_not_take_effect_is_caught_from_the_pdf(self):
+        """Indent, centring and fixed line pitch, measured on a real export against the template."""
+        from office_backend import export_pdf
+        from docx import Document
+        from docx.oxml.ns import qn
+        from docx.shared import Pt
+
+        text = "这是一段足够长的合成正文，用来检查渲染出来的首行缩进、行距和标题居中是否和模板要求一致，所以要写到两行以上才行，再多写几个字。"
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            case = RenderAudit("test_clean_pages_pass")
+            case.folder = folder
+            out = case.docx(cover=False, blocks=[{"type": "heading", "level": 1, "text": "一、合成标题"},
+                                                 {"type": "paragraph", "text": text}])
+            pdf = folder / "good.pdf"
+            export_pdf(out, pdf)
+            self.assertTrue(audit(out, pdf)["passed"], audit(out, pdf)["errors"])
+            doc = Document(out)
+            heading = next(p for p in doc.paragraphs if p.text == "一、合成标题")
+            heading.paragraph_format.alignment = 0  # left
+            body = next(p for p in doc.paragraphs if p.text == text)
+            body.paragraph_format.first_line_indent = 0
+            body._p.pPr.find(qn("w:ind")).set(qn("w:firstLineChars"), "0")
+            body.paragraph_format.line_spacing = Pt(15)
+            doc.save(out)
+            pdf = folder / "bad.pdf"
+            export_pdf(out, pdf)
+            codes = [e["code"] for e in audit(out, pdf)["errors"]]
+            for code in ("NOT_CENTERED", "INDENT_RENDERED", "LINE_PITCH_RENDERED"):
+                self.assertIn(code, codes)
+
     def test_page_numbers_on_b_stay_clear_of_the_paper_edge(self):
         from office_backend import export_pdf
 
@@ -526,6 +562,45 @@ class RenderAuditRealOffice(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertIn("正文按用户要求改成蓝色", out)
             self.assertIn("和模板默认格式不同", out)
+
+    def test_adopted_body_size_is_not_held_to_the_template_size(self):
+        """The user asked for a body size the scripts could not set: the rendered check follows the copy."""
+        import contextlib, io
+        import xaufe as X
+        from docx import Document
+        from docx.shared import Pt
+
+        def call(*args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                code = X.main([str(a) for a in args])
+            return code, out.getvalue()
+
+        text = "这是一段足够长的合成正文，用来检查手工改了正文字号以后，渲染后的字号检查以手工副本为准，而不是仍按模板默认字号拦下。"
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            source = folder / "原稿.txt"
+            source.write_text("一、引言\n\n" + text, encoding="utf-8")
+            code, out = call("new", "--out", folder / "成品.docx", "--source", source)
+            work = Path(out.split("WORK = ")[1].splitlines()[0].strip())
+            job = {"task": "format", "template": "B", "cover": False, "info": {}}
+            (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+            content = {"mode": "document", "metadata": {}, "blocks": [
+                {"type": "heading", "level": 1, "text": "一、引言"}, {"type": "paragraph", "text": text}]}
+            (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+            code, out = call("run", "--work", work)
+            self.assertEqual(code, 0, out)
+            edited = folder / "手工.docx"
+            doc = Document(work / "final.docx")
+            for run in [p for p in doc.paragraphs if p.text == text][0].runs:
+                run.font.size = Pt(14)
+            doc.save(edited)
+            code, out = call("adopt", "--work", work, "--docx", edited, "--note", "正文按用户要求改成四号")
+            self.assertEqual(code, 0, out)
+            self.assertIn("MANUAL_DEVIATION_FONT_SIZE", out)
+            self.assertNotIn("BODY_SIZE_RENDERED", out)
+            with contextlib.redirect_stdout(io.StringIO()):
+                X.main(["cancel", "--work", str(work)])
 
     def test_named_renderer_that_cannot_run_is_reported(self):
         import contextlib, io

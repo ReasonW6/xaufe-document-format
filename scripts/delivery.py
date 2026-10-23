@@ -19,7 +19,7 @@ from audit_helpers import toc_entries
 from toc_format import enforce
 from office_backend import OfficeUnavailable, OfficeExportFailed
 import render_availability as RF
-from feedback import AcceptanceFailed, explain, from_render, warning_key
+from feedback import AcceptanceFailed, explain, from_render, warning_key, _input_hint
 from render_audit import audit as audit_rendered
 
 MAGIC = "xaufe-owned-document-job-v2"
@@ -184,6 +184,14 @@ def compare_originals(root, state, result):
                 item["fix"] = ("把原稿里的对象原样带上：content.json 里图片用 image 块、表格用 table 块（行列和原稿一样）、"
                                "链接写在 runs 的 link 里；已有 Word 时看 mapping.json 里图片、公式所在段落是不是被设成了 delete。"
                                "用户同意去掉的，在 job.json 的 approved_changes 里写明种类和数量（如 {\"text\": \"删去图片 1 张\", \"why\": \"用户的原话\"}）。")
+            source = None
+            for key in ("output_paragraph", "output", "original"):
+                source = source or _input_hint(root, d.get(key) or "")
+            if not source and d["kind"] == "missing" and d.get("previous"):
+                before = _input_hint(root, d["previous"])
+                source = before and f"补在 {before} 的后面"
+            if source:
+                item["where"]["edit"] = source
             if "original" in d:
                 item["expected"] = d["original"]
             if "output" in d:
@@ -648,7 +656,7 @@ def adopt(workspace, docx, note):
         except OfficeUnavailable as exc:
             raise ValueError("没有可用的办公软件，手工修改做不了渲染后验收，不能交付：" + str(exc)) from exc
         pdf = root / "preview" / "final.pdf"
-        rendered = audit_rendered(final, pdf)
+        rendered = audit_rendered(final, pdf, adopted=True)
         write_json(root / "render-audit.json", rendered)
         if not rendered["passed"]:
             raise AcceptanceFailed("渲染后版面检查", from_render(rendered, root))

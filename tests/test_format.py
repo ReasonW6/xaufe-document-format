@@ -186,6 +186,24 @@ class FormatTests(unittest.TestCase):
         r = check(self.make(data))
         self.assertIn("另一种编号", " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL"))
 
+    def test_swapped_heading_levels_rejected_unless_user_owns_the_numbering(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 2, "text": "一、本该是一级的标题"},
+                          {"type": "paragraph", "text": "保留原文。"},
+                          {"type": "heading", "level": 1, "text": "（一）本该是二级的标题"},
+                          {"type": "paragraph", "text": "保留原文。"}]
+        r = check(self.make(data))
+        found = " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL")
+        self.assertIn("本该是一级", found)
+        self.assertIn("本该是二级", found)
+        src = self.d / "own.json"
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        session = self.session_for(data.get("metadata", {}), name="own.intake.json")
+        intake.customize(session, {"heading_numbering": "own"}, "用户确认原稿就是这样编号")
+        out = self.d / "own.docx"
+        engine.build(src, out, intake_path=session)
+        self.assertNotIn("HEADING_LEVEL", {e["code"] for e in check(out)["errors"]})
+
     def test_lost_heading_in_body_rejected_but_numbered_list_allowed(self):
         data = deepcopy(self.data)
         data["blocks"] += [{"type": "heading", "level": 3, "text": "1.三级标题"},
@@ -253,6 +271,18 @@ class FormatTests(unittest.TestCase):
         p = self.make(data)
         self.assertTrue(check(p)["passed"])
         self.assertCode(check(p, final=True), "TOC_UNRESOLVED")
+
+    def test_abstract_tagged_as_body_named_as_abstract(self):
+        data = json.loads((ROOT / "examples/A/content.json").read_text())
+        data["blocks"] = [b for b in data["blocks"] if b["type"] != "image"]
+        p = self.make(data)
+        d = Document(p)
+        abstract = next(q for q in d.paragraphs if q.style.name == "XAUFE Abstract Chinese")
+        abstract.style = d.styles["XAUFE Body"]
+        d.save(p)
+        mismatches = [e["message"] for e in check(p)["errors"] if e["code"] in ("ROLE_MISMATCH", "PART_ORDER")]
+        self.assertTrue(mismatches)
+        self.assertTrue(all("abstract_zh" in m and "关键词之间" in m for m in mismatches), mismatches)
 
     def test_master_contains_no_filled_personal_fields(self):
         d = Document(ROOT / "assets/A/format-master.docx")

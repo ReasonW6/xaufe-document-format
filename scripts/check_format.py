@@ -123,11 +123,13 @@ HEADING_STYLE_NUMBER = {
 }
 
 
-def heading_levels_check(paragraphs, err):
-    """Heading levels that contradict the document's own numbering.  Blocked when the document
+def heading_levels_check(paragraphs, err, own=False):
+    """Heading levels that contradict the numbering.  A heading numbered the template's way for
+    another level ("（一）" set as h1) is blocked, unless the user approved numbering the document
+    its own way (format "heading_numbering": "own").  Even then it is blocked when the document
     itself shows the intended level: the same numbering sits at another level elsewhere, the level
     is already used by a different numbering, or a short unpunctuated body line carries a numbering
-    that the document uses for headings.  A document that simply numbers its own way is left alone."""
+    that the document uses for headings."""
     name = {"h1": "一级", "h2": "二级", "h3": "三级"}
     style_of = lambda text: next((r for r, rx in HEADING_STYLE_NUMBER.items() if rx.match(text)), None)
     headings = [(label, role, text, style_of(text)) for label, role, text in paragraphs if role != "body"]
@@ -140,6 +142,9 @@ def heading_levels_check(paragraphs, err):
         elif role in home:
             err("HEADING_LEVEL", f"{label}: 标题“{text[:20]}”的编号是{name[style]}的写法，但设成了 {role}，"
                                  f"而文档里 {role} 用的是另一种编号。")
+        elif not own:
+            err("HEADING_LEVEL", f"{label}: 标题“{text[:20]}”用的是模板{name[style]}标题的编号，却设成了 {role}"
+                                 f"（模板：一级“一、”，二级“（一）”，三级“1.”）。")
     # A list ("1.准确性" "2.完整性" …) runs on numbered lines; a lost heading is followed by plain text.
     for before, (label, role, text), after in zip([(None, None, "")] + paragraphs, paragraphs, paragraphs[1:] + [(None, None, "")]):
         style = style_of(text) if role == "body" else None
@@ -583,7 +588,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             maxh = max((int(x.get("cy", "0")) for x in p._p.xpath(".//wp:extent")), default=0)
             if maxh > 254000 and paragraph_properties(p, "spacing").get("lineRule") == "exact":
                 err("OBJECT_HEIGHT", "大图片不能放在固定20磅的普通段落里。")
-    heading_levels_check(headings, err)
+    heading_levels_check(headings, err, own=request.get("heading_numbering") == "own")
     with ZipFile(path) as z:
         for name in z.namelist():
             if name.startswith("word/fonts/"):
@@ -668,8 +673,20 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
                 err("PART_ORDER", f"p{pos[i]}: {names[found[i]]}{quote(pos[i])}排在了{names[found[i - 1]]}"
                     f"{quote(pos[i - 1])}（p{pos[i - 1]}）前面，和所选版式的前置部分顺序不一致。")
                 break
+        # An abstract tagged as body sits between its label and the keywords: name it, so the
+        # misleading "body before the front matter" / "keywords inside the body" errors stay away.
+        misfiled = set()
+        for label_role, text_role, keywords_role in (("abstract_label_zh", "abstract_zh", "keywords_zh"),
+                                                     ("abstract_label_en", "abstract_en", "keywords_en")):
+            start = roles.index(label_role) if label_role in roles else None
+            end = next((i for i in range(start + 1, len(roles)) if roles[i] == keywords_role), None) if start is not None else None
+            for i in range(start + 1, end) if end is not None else ():
+                if roles[i] in ("preface", "h1", "h2", "h3", "h4", "body") and doc.paragraphs[i].text.strip():
+                    misfiled.add(i)
+                    err("ROLE_MISMATCH", f"p{i}: 这一段{quote(i)}在{names[label_role]}和关键词之间，应该是摘要正文"
+                        f"（{text_role}），现在标成了 {roles[i]}。")
         body = next(
-            (i for i, x in enumerate(roles) if x in ("preface", "h1", "h2", "h3", "h4", "body")),
+            (i for i, x in enumerate(roles) if x in ("preface", "h1", "h2", "h3", "h4", "body") and i not in misfiled),
             None,
         )
         if body is None:

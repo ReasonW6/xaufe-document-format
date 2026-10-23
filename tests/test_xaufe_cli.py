@@ -202,6 +202,7 @@ class CLI(unittest.TestCase):
         code, out, err = self.call("finish", "--work", work)
         self.assertEqual(code, 0, err)
         self.assertIn("必须在给用户的回复里说明", out)
+        self.assertIn("1 条参考文献按原文保留", out)  # format only, refs never checked: say so
         self.assertFalse(work.exists())
         self.assertEqual([p.name for p in (self.d / "out").iterdir()], ["成品.docx"])
 
@@ -307,6 +308,44 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
         self.assertIn("format.styles.h1.before=40000", out)
 
+    def test_logo_wider_than_narrowed_column_names_the_job_change(self):
+        work = self.new({**JOB_B, "format": {"page_twips": {"left": 3600, "right": 3600}}}, CONTENT)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("format.logo_width_cm", out)
+        self.assertIn("format.page_twips.left=3600", out)
+
+    def test_text_original_is_imported_word_for_word(self):
+        source = self.d / "原稿.md"
+        source.write_text("\n".join([
+            "# 排序算法比较", "", "## 摘要", "", "本文比较了几种排序算法，", "说明各自的适用场合。", "",
+            "关键词：排序；算法", "", "一、引言", "", "排序是常用操作，详见[课程网站](https://example.org/sort)。", "",
+            "（一）背景", "", "表1 三种算法", "", "| 算法 | 复杂度 |", "|---|---|", "| 冒泡 | O(n²) |",
+            "| 快速 | O(n log n) |", "", "```", "print('hello')", "```", "", "## 参考文献", "",
+            "[1] 合成作者. 合成文献[M]. 北京: 合成出版社, 2020.",
+        ]), encoding="utf-8")
+        work = self.new(JOB_B, sources=[source])
+        code, out, err = self.call("inspect", "--work", work, "--text", source)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("mode=paper", out)
+        content = json.loads((work / "content.json").read_text(encoding="utf-8"))
+        self.assertEqual(content["metadata"], {"title_zh": "排序算法比较"})
+        self.assertEqual(content["abstract_zh"], "本文比较了几种排序算法，说明各自的适用场合。")
+        self.assertEqual(content["keywords_zh"], ["排序", "算法"])
+        self.assertEqual(content["references"], ["[1] 合成作者. 合成文献[M]. 北京: 合成出版社, 2020."])
+        self.assertEqual([b["type"] for b in content["blocks"]], ["heading", "paragraph", "heading", "table", "code"])
+        self.assertEqual(content["blocks"][1]["runs"][1], {"text": "课程网站", "link": "https://example.org/sort"})
+        self.assertEqual(content["blocks"][3]["caption"], "表1 三种算法")
+        self.assertEqual(content["blocks"][3]["rows"], [["冒泡", "O(n²)"], ["快速", "O(n log n)"]])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        code, out, err = self.call("inspect", "--work", work, "--text", source)
+        self.assertNotEqual(code, 0)
+        self.assertIn("已经有 content.json", out + err)
+        from text_import import _pieces  # a .txt often leaves blank lines between table rows
+        self.assertEqual(_pieces("| 甲 | 乙 |\n\n| 1 | 2 |"), [("table", [["甲", "乙"], ["1", "2"]])])
+        self.assertEqual(len(_pieces("| 甲 | 乙 |\n\n| 1 | 2 |", markdown=True)), 2)
+
     # ------------------------------------------------------------ existing Word
     def sample_docx(self):
         doc = Document()
@@ -365,6 +404,7 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
         self.assertIn("SOURCE_MISSING", out)
         self.assertIn("英文摘要待删除", out)
+        self.assertIn(f"要改的输入：mapping.json 里 id 为 {mapping['paragraphs'][9]['id']} 的段落（当前 role：delete）", out)
         # A snippet does not approve a whole paragraph: the approved text must contain the change.
         job = {**JOB_B, "approved_changes": [{"text": "英文摘要待删除", "why": "用户说不要英文摘要"}]}
         (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
@@ -388,6 +428,13 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
         self.assertIn("SOURCE_CHANGED", out)
         self.assertIn("实际：这是改写过的合成正文。；应为：这是合成正文。", out)
+        self.assertIn("要改的输入：content.json 的 blocks[1]（paragraph）", out)
+        content["blocks"].pop(3)  # drop "这是合成正文第二段。": it goes back after the heading before it
+        content["blocks"][1]["text"] = "这是合成正文。"
+        (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertIn("SOURCE_MISSING", out)
+        self.assertIn("要改的输入：补在 content.json 的 blocks[2]（heading） 的后面", out)
         bare = self.new(JOB_B, CONTENT, sources=[])
         D.load(bare)  # a workspace without a registered original
         state = D.load(bare)[1]

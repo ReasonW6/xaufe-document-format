@@ -6,6 +6,7 @@
     python -X utf8 scripts/xaufe.py new --out "成品.docx" [--source 原稿]
     python -X utf8 scripts/xaufe.py check --work WORK
     python -X utf8 scripts/xaufe.py inspect --work WORK --docx 原稿.docx
+    python -X utf8 scripts/xaufe.py inspect --work WORK --text 原稿.txt   # .txt/.md 原稿逐字导入 content.json
     python -X utf8 scripts/xaufe.py refs --work WORK [--min 篇数]
     python -X utf8 scripts/xaufe.py run --work WORK [--office none] [--office-note "原因"]
     python -X utf8 scripts/xaufe.py finish --work WORK
@@ -438,7 +439,12 @@ def _original_reference_report(root):
     import refcheck as R
 
     if not (root / "refs-result.json").is_file():
-        return None
+        try:
+            count = len(_document_references(root))
+        except (OSError, ValueError):
+            count = 0
+        return (f"这是只排版：文中的 {count} 条参考文献按原文保留，只统一了格式，没有核对它们是否真实存在、"
+                "信息是否准确。需要的话可以再帮你逐条核对。") if count else None
     saved = _read(root / "refs-result.json", "refs-result.json")
     lines = ["| 序号 | 文献（原文） | 核对结果 | 说明 |", "|---|---|---|---|"]
     for index, r in enumerate(saved.get("results", []), 1):
@@ -635,12 +641,41 @@ def roles_has(roles, role):
     return role in roles.values()
 
 
+def _inspect_text(root, s, source):
+    """A .txt/.md original -> content.json with its words verbatim and a guessed structure."""
+    import delivery as D
+    from text_import import to_content
+
+    if source.suffix.lower() not in (".txt", ".md") or not source.is_file():
+        raise ValueError("--text 要指向原稿的 .txt 或 .md 文件（Word 原稿用 --docx）。")
+    for name in ("content.json", "mapping.json"):
+        if (root / name).exists():
+            raise ValueError(f"WORK 里已经有 {name}：要从原稿重新导入就先删掉它。")
+    content, notes = to_content(source, root)
+    _write(root / "content.json", content)
+    if not any(x["path"] == str(source) for x in s["source_documents"]):
+        s["source_documents"].append({"path": str(source), "sha256": D.sha(source), "role": "original"})
+        D.write_json(root / D.MARKER, s)
+    kinds = {}
+    for b in content["blocks"]:
+        kinds[b["type"]] = kinds.get(b["type"], 0) + 1
+    print(f"已把原稿逐字导入 {root / 'content.json'}（mode={content['mode']}）："
+          + "，".join(f"{k} {v} 块" for k, v in sorted(kinds.items()))
+          + (f"，参考文献 {len(content['references'])} 条" if content.get("references") else "") + "。")
+    for note in notes:
+        print("  注意：" + note)
+    print("→ 打开 content.json 核对结构（题目、标题级别、摘要、关键词、参考文献、表题/图题），只改结构不改字；然后运行 run。")
+    return 0
+
+
 def cmd_inspect(args):
     import delivery as D
     import engine as E
     import intake as I
 
     root, s = _work(args.work)
+    if args.text:
+        return _inspect_text(root, s, Path(args.text).expanduser().resolve())
     source = Path(args.docx).expanduser().resolve()
     if source.suffix.lower() != ".docx":
         raise ValueError("只能读取 .docx。旧版 .doc 请先用 Word/WPS“另存为 .docx”。")
@@ -954,6 +989,8 @@ def cmd_finish(args):
         print("\n已完成排版、分页和逐页检查。")
     if checklist and task == "write":
         print("\n必须在给用户的回复里附上这张参考文献核实清单（原样照抄）：\n" + checklist)
+    elif checklist and checklist.startswith("这是只排版"):
+        print("\n必须在给用户的回复里说明：" + checklist)
     elif checklist:
         print("\n必须在给用户的回复里附上原文参考文献的核对结果（原样照抄）：\n" + checklist)
     return 0
@@ -1122,9 +1159,11 @@ def main(argv=None):
     a.add_argument("--work", required=True)
     a.add_argument("--docx", required=True)
     a.add_argument("--note", required=True, help="手工改了什么，会告诉用户")
-    a = sub.add_parser("inspect", help="读取已有 Word，生成可核对的 mapping.json")
+    a = sub.add_parser("inspect", help="读取已有 Word，生成可核对的 mapping.json；或把 .txt/.md 原稿逐字导入 content.json")
     a.add_argument("--work", required=True)
-    a.add_argument("--docx", required=True)
+    given = a.add_mutually_exclusive_group(required=True)
+    given.add_argument("--docx")
+    given.add_argument("--text", help="只排版、原稿是 .txt/.md：逐字导入 content.json")
     a = sub.add_parser("refs", help="核对 WORK/refs.json 里的参考文献（需要联网）")
     a.add_argument("--work", required=True)
     a.add_argument("--min", type=int, default=6, help="至少几篇；用户另有要求时填用户的数")

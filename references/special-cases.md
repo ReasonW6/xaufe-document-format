@@ -2,9 +2,7 @@
 
 ## 运行前
 
-- **缺少模块（ModuleNotFoundError）**：先 `python -m pip install -r requirements.txt` 再重试，不要绕开。
-- **python 命令不存在**：试 `python3` 或 `py -3`。
-- **输出文件已存在**：换一个新文件名重新 `new`，不要删除或覆盖用户已有的文件。
+缺模块就 `python -m pip install -r requirements.txt` 后重试；没有 `python` 试 `python3` / `py -3`；输出文件已存在就换新文件名重新 `new`，不覆盖用户的文件。
 
 ## 办公软件（Word / WPS / LibreOffice）
 
@@ -36,7 +34,7 @@
 |---|---|
 | 旧版 .doc | 请用户（或你用 Word/WPS）另存为 .docx 再 `inspect` |
 | PDF、扫描件、图片 | 不能直接排版。请用户提供 Word 或文字版；用户同意的话，你可以把文字整理进 content.json（这算写作/改写，要告诉用户） |
-| 只排版、原文是 .txt/.md，或用户直接在对话里贴的文字 | 先把原文原样存成 .txt（贴的文字也一样），`new --source 那个文件` 登记为原稿，再把内容整理进 content.json。只排版时没登记原稿 `run` 不交付（SOURCE_REQUIRED） |
+| 只排版、原文是 .txt/.md，或用户在对话里贴的文字 | 原样存成 .txt（贴的文字也一样），`new --source 那个文件` 登记为原稿，再 `inspect --text 那个文件` 逐字导入 content.json，只核对结构不改字。没登记原稿 `run` 不交付（SOURCE_REQUIRED） |
 | 原稿有修订痕迹、批注 | `run` 会停下。请用户先在 Word 里“接受/拒绝所有修订”后再发；不要替用户决定 |
 | 原稿有文本框、浮动图片、内容控件、嵌入对象 | `run` 会停下并说明是哪种对象。请用户改成普通文字/嵌入式图片后再发，或按下面“脚本做不到的要求”处理 |
 | 原稿有英文摘要而 B 版默认没有 | 问用户保留还是去掉（见 content.md） |
@@ -54,6 +52,7 @@
 | `IMAGE_OUTSIDE_MARGINS` / `TABLE_OUTSIDE_MARGINS` | 图片、表格比版心宽 |
 | `TEXT_OVERLAP` / `LINE_TOO_TIGHT` | 两行文字叠在一起（基线距离不到字号的 0.9 倍）/ 固定行距比字号小（多半是 job.json 的 line 写小了） |
 | `TEXT_OVER_IMAGE` | 文字压在图片上（多半是原稿的浮动图片） |
+| `INDENT_RENDERED` / `NOT_CENTERED` / `LINE_PITCH_RENDERED` / `BODY_IN_MARGIN` | 页图上首行缩进、居中、正文行距和模板不符，或正文压进上下边距（多半是原稿段落自带设置或 role 标错） |
 | `HEADER_OVERFLOW` | 页眉太长折成多行、压进正文区（A 版长题目常见）：问用户要一个短题目写进 `format.header.right` |
 | `HEADER_*` / `PAGE_NUMBER_MISSING` / `FOOTER_UNEXPECTED` | 页眉页脚和设置不一致 |
 | `PAGE_NUMBERING` / `PAGE_NUMBER_SEQUENCE` | 各节页码格式不对，或页面上的页码跳号、重复、乱重启（摘要和目录用 I、II…，正文从 1 开始一直接到最后） |

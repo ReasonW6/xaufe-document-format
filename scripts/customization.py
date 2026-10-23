@@ -78,6 +78,7 @@ TOP_KEYS = {
     "cover_fonts",
     "keyword_labels",
     "heading_levels",
+    "heading_numbering",
 }
 
 
@@ -248,7 +249,9 @@ def effective_profile(template, request=None):
                          f"版心只剩宽 {width}、高 {m['height'] - m['top'] - m['bottom']} twip（至少要 1200×2000；1 厘米=567 twip）。"
                          "按用户要求重新确定边距，不能靠缩小字号硬塞。")
     if spec["logo"]["width_emu"] > width * 635:
-        raise ValueError("Logo超过当前版心，请按用户要求确定等比尺寸。")
+        raise ValueError(f"校徽（Logo）宽 {spec['logo']['width_emu'] / 360000:.1f} 厘米，超过了当前版心宽 {width / 567:.1f} 厘米"
+                         f"（左右边距 {m['left']}+{m['right']} twip）。把 format.logo_width_cm 设成不超过 {width / 567:.1f}，"
+                         "或按用户要求调整边距；校徽会等比缩放。")
     styles = request.get("styles", {})
     if not isinstance(styles, dict) or set(styles) - (set(ROLE_STYLES) - {"cover"}):
         raise ValueError("未知段落角色。")
@@ -336,6 +339,8 @@ def effective_profile(template, request=None):
     if any(role in styles for role in ("h4", "toc4")) and levels != 4:
         raise ValueError("四级样式需要先明确heading_levels=4。")
     spec["heading_levels"] = levels
+    if request.get("heading_numbering", "template") not in ("template", "own"):
+        raise ValueError("heading_numbering只支持\"template\"或\"own\"；\"own\"表示用户确认原稿按自己的方式编号。")
     spec["toc"]["indents_twips"] = list(spec["toc"]["indents_twips"])
     if len(spec["toc"]["indents_twips"]) == 3:
         vals = spec["toc"]["indents_twips"]

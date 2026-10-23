@@ -363,9 +363,10 @@ def compare(sources, docx, *, approved=(), generated=(), replaced=None, old_toc=
         if i is not None and j is not None:
             was, now = _span(_plain(before), _plain(after))
             differences.append({"kind": "changed", "location": f"{original[i][0]} → {target[j][0]}",
-                                "original": was, "output": now})
+                                "original": was, "output": now, "output_paragraph": after})
         elif i is not None:
-            differences.append({"kind": "missing", "location": original[i][0], "original": before})
+            differences.append({"kind": "missing", "location": original[i][0], "original": before,
+                                "previous": original[i - 1][1] if i else ""})
         else:
             differences.append({"kind": "added", "location": target[j][0], "output": after})
 

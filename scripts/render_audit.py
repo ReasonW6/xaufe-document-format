@@ -110,9 +110,9 @@ def _expectations(doc):
         footer = bool(spec["footer"].get("page_numbers"))
         body_size = contract(template, request)["body"]["font"]["size_half_points"] / 2
     else:
-        body_size = None
+        body_size, request = None, None
     return {"has_cover": vv.get("XAUFE_HAS_COVER") == "1", "header": header, "page_numbers": footer,
-            "template": template, "body_size": body_size}
+            "template": template, "body_size": body_size, "request": request}
 
 
 def _margins(sections):
@@ -283,6 +283,114 @@ def _keep_together(doc):
     return headings, above, below
 
 
+# Roles whose position on the page the rendered audit checks (first-line start, centring, pitch).
+PLACED = {"body", "h1", "h2", "h3", "h4", "preface", "reference_title", "caption", "title_zh", "title_en",
+          "abstract_label_zh", "abstract_label_en", "toc_title"}
+INDENT_TOLERANCE = 3.0  # pt; well under the 10.5 pt a one-character indent error moves the text
+
+
+def _twips(values, key, size):
+    """An indent in points: the *Chars form (hundredths of a character) wins, as in Word."""
+    chars = values.get(key + "Chars")
+    if chars not in (None, "") and size:
+        return int(chars) / 100 * size
+    return int(values.get(key) or 0) / PT
+
+
+def _starts(ind, sizes):
+    """Where the first line may start (pt from the left text edge).  Office suites size a character
+    unit differently (paragraph style size, run size, or the twip value), so each reading counts."""
+    return sorted({round(_twips(ind, "left", z) + _twips(ind, "firstLine", z) - _twips(ind, "hanging", z), 1)
+                   for z in sizes})
+
+
+def _placements(doc, template, request, adopted):
+    """[(flat text, role, {"jc", "start", "pitch"})] for paragraphs whose placement is checked.
+
+    ``start``: where the first line should begin, from the left text edge; ``pitch``: the fixed
+    line pitch (exact line spacing) or None.  From the template contract, or, for a hand-edited
+    copy, from the copy's own paragraph settings (its deviations are reported statically)."""
+    from audit_helpers import contract
+    from customization import ROLE_STYLES
+    from style_model import paragraph_properties, run_properties, style_chain
+
+    rules = contract(template, request)
+    roles = {style: role for role, style in ROLE_STYLES.items()}
+    placed = []
+    for p in doc.paragraphs:
+        role = roles.get(p.style.name) if p.style is not None else None
+        text = _flat(p.text)
+        if role not in PLACED or len(text) < 2 or p._p.xpath(".//w:drawing|.//w:pict|.//m:oMath"):
+            continue
+        if adopted:
+            ind, spacing = paragraph_properties(p, "ind"), paragraph_properties(p, "spacing")
+            jc = paragraph_properties(p, "jc").get("val", "left")
+            runs = [r for r in p._p.xpath(".//w:r") if "".join(r.xpath("./w:t/text()"))]
+            styled = [v for st in style_chain(p.style) for v in st.element.xpath("./w:rPr/w:sz/@w:val")]
+            sizes = {int(run_properties(p, runs[0]).get("sz") or 21) / 2 if runs else None,
+                     int(styled[-1]) / 2 if styled else None, None}
+        else:
+            rule = rules[role]["pPr"]
+            ind, spacing, jc = rule.get("ind", {}), rule.get("spacing", {}), rule.get("jc", {}).get("val", "left")
+            sizes = {rules[role]["font"]["size_half_points"] / 2}
+        size = max((z for z in sizes if z), default=None)
+        exact = spacing.get("lineRule") == "exact" and spacing.get("line")
+        placed.append((text, role, {"jc": jc, "start": _starts(ind, sizes), "right": _twips(ind, "right", size),
+                                    "pitch": int(spacing["line"]) / PT if exact else None}))
+    return placed
+
+
+def _visual_lines(lines):
+    """PDF text lines on one baseline (a renderer splits a line where the script or font changes)
+    joined left to right into the line a reader sees."""
+    rows = []
+    for line in sorted(lines, key=lambda l: (round(l["chars"][0][2]), l["bbox"][0])):
+        row = rows[-1] if rows else None
+        if row and abs(row["chars"][0][2] - line["chars"][0][2]) < 1 and line["bbox"][0] >= row["bbox"][2] - 1:
+            row["spans"][0]["text"] += line["spans"][0]["text"]
+            row["chars"] += line["chars"]
+            row["bbox"] = (row["bbox"][0], min(row["bbox"][1], line["bbox"][1]), line["bbox"][2], max(row["bbox"][3], line["bbox"][3]))
+        else:
+            rows.append({"spans": [{"text": line["spans"][0]["text"]}], "chars": list(line["chars"]), "bbox": line["bbox"]})
+    return rows
+
+
+def _placement_issues(index, lines, placed, left, right):
+    """First lines that start at the wrong place, centred lines off the axis, and body lines whose
+    pitch differs from the fixed line spacing.  Lines are recognised by their text."""
+    issues, pitches = [], []
+    names = {"body": "正文", "caption": "图表标题", "reference_title": "参考文献标题"}
+    ordered = _visual_lines(lines)
+    owner = []
+    for line in ordered:
+        key = _flat(line["spans"][0]["text"])
+        hit = next(((t, r, w) for t, r, w in placed if key and (key == t or (len(key) >= 6 and key in t))), None)
+        if hit and owner and owner[-1] and owner[-1] != hit and len(key) >= 6 and key in owner[-1][0]:
+            hit = owner[-1]  # a continuation line whose words also occur in an earlier paragraph
+        owner.append(hit)
+        if not hit:
+            continue
+        text, role, want = hit
+        name = names.get(role, "标题" if role.startswith("h") else role)
+        x0, x1 = line["bbox"][0], line["bbox"][2]
+        if want["jc"] == "center" and key == text:
+            axis = (left + want["start"][0] + right - want["right"]) / 2
+            if abs((x0 + x1) / 2 - axis) > INDENT_TOLERANCE:
+                issues.append(_issue("error", "NOT_CENTERED", index, f"{name}应该居中，渲染出来偏了。", where=line["spans"][0]["text"][:30],
+                                     expected=f"中线 {axis:.1f}pt", actual=f"中线 {(x0 + x1) / 2:.1f}pt", bbox=line["bbox"]))
+        elif want["jc"] in ("left", "both", "start", "distribute") and text.startswith(key) and len(key) >= 4:
+            if all(abs(x0 - left - start) > INDENT_TOLERANCE for start in want["start"]):
+                start = want["start"][-1]
+                chars = start / line["chars"][0][3] if line["chars"][0][3] else 0
+                issues.append(_issue("error", "INDENT_RENDERED", index, f"{name}第一行的起点不对（首行缩进或左缩进没有按要求显示）。",
+                                     where=line["spans"][0]["text"][:30], expected=f"从 {left + start:.1f}pt 起（缩进约 {chars:.1f} 个字）",
+                                     actual=f"从 {x0:.1f}pt 起", bbox=line["bbox"]))
+    for (a, ha), (b, hb) in zip(zip(ordered, owner), list(zip(ordered, owner))[1:]):
+        if ha and hb and ha[0] == hb[0] and ha[1] == "body" and ha[2]["pitch"] and not hb[0].startswith(_flat(b["spans"][0]["text"])):
+            pitches.append((b["chars"][0][2] - a["chars"][0][2], ha[2]["pitch"], b))
+    return issues, pitches
+
+
 def _is_part(line, texts):
     """The line is one of these texts, or the first/last line of one that wrapped."""
     key = _flat(line["spans"][0]["text"])
@@ -359,12 +467,34 @@ def _number_sequence(numbers):
     return errors
 
 
-def audit(docx, pdf):
-    """Return {"errors": [...], "warnings": [...], "pages": n, "fonts": {...}} for one rendered PDF."""
+def _own_body_size(doc):
+    """The body size the document itself sets (most body characters), in points."""
+    from style_model import run_properties
+
+    sizes = Counter()
+    for p in doc.paragraphs:
+        if p.style.name == "XAUFE Body":
+            for r in p._p.xpath(".//w:r"):
+                text = "".join(r.xpath("./w:t/text()"))
+                size = run_properties(p, r).get("sz") if text else None
+                if size and size.isdigit():
+                    sizes[int(size) / 2] += len(text)
+    return sizes.most_common(1)[0][0] if sizes else None
+
+
+def audit(docx, pdf, adopted=False):
+    """Return {"errors": [...], "warnings": [...], "pages": n, "fonts": {...}} for one rendered PDF.
+
+    ``adopted``: a hand-edited copy (``xaufe.py adopt``) whose size changes are reported as
+    deviations already, so the rendered body size is held to the size the document sets."""
     import pymupdf as fitz
 
     doc = Document(docx)
     want = _expectations(doc)
+    if adopted and want["body_size"]:
+        want["body_size"] = _own_body_size(doc) or want["body_size"]
+    placed = _placements(doc, want["template"], want["request"], adopted) if want["template"] in ("A", "B") else []
+    pitches = []
     sections = list(doc.sections)
     body_margins = _margins(sections[1:] if want["has_cover"] and len(sections) > 1 else sections)
     cover_margins = _margins(sections[:1])
@@ -403,6 +533,18 @@ def audit(docx, pdf):
                     key = _flat(line["spans"][0]["text"])
                     if len(key) >= 6 and any(key in t for t in body_texts):
                         body_sizes.update(round(c[3] * 2) / 2 for c in line["chars"])
+            if not cover and placed:
+                column = [l for l in lines if l["bbox"][3] > top and l["bbox"][1] < bottom]
+                found, pitch = _placement_issues(index, column, placed, left, right)
+                errors += found[:10]
+                pitches += [(index, *x) for x in pitch]
+                for line in column:
+                    key = _flat(line["spans"][0]["text"])
+                    if (line["bbox"][1] < top - TEXT_TOLERANCE or line["bbox"][3] > bottom + TEXT_TOLERANCE) and len(key) >= 4 \
+                            and any(key in t for t, role, _ in placed):
+                        errors.append(_issue("error", "BODY_IN_MARGIN", index, "正文伸进了上下页边距（压到页眉页脚区）。",
+                                             where=line["spans"][0]["text"][:30], expected=f"{top:.1f}–{bottom:.1f}pt",
+                                             actual=f"{line['bbox'][1]:.1f}–{line['bbox'][3]:.1f}pt", bbox=line["bbox"]))
             if cover:
                 drift = _cover_title_misaligned(lines, want["template"])
                 if drift:
@@ -519,6 +661,12 @@ def audit(docx, pdf):
             if want["page_numbers"] and not cover:
                 numbers.append((index, "".join(l["spans"][0]["text"] for l in foot).strip()))
     errors += _number_sequence(numbers)
+    wrong = [(page, gap, pitch, line) for page, gap, pitch, line in pitches if abs(gap - pitch) > 0.6]
+    if pitches and len(wrong) * 2 > len(pitches):
+        page, gap, pitch, line = wrong[0]
+        errors.append(_issue("error", "LINE_PITCH_RENDERED", page, "正文的行距显示出来和要求不一致（固定行距没有生效）。",
+                             where=line["spans"][0]["text"][:30], expected=f"相邻两行基线相距 {pitch:g} 磅",
+                             actual=f"{gap:.1f} 磅（{len(wrong)}/{len(pitches)} 处不对）", bbox=line["bbox"]))
     if want.get("body_size") and sum(body_sizes.values()) >= 40:
         size = body_sizes.most_common(1)[0][0]
         if abs(size - want["body_size"]) > 0.3:
