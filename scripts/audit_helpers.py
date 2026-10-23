@@ -240,6 +240,25 @@ def run_check(p, role, label, want, err, warn=None):
             bold_runs, plain_runs = bold_runs + bool(props.get("b", False)), plain_runs + (not props.get("b", False))
         if props.get("vanish") or props.get("webHidden") or props.get("specVanish"):
             err("HIDDEN_TEXT", f"{label}/r{ri}: 存在隐藏正文。")
+        rpr = r.find(qn("w:rPr"))
+        def shown(tag):
+            node = rpr.find(qn("w:" + tag)) if rpr is not None else None
+            if node is None:
+                return False
+            if tag == "shd":  # a clear pattern still paints its fill colour
+                return node.get(qn("w:val")) not in ("clear", "nil") or (node.get(qn("w:fill")) or "auto").upper() not in ("AUTO", "FFFFFF")
+            return node.get(qn("w:val")) not in ("none", "0", "false")
+
+        looks = [name for tag, name in (("highlight", "高亮"), ("shd", "底纹"), ("emboss", "阳文"), ("imprint", "阴文"),
+                                        ("outline", "空心"), ("shadow", "阴影"), ("effect", "动态效果")) if shown(tag)]
+        if looks:
+            err("FONT_DECORATION", f"{label}/r{ri}: 文字带{'、'.join(looks)}，模板里没有这种格式。")
+        marks = [name for key, name in (("strike", "删除线"), ("dstrike", "双删除线"), ("caps", "全部大写"),
+                                        ("smallCaps", "小型大写")) if props.get(key)]
+        if rpr is not None and rpr.find(qn("w:em")) is not None and rpr.find(qn("w:em")).get(qn("w:val")) != "none":
+            marks.append("着重号")
+        if marks and warn:
+            warn("FONT_MARKS", f"{label}/r{ri}: “{text[:20]}”带{'、'.join(marks)}，是原稿里的格式，成品保留了原样（模板没有这种格式）。")
         for attr, default in [("w", "100"), ("spacing", "0"), ("position", "0")]:
             if props.get(attr, default) != default:
                 err("FONT_GEOMETRY", f"{label}/r{ri}: 字形宽度/间距/基线偏移{attr}未归一。")

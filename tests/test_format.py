@@ -178,6 +178,28 @@ class FormatTests(unittest.TestCase):
         self.assertCode(r, "HEADING_LEVEL")
         self.assertIn("二、错设成二级的标题", " ".join(e["message"] for e in r["errors"]))
 
+    def test_heading_at_a_level_owned_by_another_numbering_rejected(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、测试标题"},
+                          {"type": "paragraph", "text": "保留原文。"},
+                          {"type": "heading", "level": 1, "text": "（二）错设成一级的标题"}]
+        r = check(self.make(data))
+        self.assertIn("另一种编号", " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL"))
+
+    def test_lost_heading_in_body_rejected_but_numbered_list_allowed(self):
+        data = deepcopy(self.data)
+        data["blocks"] += [{"type": "heading", "level": 3, "text": "1.三级标题"},
+                           {"type": "paragraph", "text": "2.数据来源"},
+                           {"type": "paragraph", "text": "这一段是正文，说明数据从哪里来。"}]
+        r = check(self.make(data))
+        self.assertIn("2.数据来源", " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL"))
+        listed = deepcopy(self.data)
+        listed["blocks"] += [{"type": "heading", "level": 3, "text": "1.三级标题"},
+                             {"type": "paragraph", "text": "2.准确性"}, {"type": "paragraph", "text": "3.完整性"},
+                             {"type": "paragraph", "text": "以上两点是要求。"}]
+        r = check(self.make(listed, name="list.docx"))
+        self.assertNotIn("HEADING_LEVEL", {e["code"] for e in r["errors"]})
+
     def test_wrong_body_size_rejected(self):
         def mutate(d):
             next(p for p in d.paragraphs if p.style.name == "XAUFE Body").runs[0].font.size = Pt(12)

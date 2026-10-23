@@ -125,7 +125,7 @@ def export_pdf(docx, pdf):
         )
     for candidate in candidates:
         try:
-            with tempfile.TemporaryDirectory(prefix="xaufe-office-") as td:
+            with tempfile.TemporaryDirectory(prefix="xaufe-office-", ignore_cleanup_errors=True) as td:
                 tmp = Path(td)
                 produced = tmp / "render.pdf"
                 if candidate["engine"] == "wps":

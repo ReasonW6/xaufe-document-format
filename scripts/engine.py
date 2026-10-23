@@ -301,6 +301,11 @@ def style_paragraph(p, role, *, preserve_num=False, style_name=None):
         if previous.get("vanish") or previous.get("webHidden") or previous.get("specVanish"):
             fail("原文含隐藏文字；必须先明确是否显示或保留，不自动揭示或删除隐藏内容。")
         font(rp, cn, size, bold or preserve_bold, latin=role_latin(role))
+        # Look-only decorations are not part of the template; marks that can carry meaning
+        # (strike, caps, emphasis dots) stay and are reported by the check instead.
+        for tag in ("w:highlight", "w:shd", "w:emboss", "w:imprint", "w:outline", "w:shadow", "w:effect"):
+            for node in rp.findall(qn(tag)):
+                rp.remove(node)
         if (
             role in ("body", "reference", "table_text", "code")
             and previous.get("i")
@@ -924,6 +929,44 @@ def _add_block(doc, b, base, heading_iter):
         fail(f"未实现的块类型：{typ}")
 
 
+def _schema_message(schema, data, exc):
+    """A content.json schema error as "where: what is wrong, what is allowed" (for a block, checked
+    against the one shape its type asks for, not the list of all shapes)."""
+    import jsonschema
+
+    path = list(exc.absolute_path)
+    if len(path) >= 2 and path[0] == "blocks" and isinstance(path[1], int):
+        block = data["blocks"][path[1]]
+        shapes = schema["properties"]["blocks"]["items"]["oneOf"]
+        kinds = lambda shape: [shape["properties"]["type"]["const"]] if "const" in shape["properties"]["type"] \
+            else shape["properties"]["type"]["enum"]
+        where = f"content.json 的 blocks[{path[1]}]"
+        if not isinstance(block, dict) or block.get("type") not in [k for sh in shapes for k in kinds(sh)]:
+            got = block.get("type") if isinstance(block, dict) else block
+            return f"{where}: type={got!r} 不认识，可用的 type：" + "、".join(k for sh in shapes for k in kinds(sh)) + "。"
+        shape = next(sh for sh in shapes if block["type"] in kinds(sh))
+        inner = jsonschema.Draft202012Validator(shape).iter_errors(block)
+        first = min(inner, key=lambda e: len(list(e.absolute_path)), default=None)
+        allowed = "、".join(shape["properties"])
+        if first is None:
+            return f"{where}: 写法不对（{block['type']} 可用的字段：{allowed}）。"
+        field = "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in first.absolute_path)
+        if first.validator == "additionalProperties":
+            extra = sorted(set(block) - set(shape["properties"])) if not first.absolute_path else []
+            return f"{where}{field}: 多了不认识的字段 {'、'.join(extra) or first.message}；{block['type']} 可用的字段：{allowed}。"
+        if first.validator == "oneOf" and not first.absolute_path:
+            return f"{where}: text 和 runs 要写一个（只写一个）；{block['type']} 可用的字段：{allowed}。"
+        if first.validator == "required":
+            return f"{where}{field}: 缺少必填字段 {first.message.split()[0]}；{block['type']} 可用的字段：{allowed}。"
+        if first.validator == "type":
+            kind = {"boolean": "true 或 false", "string": "文字（加引号）", "integer": "整数", "number": "数字",
+                    "array": "列表 [...]", "object": "{...} 对象"}.get(str(first.validator_value), first.validator_value)
+            return f"{where}{field}: 现在是 {first.instance!r}，应为 {kind}。"
+        return f"{where}{field}: {first.message}；{block['type']} 可用的字段：{allowed}。"
+    field = ".".join(map(str, path)) or "顶层"
+    return f"content.json 的 {field}: {exc.message}（content.json 的写法见 references/content.md）。"
+
+
 def validate_data(data):
     import jsonschema
 
@@ -931,7 +974,13 @@ def validate_data(data):
     try:
         jsonschema.Draft202012Validator(schema).validate(data)
     except jsonschema.ValidationError as exc:
-        fail("内容结构错误 " + ".".join(map(str, exc.path)) + ": " + exc.message)
+        fail(_schema_message(schema, data, exc))
+    for i, b in enumerate(data["blocks"]):
+        if b["type"] == "table":
+            bad = [n for n, row in enumerate(b["rows"]) if len(row) != len(b["header"])]
+            if bad:
+                fail(f"content.json 的 blocks[{i}]（表格）: rows[{bad[0]}] 有 {len(b['rows'][bad[0]])} 格，"
+                     f"表头有 {len(b['header'])} 格；每行格数要和表头相同（空格子写 \"\"）。")
     if not SPEC["english_abstract"]:
         if any(k in data for k in ("abstract_en", "keywords_en")) or data.get("metadata", {}).get(
             "title_en"
@@ -963,8 +1012,6 @@ def validate_data(data):
             fail("第四级标题需要用户明确heading_levels=4，不自动扩展原模板。")
         if b["type"] == "heading" and b.get("preface") and b["level"] != 1:
             fail("序言必须使用level=1，不能生成不一致的目录层级。")
-        if b["type"] == "table" and any(len(row) != len(b["header"]) for row in b["rows"]):
-            fail("表格行列数不一致。")
         if b["type"] == "table" and b.get("widths") is not None and len(b["widths"]) != len(b["header"]):
             fail("表格 widths 的个数要和列数相同（每列一个比例数字）。")
     if any(re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", str(x)) for x in data["metadata"].values()):

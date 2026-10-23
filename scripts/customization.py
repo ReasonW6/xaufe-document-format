@@ -244,14 +244,21 @@ def effective_profile(template, request=None):
     m = spec["page_twips"]
     width = m["width"] - m["left"] - m["right"]
     if width < 1200 or m["height"] - m["top"] - m["bottom"] < 2000:
-        raise ValueError("页面剩余空间不足，需重新安排布局，不能静默缩字。")
+        raise ValueError(f"job.json 的 format.page_twips 边距太大：左右边距 {m['left']}+{m['right']}、上下边距 {m['top']}+{m['bottom']} twip，"
+                         f"版心只剩宽 {width}、高 {m['height'] - m['top'] - m['bottom']} twip（至少要 1200×2000；1 厘米=567 twip）。"
+                         "按用户要求重新确定边距，不能靠缩小字号硬塞。")
     if spec["logo"]["width_emu"] > width * 635:
         raise ValueError("Logo超过当前版心，请按用户要求确定等比尺寸。")
     styles = request.get("styles", {})
     if not isinstance(styles, dict) or set(styles) - (set(ROLE_STYLES) - {"cover"}):
         raise ValueError("未知段落角色。")
+    height = m["height"] - m["top"] - m["bottom"]
     for role, patch in styles.items():
         validate_style(patch)
+        for key in ("before", "after", "line"):
+            if isinstance(patch, dict) and isinstance(patch.get(key), (int, float)) and patch[key] > height:
+                raise ValueError(f"job.json 的 format.styles.{role}.{key}={patch[key]} 比整个版心还高（{height}，单位是磅×20）："
+                                 "一段的间距不可能超过一页，检查是不是单位写错了。")
         spec.setdefault("style_overrides", {}).setdefault(ROLE_STYLES[role], {}).update(patch)
     if "english_abstract" in request:
         enabled = request["english_abstract"]

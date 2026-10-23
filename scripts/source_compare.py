@@ -1,8 +1,8 @@
 """Compare the delivered Word with the user's original (format-only fidelity).
 
-Text is compared paragraph by paragraph, in order.  Only whitespace and the
-full-width/half-width form of a character are ignored (NFKC), so a changed
-digit, decimal point, sign, letter case or punctuation mark, and a dropped,
+Text is compared paragraph by paragraph, in order.  Only layout whitespace is
+ignored (see norm); full-width and half-width forms count as different, so a
+changed digit, decimal point, sign, letter case or punctuation mark, and a dropped,
 added, duplicated or moved paragraph are differences, reported with the exact
 span.  Keyword separators may change (the template writes them its own way).
 

@@ -341,6 +341,7 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
         has_toc=has_toc,
         pages=preview["pages"],
         warning_codes=sorted({warning_key(w) for w in warnings}),
+        tell_user=tell_user(warnings),
     )
     write_json(root / MARKER, s)
     return {
@@ -351,9 +352,26 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
     }
 
 
+# Warnings about something the user will see differently from what they gave or asked for:
+# finish puts them in the notice that must go into the reply, so they cannot be dropped.
+TELL_USER = {"ORIGINAL_PAGE_NUMBERS_DROPPED", "ORIGINAL_HEADER_FOOTER_REPLACED", "HEADING_NUMBERING", "MARGIN_TOO_SMALL",
+             "STYLE_HARD_TO_READ", "FONT_MARKS", "RENDERER_FALLBACK", "REF_CITATION_MISMATCH", "REF_SUPPORT_UNCONFIRMED"}
+
+
+def tell_user(warnings):
+    """One line per kind of warning the user must be told about (first message of each kind)."""
+    seen = {}
+    for w in warnings:
+        if w.get("code") in TELL_USER and w["code"] not in seen:
+            text = re.sub(r"^[pt]\d+\S*:\s*", "", w.get("message", ""))
+            seen[w["code"]] = text.split("要在回复里告诉用户")[0].split("。逐条核对")[0].strip()[:160]
+    return list(seen.values())
+
+
 def add_review_warnings(workspace, warnings):
     """Warnings found outside the layout checks (e.g. reference support) that review.json must answer too."""
     root, s = load(workspace)
+    s["tell_user"] = list(dict.fromkeys(s.get("tell_user", []) + tell_user(warnings)))
     s["warning_codes"] = sorted(set(s.get("warning_codes", [])) | {warning_key(w) for w in warnings})
     write_json(root / MARKER, s)
 
@@ -462,6 +480,7 @@ def _prepare_static_only(root, s, normalized, intake, evidence):
         pages=[],
         limited_validation_sha256=sha(root / "limited-validation.json"),
         warning_codes=sorted({warning_key(w) for w in warnings}),
+        tell_user=tell_user(warnings),
         skipped_steps=receipt["skipped_steps"],
         user_notice=receipt["user_notice"],
     )
@@ -796,6 +815,12 @@ def renderer_notice(s):
 
 
 def user_notice(s):
+    told = s.get("tell_user") or []
+    extra = ("另外：" + "；".join(t.rstrip("。；") for t in told) + "。") if told else ""
+    return _user_notice(s) + extra
+
+
+def _user_notice(s):
     review = s["review"]
     if s.get("validation_scope") == "static-only":
         return s["user_notice"]

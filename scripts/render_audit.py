@@ -16,6 +16,7 @@ substitute, which changes the page images but not the Word file.
 
 from __future__ import annotations
 import argparse, json, re, sys
+from collections import Counter
 from pathlib import Path
 from docx import Document
 from docx.oxml.ns import qn
@@ -101,11 +102,17 @@ def _expectations(doc):
     if template in ("A", "B"):
         from customization import effective_profile
 
-        spec = effective_profile(template, json.loads(vv.get("XAUFE_FORMAT_REQUEST", "{}")))
+        from audit_helpers import contract
+
+        request = json.loads(vv.get("XAUFE_FORMAT_REQUEST", "{}"))
+        spec = effective_profile(template, request)
         header = bool(spec["header"]["enabled"])
         footer = bool(spec["footer"].get("page_numbers"))
+        body_size = contract(template, request)["body"]["font"]["size_half_points"] / 2
+    else:
+        body_size = None
     return {"has_cover": vv.get("XAUFE_HAS_COVER") == "1", "header": header, "page_numbers": footer,
-            "template": template}
+            "template": template, "body_size": body_size}
 
 
 def _margins(sections):
@@ -364,6 +371,10 @@ def audit(docx, pdf):
     header_texts = _header_texts(doc)
     header_paragraphs = _header_paragraphs(doc)
     headings, table_captions, figure_captions = _keep_together(doc)
+    # Body lines, recognised by their text, show the size the renderer really used for body text.
+    body_texts = [t for t in (_flat(p.text) for p in doc.paragraphs if p.style is not None and p.style.name == "XAUFE Body")
+                  if len(t) >= 6]
+    body_sizes = Counter()
     errors, warnings = [], []
     used = set()
     previous = ""
@@ -387,6 +398,11 @@ def audit(docx, pdf):
             images = [i["bbox"] for i in page.get_image_info() if i["bbox"][2] > i["bbox"][0]]
             drawings = [d["rect"] for d in page.get_drawings() if d["rect"].width > 0 or d["rect"].height > 0]
 
+            if not cover and body_texts:
+                for line in lines:
+                    key = _flat(line["spans"][0]["text"])
+                    if len(key) >= 6 and any(key in t for t in body_texts):
+                        body_sizes.update(round(c[3] * 2) / 2 for c in line["chars"])
             if cover:
                 drift = _cover_title_misaligned(lines, want["template"])
                 if drift:
@@ -503,6 +519,11 @@ def audit(docx, pdf):
             if want["page_numbers"] and not cover:
                 numbers.append((index, "".join(l["spans"][0]["text"] for l in foot).strip()))
     errors += _number_sequence(numbers)
+    if want.get("body_size") and sum(body_sizes.values()) >= 40:
+        size = body_sizes.most_common(1)[0][0]
+        if abs(size - want["body_size"]) > 0.3:
+            errors.append(_issue("error", "BODY_SIZE_RENDERED", None, "正文实际显示出来的字号和要求不一致（Word 文件里的样式设置没有生效）。",
+                                 expected=f"{want['body_size']:g} 磅", actual=f"{size:g} 磅"))
     wanted = requested_fonts(doc)
     missing = [f for f in wanted if not _font_present(f, used)]
     if missing:

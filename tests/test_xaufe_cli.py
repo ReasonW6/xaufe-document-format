@@ -279,9 +279,33 @@ class CLI(unittest.TestCase):
     def test_both_content_and_mapping_is_refused(self):
         work = self.new(JOB_B, CONTENT)
         (work / "mapping.json").write_text("{}", encoding="utf-8")
-        code, _, err = self.call("run", "--work", work, "--office", "none")
-        self.assertEqual(code, 2)
-        self.assertIn("只能保留一个", err)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)  # a refused input is a counted, reported round
+        self.assertIn("只能保留一个", out)
+        self.assertTrue((work / "attempts.json").is_file())
+
+    def test_content_mistakes_name_the_block_field_and_allowed_keys(self):
+        for block, words in (({"type": "para", "text": "合成"}, ["blocks[", "type='para' 不认识", "paragraph"]),
+                             ({"type": "image", "path": "a.png", "width": 8}, ["多了不认识的字段 width", "width_cm"]),
+                             ({"type": "table", "header": ["甲", "乙"], "rows": [["1"]]}, ["rows[0] 有 1 格"])):
+            content = json.loads(json.dumps(CONTENT))
+            content["blocks"].append(block)
+            work = self.new(JOB_B, content)
+            code, out, err = self.call("run", "--work", work, "--office", "none")
+            self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+            for word in words:
+                self.assertIn(word, out)
+
+    def test_absurd_margins_and_spacing_name_the_setting(self):
+        work = self.new({**JOB_B, "format": {"page_twips": {"left": 8000, "right": 8000}}}, CONTENT)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("format.page_twips", out)
+        self.assertIn("8000+8000", out)
+        work = self.new({**JOB_B, "format": {"styles": {"h1": {"before": 40000}}}}, CONTENT)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("format.styles.h1.before=40000", out)
 
     # ------------------------------------------------------------ existing Word
     def sample_docx(self):
@@ -491,6 +515,55 @@ class CLI(unittest.TestCase):
         self.assertIn("合成学院课程作业", out)
         self.assertIn("ORIGINAL_PAGE_NUMBERS_DROPPED", out)
         self.assertIn("footer_page_numbers", out)
+        self.fill_review(work, vision=False)
+        code, out, err = self.call("finish", "--work", work)
+        self.assertEqual(code, 0, out + err)
+        told = out.split("必须在给用户的回复里说明：")[1]
+        self.assertIn("原稿页脚有页码", told)
+        self.assertIn("合成学院课程作业", told)
+
+    def test_original_decorations_are_cleared_or_reported(self):
+        from docx.enum.text import WD_COLOR_INDEX
+
+        doc = Document()
+        doc.add_paragraph("排序算法比较")
+        p = doc.add_paragraph()
+        p.add_run("普通文字，")
+        p.add_run("高亮文字，").font.highlight_color = WD_COLOR_INDEX.YELLOW
+        p.add_run("删掉的说法，").font.strike = True
+        p.add_run("abc").font.all_caps = True
+        source = self.d / "装饰.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        code, out, err = self.call("inspect", "--work", work, "--docx", source)
+        self.assertEqual(code, 0, err)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        final = Document(work / "final.docx")
+        self.assertFalse(final.element.body.xpath(".//w:highlight"))
+        self.assertIn("FONT_MARKS", out)
+        self.assertIn("删除线", out)
+        self.assertIn("全部大写", out)
+
+    def test_layout_failure_names_the_changed_job_setting_first(self):
+        import feedback as F
+
+        work = self.new({**JOB_B, "format": {"page_twips": {"top": 0}}})
+        issues = F.from_render({"errors": [{"code": "TEXT_AT_PAPER_EDGE", "message": "贴边", "page": 3, "where": "目录"}]}, work)
+        self.assertIn("format.page_twips.top=0", issues[0]["cause"])
+        self.assertNotIn("edit", issues[0]["where"])  # the TOC title is the template's own text
+
+    def test_short_or_repeated_text_gets_no_wrong_pointer(self):
+        import feedback as F
+
+        content = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": [
+            {"type": "paragraph", "text": "目录中的页定位说明。"}, {"type": "paragraph", "text": "正文第二段，独一无二的句子。"},
+            {"type": "paragraph", "text": "正文第二段，独一无二的句子。"}]}
+        work = self.new(JOB_B, content)
+        self.assertIsNone(F._input_hint(work, "目录"))
+        self.assertIsNone(F._input_hint(work, "正"))
+        self.assertEqual(F._input_hint(work, "目录中的页定位"), "content.json 的 blocks[0]（paragraph）")
+        self.assertIn("以下之一", F._input_hint(work, "独一无二的句子"))
 
     def test_tiny_margins_are_flagged_for_the_review(self):
         document = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": CONTENT["blocks"]}
@@ -672,9 +745,16 @@ class CLI(unittest.TestCase):
         content["references"] = [entry["text"]]
         content["blocks"].append({"type": "paragraph", "runs": [
             {"text": "pandas 的使用者超过 100 万人"}, {"text": "[1]", "superscript": True}, {"text": "。"}]})
+        content["blocks"].append({"type": "paragraph", "text": "pandas 也适合做数据清洗[1]。"})
+        work = self.written(content, [entry])
+        # A figure must be in the excerpt of the reference it cites.
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("数字 100 在它引用的文献 [1] 的 quote", out)
+        entry["quote"] = "pandas is a library for data cleaning and analysis with over 100 contributors"
         work = self.written(content, [entry])
         code, out, err = self.call("run", "--work", work, "--office", "none")
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 0, out + err)
         self.fill_review(work, vision=False)
         code, out, err = self.call("finish", "--work", work)
         self.assertEqual(code, 0, err)
@@ -685,6 +765,7 @@ class CLI(unittest.TestCase):
         self.assertIn("观点支撑", out)
         self.assertIn("取不到原文，未能对照", out)
         self.assertIn("pandas 的使用者超过 100 万人", out)
+        self.assertIn("pandas 也适合做数据清洗", out)  # every citing sentence is listed
         self.assertIn("少 5 篇", out)
         self.assertIn("少于默认的 5000 字", out)
 

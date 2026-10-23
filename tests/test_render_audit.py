@@ -254,6 +254,16 @@ class RenderAudit(unittest.TestCase):
         result = audit(doc, self.pdf([self.cover(), self.body() + [("text", 90, 760, "表1 合成数据表")], self.body()]))
         self.assertIn("CAPTION_SEPARATED", self.codes(result))
 
+    def test_body_rendered_at_the_wrong_size_is_refused(self):
+        text = "这是一段用来检查正文实际显示字号的合成正文，长度足够统计，再多写几个字让它超过四十个字符。"
+        doc = self.docx(blocks=[{"type": "heading", "level": 1, "text": "一、合成"},
+                                {"type": "paragraph", "text": text}])
+        right = audit(doc, self.pdf([self.cover(), [("text", 90, 200, text[:20]), ("text", 90, 220, text[20:])]]))
+        self.assertNotIn("BODY_SIZE_RENDERED", self.codes(right))
+        wrong = audit(doc, self.pdf([self.cover(), [("small", 90, 200, text[:20]), ("small", 90, 220, text[20:])]]))
+        hit = [e for e in wrong["errors"] if e["code"] == "BODY_SIZE_RENDERED"]
+        self.assertEqual((hit[0]["expected"], hit[0]["actual"]), ("10.5 磅", "6 磅"))
+
     def test_wrapped_cover_title_must_line_up(self):
         doc = self.docx("A")
         first = ("text", 125, 340, "论文题目：基于某某数据的")

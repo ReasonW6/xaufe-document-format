@@ -53,7 +53,7 @@ HINTS = {
     "KEYWORD_SPACING": ("关键词之间的分隔不对。", "content.json 用 keywords_zh 列表写关键词；已有 Word 时核对这一段的 role 是 keywords_zh。"),
     "KEYWORD_RUN": ("“关键词：”标签和词项混在一个文字段里。", "重新 run；仍失败就把原稿这一段改成“关键词：词1 词2”的形式。"),
     "PAGE": ("页面尺寸或页边距和本次有效设置不一致。", "核对 job.json 的 page_twips（1 厘米 = 567）；用户没要求就删掉这一项。"),
-    "HEADER": ("页眉缺失或内容不对。", "A 版页眉用专业和题目：确认 job.json 的 info 里有 major、title_zh；用户自定义页眉就核对 format.header 写法。"),
+    "HEADER": ("页眉缺失或内容不对。", "用户自定义了页眉就核对 job.json 的 format.header（enabled、left、right 不能是空文字）；没有自定义时，A 版页眉用专业和题目，确认 info 里有 major、title_zh；B 版默认没有页眉。"),
     "HEADER_TEXT": ("页眉文字和封面信息或 header 设置不一致。", "核对 job.json 的 major、title_zh 和 format.header.left/right。"),
     "HEADER_BORDER": ("页眉横线和设置不一致。", "用户不要横线写 \"header\": {\"border\": false}；否则删掉这项。"),
     "RED_HEADER": ("不该有页眉的地方出现了页眉。", "B 版默认无页眉；用户要页眉才写 format.header.enabled=true。"),
@@ -132,12 +132,15 @@ HINTS = {
     "IMAGE_OUTSIDE_MARGINS": ("图片比版心宽，或比一页的版心还高、伸进了上下页边距。", "把图片改小（太高的图请用户裁开或缩小），或确认这一段 role 是 figure（脚本会按版心缩放宽度）。"),
     "TEXT_OVER_IMAGE": ("文字压在图片上：常见于原稿的浮动图片、环绕方式，或图片所在段落是固定行距。", "已有 Word 时把这张图所在段落的 role 设为 figure；仍压字就请用户把图片改成“嵌入型”后再给。"),
     "HEADING_AT_PAGE_BOTTOM": ("标题和它后面的正文被分页拆开了。模板给标题设了“与下段同页”，通常是标题前后有手动加的空行或分页符，或原稿的段落设置盖过了模板。", "去掉这个标题前后多余的空行或分页符（content.json 里的 page_break 块，或 mapping.json 里设成 delete 的空段）后重新 run；仍然这样就告诉用户这一页的情况。"),
-    "CAPTION_SEPARATED": ("图题或表题和它的图、表被分页拆开了。通常是图表太大放不进剩下的空间，或题注前后有手动空行。", "去掉题注前后的空行；表格很长时可以拆成两张表（续表），图片太高就请用户同意缩小（content.json 里 image 块的 width）；改完重新 run。"),
+    "CAPTION_SEPARATED": ("图题或表题和它的图、表被分页拆开了。通常是图表太大放不进剩下的空间，或题注前后有手动空行。", "去掉题注前后的空行；表格很长时可以拆成两张表（续表），图片太高就请用户同意缩小（content.json 里 image 块写 \"width_cm\": 厘米数）；改完重新 run。"),
     "COVER_TITLE_MISALIGNED": ("封面题目折成几行后对不齐：通常是渲染时没有模板字体（宋体/黑体），替代字体的字宽不同，或题目里有不能断开的长英文。", "先看有没有 FONT_SUBSTITUTED 提示：有就按缺字体处理（换装有字体的 Word/WPS 渲染，或问用户）；题目里有长英文串就请用户同意在合适的位置断开或缩短。"),
     "TEXT_AT_PAPER_EDGE": ("页眉或页脚距离（page_twips.header / footer）几乎是 0，文字贴着纸边。B 版模板本来没有页眉页脚，加页码或页眉后最容易这样。", "在 job.json 的 format 里设 \"page_twips\": {\"footer\": 992}（页眉太靠上就设 header，单位 twip，992 约 1.75 厘米），然后重新 run。"),
     "CAPTION_DETACHED": ("表题（在表格上方）或图题（在图片下方）和它的表格/图片之间夹着空段落，常见于原稿里多敲的回车或分页符。", "把夹在中间的空段落删掉：mapping.json 里把它的 role 设为 \"delete\"（content.json 里就删掉那个空块），然后重新 run。"),
     "FONT_BOLD_PARAGRAPH": ("整段正文、摘要或参考文献都是加粗：通常是原稿整段手动加粗，或 content.json 给整段写了 bold。", "只排版：问用户这段加粗是不是有意的，不是就在 review.json 说明并请用户确认；写作：去掉整段的 bold，只给需要强调的几个词加粗。"),
-    "HEADING_LEVEL": ("同一种编号（如“二、”）的标题被设成了不同级别，通常是 mapping.json 或 content.json 里这一段的级别填错了。", "把这段的 role 改成和同样编号的其他标题一致（mapping.json 的 role / content.json 的 level），然后重新 run；不要改标题文字。"),
+    "HEADING_LEVEL": ("标题的级别和文档自己的编号对不上（同样的编号在别处是另一级，或标题被当成了正文），通常是 mapping.json 或 content.json 里这一段的级别填错了。", "按编号改这段的级别：mapping.json 的 role（h1/h2/h3）或 content.json 的 level/type，然后重新 run；不要改标题文字。原稿确实就是这样编号的，先问用户再处理。"),
+    "FONT_DECORATION": ("文字带高亮、底纹或阴影一类的装饰：手工处理的副本或原稿里带来的，脚本排版时会去掉。", "用 run 重新生成就会去掉；这是 adopt 的手工副本时，在 Word 里清除这些格式后重新 adopt。"),
+    "FONT_MARKS": ("原稿里有删除线、全部大写、着重号这类可能有含义的标记（全部大写会让显示的字母和原文的大小写不同）。", "不要自己去掉：在 review.json 的 warnings 里写明，并在回复里告诉用户成品保留了这些标记；用户要去掉就请他在原稿里清除后重新给。"),
+    "BODY_SIZE_RENDERED": ("Word 文件里写的正文字号没有按预期显示：通常是段落里的直接格式或字符样式盖过了正文样式，或渲染软件对样式继承的理解不同。", "看页图确认正文字号；已有 Word 的原稿里有整段的直接字号就重新 inspect 后 run；仍不对就如实告诉用户这台机器的渲染结果，建议用 Word 打开核对。"),
     "HEADER_WRAPPED": ("页眉文字太长，一行放不下折成了两行。A 版页眉右侧默认放论文题目，长题目最容易这样。", "在 job.json 的 format 里给页眉写一个短的题目：\"header\": {\"right\": \"简短题目\"}（先问用户用哪个简称；左侧太长就改 left）；或经用户同意缩小页眉字号（styles.header.size）。"),
     "HEADER_OVERFLOW": ("页眉文字太长，折成多行后伸出了上边距，把正文往下挤。A 版页眉右侧默认放论文题目，长题目最容易这样。", "在 job.json 的 format 里给页眉写一个短的题目：\"header\": {\"right\": \"简短题目\"}（先问用户用哪个简称；左侧太长就改 left）；或经用户同意缩小页眉字号（styles.header.size）。"),
     "TABLE_OUTSIDE_MARGINS": ("表格或图形伸出了版心。", "已有 Word 时确认 format_tables 是 true；列太多就请用户拆表；浮动图形请用户改成嵌入式。"),
@@ -180,30 +183,55 @@ def _paragraph(doc, label):
     return None
 
 
-def _input_hint(root, text):
-    """Which input holds this text: content.json block or mapping.json paragraph."""
-    key = re.sub(r"\s+", "", text)[:12]
-    if not key or root is None:
-        return None
+def _flat(text):
+    return re.sub(r"\s+", "", str(text or ""))
+
+
+def _sources(root):
+    """(pointer, text) for every piece of input the user's text came from.  Text the template
+    generates (cover, TOC, header, labels) is not here, so it is never pinned on an input."""
     content, mapping = Path(root) / "content.json", Path(root) / "mapping.json"
+    found = []
+    if content.is_file():
+        data = read_json(content)
+        for i, block in enumerate(data.get("blocks", [])):
+            kind = block.get("type")
+            body = block.get("text") or "".join(r.get("text", "") for r in block.get("runs") or [])
+            found.append((f"content.json 的 blocks[{i}]（{kind}）", body))
+            if block.get("caption"):
+                found.append((f"content.json 的 blocks[{i}]（{kind} 的 caption）", block["caption"]))
+            for row in [block.get("header") or []] + (block.get("rows") or []):
+                found += [(f"content.json 的 blocks[{i}]（表格单元格）", str(c)) for c in row]
+        for field in ("abstract_zh", "abstract_en"):
+            if data.get(field):
+                found.append((f"content.json 的 {field}", data[field]))
+        for field in ("keywords_zh", "keywords_en"):
+            if data.get(field):
+                found.append((f"content.json 的 {field}", "".join(map(str, data[field]))))
+        found += [(f"content.json 的 references[{i}]", str(r)) for i, r in enumerate(data.get("references") or [])]
+    elif mapping.is_file():
+        rows = read_json(mapping).get("paragraphs", [])
+        full = Path(root) / "paragraph-text.json"
+        texts = read_json(full) if full.is_file() else {}
+        found += [(f"mapping.json 里 id 为 {r.get('id')} 的段落（当前 role：{r.get('role')}）", texts.get(r.get("id"), r.get("text", "")))
+                  for r in rows]
+    return [(where, _flat(text)) for where, text in found if _flat(text)]
+
+
+def _input_hint(root, text):
+    """Which input holds this text: the one content.json block / mapping.json paragraph that contains it.
+    Too short or found in several places gives no pointer rather than a wrong one."""
+    key = _flat(text)
+    if len(key) < 4 or root is None:
+        return None
     try:
-        if content.is_file():
-            data = read_json(content)
-            for i, block in enumerate(data.get("blocks", [])):
-                body = block.get("text") or "".join(r.get("text", "") for r in block.get("runs", []))
-                body += " ".join(str(c) for row in [block.get("header") or []] + (block.get("rows") or []) for c in row)
-                if key in re.sub(r"\s+", "", body):
-                    return f"content.json 的 blocks[{i}]（{block.get('type')}）"
-            for field in ("abstract_zh", "abstract_en", "keywords_zh", "keywords_en", "references"):
-                if key in re.sub(r"\s+", "", json.dumps(data.get(field, ""), ensure_ascii=False)):
-                    return f"content.json 的 {field}"
-        elif mapping.is_file():
-            data = read_json(mapping)
-            for row in data.get("paragraphs", []):
-                if key[:8] and re.sub(r"\s+", "", row.get("text", "")).startswith(key[:8]):
-                    return f"mapping.json 里 id 为 {row.get('id')} 的段落（当前 role：{row.get('role')}）"
+        hits = list(dict.fromkeys(where for where, body in _sources(root) if key in body))
     except (OSError, ValueError):
         return None
+    if len(hits) == 1:
+        return hits[0]
+    if 1 < len(hits) <= 3:
+        return "以下之一（这段文字出现了不止一次）：" + "；".join(hits)
     return None
 
 
@@ -233,12 +261,15 @@ def explain(errors, docx=None, root=None, stage="格式检查"):
                 source = _input_hint(root, text)
                 if source:
                     item["where"]["edit"] = source
+                gap = _mapping_gap(root, text) if code == "CAPTION_DETACHED" and root else []
+                if gap:
+                    item["where"]["edit"] = f"mapping.json 里 id 为 {'、'.join(gap)} 的空段落（role 改为 \"delete\"）"
         x = _EXPECT.search(message)
         if x:
             item["expected"] = x.group("expected").strip()
             item["actual"] = x.group("actual").strip()
         issues.append(item)
-    return issues
+    return with_job_suspects(root, issues)
 
 
 def _mapping_gap(root, previous):
@@ -248,10 +279,13 @@ def _mapping_gap(root, previous):
         return []
     try:
         rows = read_json(path).get("paragraphs", [])
+        full = path.parent / "paragraph-text.json"
+        texts = read_json(full) if full.is_file() else {}
     except (OSError, ValueError):
         return []
     key = re.sub(r"\s+", "", previous)[-12:]
-    start = next((i for i, r in enumerate(rows) if key and key in re.sub(r"\s+", "", r.get("text", ""))), None)
+    start = next((i for i, r in enumerate(rows)
+                  if key and key in re.sub(r"\s+", "", texts.get(r.get("id"), r.get("text", "")))), None)
     found = []
     for r in rows[start + 1 : start + 8] if start is not None else []:
         if r.get("text", "").strip():
@@ -302,6 +336,49 @@ def _page_breaks(docx, previous):
     return found
 
 
+# Failures that a changed page or text geometry in job.json can cause.
+GEOMETRY = {"OFF_PAGE", "TEXT_OUTSIDE_MARGINS", "TEXT_AT_PAPER_EDGE", "IMAGE_OFF_PAGE", "IMAGE_OUTSIDE_MARGINS",
+            "TABLE_OUTSIDE_MARGINS", "TEXT_OVERLAP", "TEXT_OVER_IMAGE", "LINE_TOO_TIGHT", "HEADER_OVERFLOW",
+            "HEADER_WRAPPED", "BLANK_PAGE", "HEADING_AT_PAGE_BOTTOM", "CAPTION_SEPARATED", "PAGE_NUMBER_MISSING",
+            "TABLE_WIDTH", "IMAGE_WIDTH", "CELL_WIDTH", "OBJECT_HEIGHT"}
+
+
+def _job_changes(root):
+    """What job.json changed from the template layout: page_twips and style values, as "key=value"."""
+    try:
+        fmt = read_json(Path(root) / "job.json").get("format") or {}
+    except (OSError, ValueError, AttributeError):
+        return []
+    found = []
+
+    def walk(prefix, value):
+        if isinstance(value, dict):
+            for key, inner in value.items():
+                walk(f"{prefix}.{key}", inner)
+        elif not isinstance(value, (list, str)) or prefix.endswith(("line_rule", "align")):
+            found.append(f"{prefix}={value}")
+
+    for key in ("page_twips", "styles"):
+        walk(f"format.{key}", fmt.get(key) or {})
+    return found
+
+
+def with_job_suspects(root, issues):
+    """Name the job.json changes first when a layout failure could come from them: the template's
+    own values never cause these, so a changed margin, size or spacing is the likeliest cause."""
+    changes = _job_changes(root) if root else []
+    if not changes:
+        return issues
+    listed = "、".join(changes[:8]) + ("等" if len(changes) > 8 else "")
+    for item in issues:
+        if item.get("code") in GEOMETRY:
+            item["cause"] = (f"job.json 改过模板的版面设置：{listed}。模板默认值不会出这个问题，先查这些改动"
+                             "（数值是否离谱、单位是否写错：page_twips 单位是 twip，1 厘米=567）。其次才是：" + (item.get("cause") or ""))
+            item["fix"] = ("先把不合理的值改回合理范围，或删掉这一项恢复模板默认（用户明确要求的改动要先问用户），再重新 run；"
+                           "改动都合理时再按下面处理：" + (item.get("fix") or ""))
+    return issues
+
+
 def from_render(audit, root=None, docx=None):
     """Rendered-page audit errors -> actionable issues (they already carry page/expected/actual)."""
     issues = []
@@ -312,7 +389,7 @@ def from_render(audit, root=None, docx=None):
         quoted = re.search(r"“(.+)”", e["where"]) if e.get("where") else None
         if e.get("where"):
             item["where"]["text"] = e["where"]
-            source = _input_hint(root, quoted.group(1)[-12:] if quoted else e["where"])
+            source = _input_hint(root, quoted.group(1) if quoted else e["where"])
             if source:
                 item["where"]["edit"] = source
         if e.get("bbox_pt"):
@@ -332,7 +409,7 @@ def from_render(audit, root=None, docx=None):
             if key in e:
                 item[key] = e[key]
         issues.append(item)
-    return issues
+    return with_job_suspects(root, issues)
 
 
 # Input errors raised while laying out (ValueError text) -> cause and fix.

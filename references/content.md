@@ -51,7 +51,7 @@ WORK 里只能有其中一个文件。
 | 序言 | `{"type": "heading", "level": 1, "text": "序 言", "preface": true}` |
 | 段落 | `{"type": "paragraph", "text": "……"}`。有上标、下标、加粗、链接时用 `"runs": [{"text": "x"}, {"text": "2", "superscript": true}, {"text": "官网", "link": "https://…"}]`（只排版时原稿的链接要原样带上，`run` 会核对） |
 | 表格 | `{"type": "table", "caption": "表1 …", "header": [...], "rows": [[...], ...]}`，每行格数和表头相同。想自己定列宽就加 `"widths": [1, 1, 3]`（各列比例） |
-| 图片 | `{"type": "image", "path": "图片文件名.png", "caption": "图1 …"}`。图片文件放在 WORK 里，路径相对 content.json |
+| 图片 | `{"type": "image", "path": "图片文件名.png", "caption": "图1 …"}`，可加 `"width_cm": 12`。图片放在 WORK 里 |
 | 公式 | `{"type": "equation", "text": "E = mc²（1）"}`；上下标用 runs。排成居中文字，不是 Word 公式对象 |
 | 代码 | `{"type": "code", "text": "print('hello')"}` |
 | 分页 | `{"type": "page_break"}` |

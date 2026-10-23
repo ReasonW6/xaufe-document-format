@@ -123,16 +123,29 @@ HEADING_STYLE_NUMBER = {
 }
 
 
-def heading_levels_check(headings, err):
-    """One numbering style used at two heading levels: the level of some of them was set wrong
-    (one “二、” is h1 and another is h2).  A document that simply numbers differently is left alone."""
+def heading_levels_check(paragraphs, err):
+    """Heading levels that contradict the document's own numbering.  Blocked when the document
+    itself shows the intended level: the same numbering sits at another level elsewhere, the level
+    is already used by a different numbering, or a short unpunctuated body line carries a numbering
+    that the document uses for headings.  A document that simply numbers its own way is left alone."""
+    name = {"h1": "一级", "h2": "二级", "h3": "三级"}
     style_of = lambda text: next((r for r, rx in HEADING_STYLE_NUMBER.items() if rx.match(text)), None)
-    home = {style_of(t) for _, role, t in headings if style_of(t) == role}
-    for label, role, text in headings:
-        style = style_of(text)
-        if style and style != role and style in home:
-            err("HEADING_LEVEL", f"{label}: 标题“{text[:20]}”按编号是{ {'h1': '一级', 'h2': '二级', 'h3': '三级'}[style] }标题"
-                                 f"（用同样编号的其他标题是 {style}），这里却设成了 {role}。")
+    headings = [(label, role, text, style_of(text)) for label, role, text in paragraphs if role != "body"]
+    home = {style for _, role, _, style in headings if style == role}
+    for label, role, text, style in headings:
+        if not style or style == role:
+            continue
+        if style in home:
+            err("HEADING_LEVEL", f"{label}: 标题“{text[:20]}”按编号是{name[style]}标题（用同样编号的其他标题是 {style}），这里却设成了 {role}。")
+        elif role in home:
+            err("HEADING_LEVEL", f"{label}: 标题“{text[:20]}”的编号是{name[style]}的写法，但设成了 {role}，"
+                                 f"而文档里 {role} 用的是另一种编号。")
+    # A list ("1.准确性" "2.完整性" …) runs on numbered lines; a lost heading is followed by plain text.
+    for before, (label, role, text), after in zip([(None, None, "")] + paragraphs, paragraphs, paragraphs[1:] + [(None, None, "")]):
+        style = style_of(text) if role == "body" else None
+        alone = after[1] == "body" and not style_of(after[2]) and not (before[1] == "body" and style_of(before[2]))
+        if style in home and alone and len(text) <= 30 and not re.search(r"[。；;：:，,！!？?]$", text):
+            err("HEADING_LEVEL", f"{label}: “{text[:20]}”像{name[style]}标题（编号和文档里的 {style} 标题一样，短且没有句末标点），却设成了正文。")
 
 
 def role_check(p, role, label, visible, err):
@@ -564,7 +577,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         role_check(p, role, label, visible, err)
         if role == "caption" and label.startswith("p"):
             caption_check(p, label, err)
-        if role in HEADING_STYLE_NUMBER and label.startswith("p"):
+        if (role in HEADING_STYLE_NUMBER or role == "body") and label.startswith("p"):
             headings.append((label, role, visible.strip()))
         if p._p.xpath(".//wp:inline") and role != "figure":
             maxh = max((int(x.get("cy", "0")) for x in p._p.xpath(".//wp:extent")), default=0)

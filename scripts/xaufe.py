@@ -268,6 +268,8 @@ def _writing_problems(root, content):
             if NUMBER.search(text) and not CITE.search(str(block.get("caption") or "")) and not _from_material(text, material):
                 problems.append(_problem(f"表格里有具体数字但表题没有标出处（在表题末尾标上核对过的文献序号）：{text[:40]}", edit))
     problems += _citation_problems(content)
+    if references and result_path.is_file():
+        problems += _unbacked_figures(content, {_ref_key(r["text"]): r for r in _read(result_path, "refs-result.json").get("results", [])})
     counters = {1: 0, 2: 0, 3: 0}
     for block in content.get("blocks", []):
         level = block.get("level")
@@ -286,14 +288,47 @@ def _writing_problems(root, content):
 
 
 def _citing_sentences(content):
-    """{n: first sentence of the text that cites [n]}."""
+    """{n: every sentence of the text that cites [n], in reading order}."""
     found = {}
     for block in content.get("blocks", []):
         runs = block.get("runs") or []
         for sentence in _sentences(block.get("text") or "".join(r.get("text", "") for r in runs)):
             for n in _cited_numbers(sentence):
-                found.setdefault(n, sentence.strip())
+                found.setdefault(n, []).append(sentence.strip())
     return found
+
+
+def _figures(text):
+    """The numbers a sentence states as facts ("85%", "1.2万人" -> "85", "1.2")."""
+    return {m.group(1).replace(",", "") for m in re.finditer(r"(\d[\d,]*(?:\.\d+)?)\s*(?:%|％|‰|元|万|亿|人|名|倍|个百分点|户|家)", text)}
+
+
+def _unbacked_figures(content, results):
+    """Sentences whose figures appear in none of the excerpts of the references they cite."""
+    import refcheck as R
+
+    problems = []
+    references = content.get("references") or []
+    for i, block in enumerate(content.get("blocks", [])):
+        runs = block.get("runs") or []
+        for sentence in _sentences(block.get("text") or "".join(r.get("text", "") for r in runs)):
+            figures = _figures(CITE.sub("", sentence))
+            cited = [n for n in _cited_numbers(sentence) if 1 <= n <= len(references)]
+            if not figures or not cited:
+                continue
+            entries = [results.get(_ref_key(references[n - 1]), {}) for n in cited]
+            if any(e.get("status") == R.USER and not e.get("quote") for e in entries):
+                continue  # the user's own source: they vouch for its numbers
+            quoted = set().union(*(set(re.findall(r"\d+(?:\.\d+)?", str(e.get("quote") or "").replace(",", "")))
+                                   for e in entries))
+            missing = sorted(f for f in figures if f not in quoted)
+            if missing:
+                edit = f"mapping.json 里 id 为 {block['_id']} 的段落" if "_id" in block else f"content.json 的 blocks[{i}]"
+                problems.append(_problem(
+                    f"这句话的数字 {'、'.join(missing)} 在它引用的文献 {'、'.join(f'[{n}]' for n in cited)} 的 quote（原文摘录）里找不到："
+                    "数字要能在原文里找到——把原文里写着这个数字的句子作为 quote 写进 refs.json 后重新 refs，"
+                    f"原文里没有就删掉或改正这个数字：{sentence.strip()[:40]}", edit))
+    return problems
 
 
 COMMON = set("研究 本文 分析 方法 系统 我们 进行 通过 基于 问题 可以 以及 发展 影响 提出 结果 表明 认为 使用 应用 方面 主要 相关 "
@@ -307,11 +342,11 @@ def _terms(text):
     return (pairs | set(re.findall(r"[a-z][a-z0-9-]{2,}", text))) - COMMON
 
 
-def _off_topic(root, content):
+def _off_topic_lines(root, content):
     """[n] placed on sentences that share no content word with reference n's claim, excerpt or entry:
-    the number most likely points at the wrong reference."""
+    the number most likely points at the wrong reference.  Every citing sentence is checked."""
     if not (root / "refs-result.json").is_file():
-        return None
+        return []
     results = {_ref_key(r["text"]): r for r in _read(root / "refs-result.json", "refs-result.json").get("results", [])}
     citing = {}
     for block in content.get("blocks", []):
@@ -323,8 +358,19 @@ def _off_topic(root, content):
     for index, text in enumerate(content.get("references") or [], 1):
         r = results.get(_ref_key(text), {})
         about = _terms(" ".join([str(text), str(r.get("supports") or ""), str(r.get("quote") or "")]))
-        if citing.get(index) and not any(_terms(s) & about for s in citing[index]):
-            lines.append(f"[{index}] 引用句“{citing[index][0][:30]}”和这条文献的题目、supports、quote 没有一个共同的词")
+        off = [s for s in citing.get(index, []) if not _terms(s) & about]
+        if off:
+            lines.append((index, f"[{index}] 引用句“{off[0][:30]}”和这条文献的题目、supports、quote 没有一个共同的词"))
+    return lines
+
+
+def _off_topic_numbers(root, content):
+    return {index for index, _ in _off_topic_lines(root, content)}
+
+
+def _off_topic(root, content):
+    """REF_CITATION_MISMATCH warning for the run output and review.json."""
+    lines = [line for _, line in _off_topic_lines(root, content)]
     if not lines:
         return None
     return {"code": "REF_CITATION_MISMATCH",
@@ -344,7 +390,7 @@ def _weak_support(root, content):
     for index, text in enumerate(content.get("references") or [], 1):
         r = results.get(_ref_key(text), {})
         if r.get("status") != R.USER and r.get("support") in (R.NOT_FOUND, R.UNCHECKED):
-            lines.append(f"[{index}] 引用句“{citing.get(index, '')[:30]}”／摘录“{str(r.get('quote') or '')[:30]}”（{r['support']}）")
+            lines.append(f"[{index}] 引用句“{(citing.get(index) or [''])[0][:30]}”／摘录“{str(r.get('quote') or '')[:30]}”（{r['support']}）")
     if not lines:
         return None
     return {"code": "REF_SUPPORT_UNCONFIRMED",
@@ -438,6 +484,7 @@ def _reference_checklist(root):
     lines = []
     if references:
         citing = _citing_sentences(written)
+        doubtful = _off_topic_numbers(root, written)
         lines += ["| 序号 | 文献 | 真实性 | 支撑的论点 | 正文引用句 | 观点支撑 |", "|---|---|---|---|---|---|"]
         for index, text in enumerate(references, 1):
             r = by_key.get(_ref_key(text), {})
@@ -450,7 +497,10 @@ def _reference_checklist(root):
             if supports and r.get("relevance") == "中":
                 supports += "（弱支撑）"
             backing = r.get("support") or R.NO_QUOTE
-            lines.append(f"| [{index}] | {_readable(text)[:60]} | {status} | {supports} | {citing.get(index, '')[:40]} | {backing} |")
+            if index in doubtful:
+                backing += "；引用号可能标错"
+            said = " ／ ".join(x[:40] for x in citing.get(index, []))[:160]
+            lines.append(f"| [{index}] | {_readable(text)[:60]} | {status} | {supports} | {said} | {backing} |")
         lines.append("“真实性”只说明文献存在、信息对得上；“观点支撑”才说明你引用的那句话在原文里找到了依据。")
     else:
         lines.append("这次没有找到能核实的参考文献，请提供你读过的文献。")
@@ -627,6 +677,8 @@ def cmd_inspect(args):
         ],
     }
     _write(root / "mapping.json", mapping)
+    # mapping.json shows the first 60 characters; failures are located against the whole paragraph.
+    _write(root / "paragraph-text.json", {b["id"]: b["text"] for b in inv["blocks"] if b["kind"] == "paragraph"})
     if not any(x["path"] == str(source) for x in s["source_documents"]):
         s["source_documents"].append(
             {"path": str(source), "sha256": D.sha(source), "role": "original"}
@@ -1101,6 +1153,14 @@ def main(argv=None):
             print("需要在 WPS 里手动导出 PDF，请求文件：" + str(exc.request), file=sys.stderr)
             print("做法见 references/special-cases.md 的 WPS 一节。", file=sys.stderr)
             return 4
+        if args.cmd == "run" and isinstance(exc, ValueError):
+            # An input the scripts refuse is a failed round too: located if possible, and counted.
+            try:
+                root = _work(args.work)[0]
+            except Exception:
+                root = None
+            if root is not None:
+                return _not_accepted(root, F.AcceptanceFailed("输入检查", F.from_message(str(exc), root, "输入检查")))
         print("出错了：" + str(exc), file=sys.stderr)
         return 2
 
