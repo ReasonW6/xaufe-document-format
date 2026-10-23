@@ -300,6 +300,9 @@ def effective_profile(template, request=None):
     if header.get("enabled") is True and "header" not in pages and m["header"] < 200:
         m["header"] = load_profile("A")["page_twips"]["header"]
     spec["footer"]["page_numbers"] = request.get("footer_page_numbers", False)
+    # The same for page numbers: B's zero footer distance would print them at the paper edge.
+    if spec["footer"]["page_numbers"] and "footer" not in pages and m["footer"] < 200:
+        m["footer"] = load_profile("A")["page_twips"]["footer"]
     if "cover_label" in request:
         spec["cover"]["document_label"] = request["cover_label"]
     if "cover_title_label" in request:

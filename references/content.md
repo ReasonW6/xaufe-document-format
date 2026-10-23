@@ -35,7 +35,7 @@ WORK 里只能有其中一个文件。
 
 | 项 | 说明 |
 |---|---|
-| `mode` | `"paper"`：完整结构（封面、摘要、目录、正文、参考文献，顺序按版式）。`"document"`：只排 `blocks`，没有摘要和目录（普通文档、只给了正文时用） |
+| `mode` | `"paper"`：完整结构（封面、摘要、目录、正文、参考文献）。`"document"`：只排 `blocks`，没有摘要和目录（普通文档、只给了正文时用） |
 | `metadata.title_zh` | 文档题目，和 job.json 里的题目一致（封面题目留空时也要写真实题目） |
 | `metadata.title_en` | 英文题目；有英文摘要时必须写 |
 | `abstract_zh` / `keywords_zh` | 中文摘要（多段用 `\n` 分开）/ 关键词列表。`paper` 模式必须有 |
@@ -49,10 +49,10 @@ WORK 里只能有其中一个文件。
 |---|---|
 | 标题 | `{"type": "heading", "level": 1, "text": "一、引言"}`。编号写在文字里：一级“一、”，二级“（一）”，三级“1.”。默认最多三级 |
 | 序言 | `{"type": "heading", "level": 1, "text": "序 言", "preface": true}` |
-| 段落 | `{"type": "paragraph", "text": "……"}`。有上标、下标、加粗、链接时用 `"runs": [{"text": "x"}, {"text": "2", "superscript": true}, {"text": "官网", "link": "https://…"}]`（只排版时原稿里的链接要原样带上，`run` 会核对链接地址） |
-| 表格 | `{"type": "table", "caption": "表1 …", "header": [...], "rows": [[...], ...]}`，每行格数和表头相同。列宽按内容自动分配；想自己定就加 `"widths": [1, 1, 3]`（各列比例） |
+| 段落 | `{"type": "paragraph", "text": "……"}`。有上标、下标、加粗、链接时用 `"runs": [{"text": "x"}, {"text": "2", "superscript": true}, {"text": "官网", "link": "https://…"}]`（只排版时原稿的链接要原样带上，`run` 会核对） |
+| 表格 | `{"type": "table", "caption": "表1 …", "header": [...], "rows": [[...], ...]}`，每行格数和表头相同。想自己定列宽就加 `"widths": [1, 1, 3]`（各列比例） |
 | 图片 | `{"type": "image", "path": "图片文件名.png", "caption": "图1 …"}`。图片文件放在 WORK 里，路径相对 content.json |
-| 公式 | `{"type": "equation", "text": "E = mc²"}` |
+| 公式 | `{"type": "equation", "text": "E = mc²（1）"}`；上下标用 runs。排成居中文字，不是 Word 公式对象 |
 | 代码 | `{"type": "code", "text": "print('hello')"}` |
 | 分页 | `{"type": "page_break"}` |
 

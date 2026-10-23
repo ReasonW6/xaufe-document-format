@@ -278,6 +278,22 @@ def dropped_margins(sources, docx):
     return out
 
 
+def has_page_numbers(path):
+    """The .docx shows page numbers: a PAGE field in one of its headers or footers."""
+    from zipfile import ZipFile
+
+    with ZipFile(path) as z:
+        return any(re.search(r"\bPAGE\b", z.read(n).decode("utf-8", "replace"))
+                   for n in z.namelist() if re.match(r"word/(header|footer)\d*\.xml$", n))
+
+
+def dropped_page_numbers(sources, docx):
+    """A .docx original had page numbers and the output shows none."""
+    return not has_page_numbers(docx) and any(
+        Path(s["path"]).suffix.lower() == ".docx" and Path(s["path"]).is_file() and has_page_numbers(s["path"])
+        for s in sources)
+
+
 def _approved_count(approved, label):
     """How many objects of this kind the user agreed to add or drop, by the numbers next to the label."""
     count = 0

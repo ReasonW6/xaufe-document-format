@@ -378,6 +378,17 @@ class TypographyTests(Fixture):
             120,
         )
 
+    def test_added_page_numbers_get_a_printable_footer_distance(self):
+        # B has no footer, so its footer distance is 0: page numbers would sit at the paper edge.
+        self.assertEqual(
+            C.effective_profile("B", {"footer_page_numbers": True})["page_twips"]["footer"],
+            C.load_profile("A")["page_twips"]["footer"],
+        )
+        self.assertEqual(
+            C.effective_profile("B", {"footer_page_numbers": True, "page_twips": {"footer": 300}})["page_twips"]["footer"],
+            300,
+        )
+
     def test_default_red_header_distance_unchanged(self):
         self.assertEqual(
             C.effective_profile("B")["page_twips"]["header"],

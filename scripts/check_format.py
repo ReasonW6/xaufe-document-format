@@ -98,6 +98,43 @@ ROLE_NAMES = {"spacer": "空行", "abstract_spacer": "空行", "figure": "图片
 HEADING_LIKE = re.compile(r"^(?:[一二三四五六七八九十]+、|[（(][一二三四五六七八九十]+[）)]|第[一二三四五六七八九十\d]+[章节])\s*\S")
 
 
+def _blank(el):
+    """An empty paragraph (at most a page or line break): it carries nothing to keep a caption with."""
+    return el.tag == qn("w:p") and not el.xpath(".//w:t[normalize-space()]|.//w:drawing|.//w:pict|.//m:oMath")
+
+
+def caption_check(p, label, err):
+    """A caption cut off from its table (below it) or figure (above it) by empty paragraphs:
+    keep-with-next then ties it to the blank, and the page can break right between them."""
+    for step, wanted, name in ((lambda e: e.getnext(), lambda e: e.tag == qn("w:tbl"), "表格"),
+                               (lambda e: e.getprevious(), lambda e: bool(e.xpath(".//w:drawing|.//w:pict")), "图片")):
+        el, skipped = step(p._p), 0
+        while el is not None and _blank(el):
+            el, skipped = step(el), skipped + 1
+        if skipped and el is not None and wanted(el):
+            err("CAPTION_DETACHED", f"{label}: 图表标题和它的{name}之间隔着 {skipped} 个空段落，分页时会被拆开。")
+            return
+
+
+HEADING_STYLE_NUMBER = {
+    "h1": re.compile(r"^[一二三四五六七八九十百零〇]+、"),
+    "h2": re.compile(r"^[（(][一二三四五六七八九十百零〇]+[）)]"),
+    "h3": re.compile(r"^\d+[.．](?!\d)"),
+}
+
+
+def heading_levels_check(headings, err):
+    """One numbering style used at two heading levels: the level of some of them was set wrong
+    (one “二、” is h1 and another is h2).  A document that simply numbers differently is left alone."""
+    style_of = lambda text: next((r for r, rx in HEADING_STYLE_NUMBER.items() if rx.match(text)), None)
+    home = {style_of(t) for _, role, t in headings if style_of(t) == role}
+    for label, role, text in headings:
+        style = style_of(text)
+        if style and style != role and style in home:
+            err("HEADING_LEVEL", f"{label}: 标题“{text[:20]}”按编号是{ {'h1': '一级', 'h2': '二级', 'h3': '三级'}[style] }标题"
+                                 f"（用同样编号的其他标题是 {style}），这里却设成了 {role}。")
+
+
 def role_check(p, role, label, visible, err):
     """Catch a paragraph whose role (from mapping.json or content.json) does not fit its content:
     the formatting would then be "correct" for the wrong role and pass unnoticed."""
@@ -489,7 +526,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
                 ("even", sec.even_page_header),
             ]:
                 allp.extend((f"header{si}/{variant}/p{pi}", p) for pi, p in enumerate(h.paragraphs))
-    checked = 0
+    checked, headings = 0, []
     for label, p in allp:
         if has_cover and label.startswith("p") and int(label[1:]) < count:
             continue
@@ -522,13 +559,18 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             rule = deepcopy(rule)
             rule["pPr"]["jc"]["val"] = "right" if label.endswith("/p1") else "left"
         paragraph_check(p, role, label, rule, err, warn)
-        run_check(p, role, label, expected[role], err)
+        run_check(p, role, label, expected[role], err, warn)
         line_check(p, label, err)
         role_check(p, role, label, visible, err)
+        if role == "caption" and label.startswith("p"):
+            caption_check(p, label, err)
+        if role in HEADING_STYLE_NUMBER and label.startswith("p"):
+            headings.append((label, role, visible.strip()))
         if p._p.xpath(".//wp:inline") and role != "figure":
             maxh = max((int(x.get("cy", "0")) for x in p._p.xpath(".//wp:extent")), default=0)
             if maxh > 254000 and paragraph_properties(p, "spacing").get("lineRule") == "exact":
                 err("OBJECT_HEIGHT", "大图片不能放在固定20磅的普通段落里。")
+    heading_levels_check(headings, err)
     with ZipFile(path) as z:
         for name in z.namelist():
             if name.startswith("word/fonts/"):

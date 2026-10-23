@@ -106,7 +106,7 @@ class RenderAudit(unittest.TestCase):
 
     def test_page_with_only_a_page_number_is_blank(self):
         doc = self.docx(patch={"footer_page_numbers": True})
-        result = audit(doc, self.pdf([self.cover(), self.body() + [("text", 295, 830, "1")], [("text", 295, 830, "2")]]))
+        result = audit(doc, self.pdf([self.cover(), self.body() + [("text", 295, 805, "1")], [("text", 295, 805, "2")]]))
         self.assertIn("BLANK_PAGE", self.codes(result))
 
     def test_unexpected_header_on_b(self):
@@ -118,18 +118,25 @@ class RenderAudit(unittest.TestCase):
         self.assertIn("HEADER_MISSING", self.codes(result))
 
     def test_cover_must_not_show_footer(self):
-        result = audit(self.docx(), self.pdf([self.cover() + [("text", 295, 830, "1")], self.body()]))
+        result = audit(self.docx(), self.pdf([self.cover() + [("text", 295, 805, "1")], self.body()]))
         self.assertIn("COVER_FOOTER_VISIBLE", self.codes(result))
 
     def test_requested_page_numbers_must_render(self):
         doc = self.docx(patch={"footer_page_numbers": True})
         result = audit(doc, self.pdf([self.cover(), self.body()]))
         self.assertIn("PAGE_NUMBER_MISSING", self.codes(result))
-        result = audit(doc, self.pdf([self.cover(), self.body() + [("text", 295, 830, "1")]]))
+        result = audit(doc, self.pdf([self.cover(), self.body() + [("text", 295, 805, "1")]]))
         self.assertTrue(result["passed"], result["errors"])
 
+    def test_page_number_at_the_paper_edge_is_refused(self):
+        doc = self.docx(patch={"footer_page_numbers": True})
+        result = audit(doc, self.pdf([self.cover(), self.body() + [("text", 295, 838, "1")]]))
+        hit = [e for e in result["errors"] if e["code"] == "TEXT_AT_PAPER_EDGE"]
+        self.assertEqual((hit[0]["page"], hit[0]["where"]), (2, "1"), result["errors"])
+        self.assertIn("footer", F.HINTS["TEXT_AT_PAPER_EDGE"][1])
+
     def test_footer_text_when_page_numbers_are_off(self):
-        result = audit(self.docx(), self.pdf([self.cover(), self.body() + [("text", 295, 830, "1")]]))
+        result = audit(self.docx(), self.pdf([self.cover(), self.body() + [("text", 295, 805, "1")]]))
         self.assertIn("FOOTER_UNEXPECTED", self.codes(result))
 
     def test_image_and_table_rules_beyond_the_column(self):
@@ -233,6 +240,20 @@ class RenderAudit(unittest.TestCase):
         hit = [e for e in result["errors"] if e["code"] == "CAPTION_SEPARATED"]
         self.assertTrue(hit and "表题" in hit[0]["message"], result["errors"])
 
+    def test_table_caption_behind_an_empty_paragraph_is_still_paired(self):
+        from docx import Document
+
+        doc = self.docx(blocks=[{"type": "heading", "level": 1, "text": "一、合成"},
+                                {"type": "table", "caption": "表1 合成数据表", "header": ["甲", "乙"], "rows": [["1", "2"]]}])
+        d = Document(doc)
+        caption = next(p for p in d.paragraphs if p.text == "表1 合成数据表")
+        from docx.oxml import OxmlElement
+
+        caption._p.addnext(OxmlElement("w:p"))  # an empty paragraph between the caption and its table
+        d.save(doc)
+        result = audit(doc, self.pdf([self.cover(), self.body() + [("text", 90, 760, "表1 合成数据表")], self.body()]))
+        self.assertIn("CAPTION_SEPARATED", self.codes(result))
+
     def test_wrapped_cover_title_must_line_up(self):
         doc = self.docx("A")
         first = ("text", 125, 340, "论文题目：基于某某数据的")
@@ -314,7 +335,7 @@ class RenderAudit(unittest.TestCase):
 
     def numbered(self, *labels):
         doc = self.docx(patch={"footer_page_numbers": True})
-        return audit(doc, self.pdf([self.cover()] + [self.body() + [("text", 295, 830, n)] for n in labels]))
+        return audit(doc, self.pdf([self.cover()] + [self.body() + [("text", 295, 805, n)] for n in labels]))
 
     def test_page_numbers_roman_front_then_arabic_from_one(self):
         result = self.numbered("I", "II", "1", "2", "3")
@@ -376,6 +397,47 @@ class RenderAuditRealOffice(unittest.TestCase):
             result = audit(out, pdf)
             self.assertIn("BLANK_PAGE", [e["code"] for e in result["errors"]])
 
+
+    def test_page_numbers_on_b_stay_clear_of_the_paper_edge(self):
+        from office_backend import export_pdf
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            case = RenderAudit("test_clean_pages_pass")
+            case.folder = folder
+            for patch, expect in (({"footer_page_numbers": True}, False),
+                                  ({"footer_page_numbers": True, "page_twips": {"footer": 0}}, True)):
+                out = case.docx(patch=patch)
+                pdf = folder / "real.pdf"
+                export_pdf(out, pdf)
+                codes = [e["code"] for e in audit(out, pdf)["errors"]]
+                self.assertEqual("TEXT_AT_PAPER_EDGE" in codes, expect, (patch, codes))
+
+    def test_caption_split_from_its_table_by_a_page_break(self):
+        """A stray page break between a caption and its table: caught in the Word file and in the PDF."""
+        from office_backend import export_pdf
+        from docx import Document
+        from docx.enum.text import WD_BREAK
+        import check_format as C
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            case = RenderAudit("test_clean_pages_pass")
+            case.folder = folder
+            out = case.docx(cover=False, blocks=[
+                {"type": "heading", "level": 1, "text": "一、合成"},
+                {"type": "table", "caption": "表1 站点统计", "header": ["甲", "乙"], "rows": [["1", "2"]]}])
+            doc = Document(out)
+            caption = next(p for p in doc.paragraphs if p.text == "表1 站点统计")
+            blank = doc.add_paragraph("", style=E.ROLES["body"])
+            blank.add_run().add_break(WD_BREAK.PAGE)
+            caption._p.addnext(blank._p)
+            doc.save(out)
+            self.assertIn("CAPTION_DETACHED", [e["code"] for e in C.check(out)["errors"]])
+            pdf = folder / "real.pdf"
+            export_pdf(out, pdf)
+            result = audit(out, pdf)
+            self.assertIn("CAPTION_SEPARATED", [e["code"] for e in result["errors"]], result["errors"])
 
     def test_lowered_text_overlaps_although_the_static_rules_pass(self):
         """A run moved down by w:position keeps every style rule but prints into the next line."""
@@ -454,6 +516,34 @@ class RenderAuditRealOffice(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertIn("正文按用户要求改成蓝色", out)
             self.assertIn("和模板默认格式不同", out)
+
+    def test_named_renderer_that_cannot_run_is_reported(self):
+        import contextlib, io
+        import xaufe as X
+        from office_discovery import discover
+
+        if any(c["engine"] == "word" and c["found"] and c["automation"] for c in discover()["candidates"]):
+            self.skipTest("Word can be driven here")
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            source = folder / "原稿.txt"
+            source.write_text("这是合成正文。", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                X.main(["new", "--out", str(folder / "成品.docx"), "--source", str(source)])
+            work = Path(out.getvalue().split("WORK = ")[1].splitlines()[0].strip())
+            (work / "job.json").write_text(json.dumps({"task": "format", "template": "B", "cover": False}), encoding="utf-8")
+            (work / "content.json").write_text(json.dumps({"mode": "document", "metadata": {}, "blocks": [
+                {"type": "paragraph", "text": "这是合成正文。"}]}, ensure_ascii=False), encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(X.main(["run", "--work", str(work), "--office", "word"]), 0, out.getvalue())
+            self.assertIn("RENDERER_FALLBACK", out.getvalue())
+            self.assertIn("指定用 Word 渲染", out.getvalue())
+            review = json.loads((work / "review.json").read_text(encoding="utf-8"))
+            self.assertIn("RENDERER_FALLBACK", review["warnings"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                X.main(["cancel", "--work", str(work)])
 
     def test_adopt_refuses_a_hand_edit_that_breaks_the_layout(self):
         import contextlib, io

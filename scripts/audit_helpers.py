@@ -193,8 +193,16 @@ def paragraph_check(p, role, label, want, err, warn):
             )
 
 
-def run_check(p, role, label, want, err):
+# Roles whose weight the template fixes: a bold run here is a format error, not emphasis.
+FIXED_WEIGHT = {"h1", "h2", "h3", "h4", "preface", "reference_title", "caption", "title_zh", "title_en",
+                "abstract_label_zh", "abstract_label_en", "toc_title", "toc1", "toc2", "toc3", "toc4", "header"}
+# Running text may bold a few words, but a wholly bold paragraph is almost always a stray format.
+RUNNING_TEXT = {"body", "reference", "abstract_zh", "abstract_en", "code"}
+
+
+def run_check(p, role, label, want, err, warn=None):
     offset = 0
+    bold_runs = plain_runs = 0
     match = LABEL.match(visible(p)) if role.startswith("keywords_") else None
     for ri, r in enumerate(p._p.xpath(".//w:r")):
         text = "".join(r.xpath("./w:t/text()"))
@@ -226,6 +234,10 @@ def run_check(p, role, label, want, err):
             err("FONT_BOLD", f"{label}/r{ri}: 加粗=否，应为是（要求加粗）。")
         if ft.get("bold_exact") and props.get("b", False) != ft["bold_required"]:
             err("FONT_BOLD", f"{label}/r{ri}: 加粗={'是' if props.get('b', False) else '否'}，应为{'是' if ft['bold_required'] else '否'}（用户明确的加粗开关）。")
+        elif role in FIXED_WEIGHT and not ft["bold_required"] and props.get("b", False):
+            err("FONT_BOLD", f"{label}/r{ri}: 加粗=是，应为否（模板这一级不加粗）。")
+        if text.strip():
+            bold_runs, plain_runs = bold_runs + bool(props.get("b", False)), plain_runs + (not props.get("b", False))
         if props.get("vanish") or props.get("webHidden") or props.get("specVanish"):
             err("HIDDEN_TEXT", f"{label}/r{ri}: 存在隐藏正文。")
         for attr, default in [("w", "100"), ("spacing", "0"), ("position", "0")]:
@@ -246,6 +258,9 @@ def run_check(p, role, label, want, err):
             k.split("}")[-1] in ("themeColor", "themeTint", "themeShade") for k in color.attrib
         ):
             err("FONT_COLOR", f"{label}/r{ri}: 主题色仍可能覆盖黑色。")
+    if (warn and role in RUNNING_TEXT and bold_runs and not plain_runs and not want["font"].get("bold_exact")
+            and len(visible(p).strip()) > 20):
+        warn("FONT_BOLD_PARAGRAPH", f"{label}: 整段都是加粗，模板正文不加粗（只强调个别词可以）。")
 
 
 def tables_check(doc, width, err):

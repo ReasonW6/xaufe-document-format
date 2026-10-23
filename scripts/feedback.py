@@ -134,6 +134,10 @@ HINTS = {
     "HEADING_AT_PAGE_BOTTOM": ("标题和它后面的正文被分页拆开了。模板给标题设了“与下段同页”，通常是标题前后有手动加的空行或分页符，或原稿的段落设置盖过了模板。", "去掉这个标题前后多余的空行或分页符（content.json 里的 page_break 块，或 mapping.json 里设成 delete 的空段）后重新 run；仍然这样就告诉用户这一页的情况。"),
     "CAPTION_SEPARATED": ("图题或表题和它的图、表被分页拆开了。通常是图表太大放不进剩下的空间，或题注前后有手动空行。", "去掉题注前后的空行；表格很长时可以拆成两张表（续表），图片太高就请用户同意缩小（content.json 里 image 块的 width）；改完重新 run。"),
     "COVER_TITLE_MISALIGNED": ("封面题目折成几行后对不齐：通常是渲染时没有模板字体（宋体/黑体），替代字体的字宽不同，或题目里有不能断开的长英文。", "先看有没有 FONT_SUBSTITUTED 提示：有就按缺字体处理（换装有字体的 Word/WPS 渲染，或问用户）；题目里有长英文串就请用户同意在合适的位置断开或缩短。"),
+    "TEXT_AT_PAPER_EDGE": ("页眉或页脚距离（page_twips.header / footer）几乎是 0，文字贴着纸边。B 版模板本来没有页眉页脚，加页码或页眉后最容易这样。", "在 job.json 的 format 里设 \"page_twips\": {\"footer\": 992}（页眉太靠上就设 header，单位 twip，992 约 1.75 厘米），然后重新 run。"),
+    "CAPTION_DETACHED": ("表题（在表格上方）或图题（在图片下方）和它的表格/图片之间夹着空段落，常见于原稿里多敲的回车或分页符。", "把夹在中间的空段落删掉：mapping.json 里把它的 role 设为 \"delete\"（content.json 里就删掉那个空块），然后重新 run。"),
+    "FONT_BOLD_PARAGRAPH": ("整段正文、摘要或参考文献都是加粗：通常是原稿整段手动加粗，或 content.json 给整段写了 bold。", "只排版：问用户这段加粗是不是有意的，不是就在 review.json 说明并请用户确认；写作：去掉整段的 bold，只给需要强调的几个词加粗。"),
+    "HEADING_LEVEL": ("同一种编号（如“二、”）的标题被设成了不同级别，通常是 mapping.json 或 content.json 里这一段的级别填错了。", "把这段的 role 改成和同样编号的其他标题一致（mapping.json 的 role / content.json 的 level），然后重新 run；不要改标题文字。"),
     "HEADER_WRAPPED": ("页眉文字太长，一行放不下折成了两行。A 版页眉右侧默认放论文题目，长题目最容易这样。", "在 job.json 的 format 里给页眉写一个短的题目：\"header\": {\"right\": \"简短题目\"}（先问用户用哪个简称；左侧太长就改 left）；或经用户同意缩小页眉字号（styles.header.size）。"),
     "HEADER_OVERFLOW": ("页眉文字太长，折成多行后伸出了上边距，把正文往下挤。A 版页眉右侧默认放论文题目，长题目最容易这样。", "在 job.json 的 format 里给页眉写一个短的题目：\"header\": {\"right\": \"简短题目\"}（先问用户用哪个简称；左侧太长就改 left）；或经用户同意缩小页眉字号（styles.header.size）。"),
     "TABLE_OUTSIDE_MARGINS": ("表格或图形伸出了版心。", "已有 Word 时确认 format_tables 是 true；列太多就请用户拆表；浮动图形请用户改成嵌入式。"),
@@ -146,6 +150,7 @@ HINTS = {
     "FOOTER_UNEXPECTED": ("页脚应该空白，渲染结果里有文字。", "用户没要页码时删掉 footer_page_numbers；原稿自带页脚文字时请用户删掉。"),
     "TEXT_OVERLAP": ("两行文字在页面上叠在一起（上下两行的基线距离不到字号的 0.9 倍）：常见于过小的固定行距、文字位置被提升或降低、负的段前段后，或浮动对象。", "打开这一页的页图看是哪两行；检查 job.json 里这类段落的 line/line_rule（固定行距磅数×20 不能小于字号×20）和 size；原稿里文字设了“位置提升/降低”或有浮动对象，就把那一段 role 重新标对后再 run，仍重叠请用户在 Word 里取消这些设置。"),
     "PAGE_NUMBER_SEQUENCE": ("页码跳号、重复，或在不该重新开始的地方重新从 1 开始。脚本会把各节页码设成连续的，所以多半是页脚里另有手写的页码文字，或某一节的页脚不是页码域。", "看这一页的页图和 Word 页脚：原稿页脚里有手打的数字就请用户删掉（只排版时先问）；再重新 run。仍不对就把页码问题和页图如实告诉用户。"),
+    "RENDERER_FALLBACK": ("run --office 指定的软件没装、不能自动调用或导出失败，脚本换了另一个能用的软件。", "在 review.json 的 warnings 里写明实际用的是哪个软件，交付时告诉用户；用户坚持要那个软件，就先让它能用再重新 run。"),
     "FONT_SUBSTITUTED": ("渲染机器上没有文档要求的字体。", "不用改文档。在 review.json 的 warnings 里写明页图是用替代字体看的，交付时告诉用户分页以装有这些字体的 Word 为准。"),
 }
 
@@ -332,6 +337,9 @@ def from_render(audit, root=None, docx=None):
 
 # Input errors raised while laying out (ValueError text) -> cause and fix.
 _MESSAGE_HINTS = (
+    (r"模板这一级不加粗", "标题、图表标题、目录或页眉被加粗了：原稿里手动加粗，或 content.json 的 runs 里写了 bold。",
+     "已有 Word：这是格式问题，脚本按模板统一后会去掉，若仍出现说明是手工处理的副本，在 Word 里取消加粗后 adopt；"
+     "content.json：去掉这段 runs 里的 bold。用户明确要加粗就在 job.json 的 format.styles 里写 bold: true。"),
     (r"的题目“.*”和 job\.json 的 info\.title", "原稿里的题目和 job.json 封面信息里的题目不是同一个。",
      "问用户哪个对：job.json 写错了就改 info.title_zh / title_en；原稿要改就请用户确认后改原稿。不要自己挑一个。"),
     (r"放不下一个五号汉字|列太多|太窄", "表格列太多或某几列太窄，按版心缩放后一列连一个汉字都放不下。",
@@ -462,6 +470,28 @@ def _fingerprint(item):
     return "|".join(str(x) for x in (item["code"], where.get("page"), where.get("location"), where.get("text")))
 
 
+def stopped(root):
+    """Why automatic retries must stop now (None while they may go on)."""
+    try:
+        data = json.loads((Path(root) / "attempts.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if int(data.get("stalled", 0)) >= MAX_STALLED:
+        return f"连续 {data['stalled']} 次修改都没有解决任何一个问题"
+    if int(data.get("failed_rounds", 0)) >= MAX_ROUNDS:
+        return f"已经连续 {data['failed_rounds']} 次没通过"
+    return None
+
+
+def reset_rounds(root, user_said):
+    """The user asked for another try: count from zero, keep their words with the attempts."""
+    path = Path(root) / "attempts.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.setdefault("user_retries", []).append(str(user_said).strip())
+    data.update(failed_rounds=0, stalled=0)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
 def record_round(root, issues):
     """Count failed runs in a row and how many of them fixed nothing.
 
@@ -480,6 +510,6 @@ def record_round(root, issues):
     progress = before is None or bool(set(before) - set(now))
     stalled = 0 if not issues or progress else int(data.get("stalled", 0)) + 1
     repeated = bool(issues) and now == before
-    path.write_text(json.dumps({"failed_rounds": rounds, "stalled": stalled, "last_issues": now}, ensure_ascii=False),
-                    encoding="utf-8")
+    path.write_text(json.dumps({"failed_rounds": rounds, "stalled": stalled, "last_issues": now,
+                                "user_retries": data.get("user_retries", [])}, ensure_ascii=False), encoding="utf-8")
     return rounds, stalled, repeated

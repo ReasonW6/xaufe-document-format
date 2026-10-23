@@ -136,7 +136,7 @@ def compare_originals(root, state, result):
                 "用户是在对话里直接贴的文字，就先把原文原样存成 .txt 再用 --source 登记。",
             }])
         return
-    from source_compare import compare, dropped_margins
+    from source_compare import compare, dropped_margins, dropped_page_numbers
 
     dropped = dropped_margins(originals, root / "final.docx")
     if dropped:
@@ -144,6 +144,12 @@ def compare_originals(root, state, result):
             "code": "ORIGINAL_HEADER_FOOTER_REPLACED",
             "message": "原稿页眉/页脚里的“" + "”“".join(t[:20] for t in dropped[:3]) + "”没有保留：成品的页眉页脚按模板重新生成了。"
                        "要在回复里告诉用户；用户想保留原来的页眉文字，就写进 job.json 的 format.header（left / right）后重新 run。",
+        })
+    if dropped_page_numbers(originals, root / "final.docx"):
+        result["warnings"].append({
+            "code": "ORIGINAL_PAGE_NUMBERS_DROPPED",
+            "message": "原稿页脚有页码，成品按模板默认不显示页码。要在回复里告诉用户；用户想要页码，就在 job.json 的 format 里写 "
+                       "\"footer_page_numbers\": true 后重新 run。",
         })
     mapping = read_json(root / "mapping.json") if (root / "mapping.json").is_file() else {}
     toc_line = re.compile(r"^\s*目\s*录\s*$|\d+\s*$")
@@ -317,6 +323,12 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
         raise ValueError("预览时成品发生变化，请重新运行 run。")
     compare_originals(root, s, result)
     result["warnings"].extend(rendered["warnings"])
+    wanted, used = s.get("office_engine", "auto"), _renderer_name(root)
+    if wanted != "auto" and used and wanted != used.lower():
+        names = dict(RENDERER_NAMES, word="Word")
+        result["warnings"].append({"code": "RENDERER_FALLBACK", "message":
+            f"指定用 {names.get(wanted, wanted)} 渲染，但它这次用不了，实际是用 {names.get(used.lower(), used)} 分页和检查的。"
+            "用户点名要某个软件时要告诉用户；能修好那个软件就修好后重新 run。"})
     write_json(root / "final-check.json", result)
     warnings = [w for w in result["warnings"] if w["code"] != "VISUAL_REQUIRED"]
     s.update(

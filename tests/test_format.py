@@ -132,6 +132,52 @@ class FormatTests(unittest.TestCase):
         self.assertCode(r, "FOOTER")
         self.assertCode(r, "FOOTER_FIELD")
 
+    def test_bold_heading_rejected(self):
+        def heading(d):
+            next(p for p in d.paragraphs if p.style.name == "Heading 1").runs[0].bold = True
+
+        self.assertCode(self.changed(heading), "FONT_BOLD")
+
+    def test_bold_words_in_body_allowed(self):
+        def word(d):
+            body = next(p for p in d.paragraphs if p.style.name == "XAUFE Body")
+            body.add_run("强调").bold = True
+
+        self.assertTrue(self.changed(word)["passed"])
+
+    def test_wholly_bold_body_paragraph_flagged(self):
+        def whole(d):
+            body = next(p for p in d.paragraphs if p.style.name == "XAUFE Body")
+            body.add_run("这是一整段都加粗的合成正文，用来检查整段加粗的提示。")
+            for r in body.runs:
+                r.bold = True
+
+        r = self.changed(whole)
+        self.assertIn("FONT_BOLD_PARAGRAPH", {w["code"] for w in r["warnings"]})
+
+    def test_caption_cut_off_from_its_table_by_a_blank_rejected(self):
+        data = deepcopy(self.data)
+        data["blocks"].append({"type": "table", "caption": "表1 测试表", "header": ["甲", "乙"], "rows": [["1", "2"]]})
+
+        def mutate(d):
+            caption = next(p for p in d.paragraphs if p.text == "表1 测试表")
+            caption._p.addnext(OxmlElement("w:p"))
+
+        p = self.make(data)
+        self.assertTrue(check(p)["passed"])
+        d = Document(p)
+        mutate(d)
+        d.save(p)
+        r = check(p)
+        self.assertCode(r, "CAPTION_DETACHED")
+
+    def test_same_numbering_at_two_heading_levels_rejected(self):
+        data = deepcopy(self.data)
+        data["blocks"].append({"type": "heading", "level": 2, "text": "二、错设成二级的标题"})
+        r = check(self.make(data))
+        self.assertCode(r, "HEADING_LEVEL")
+        self.assertIn("二、错设成二级的标题", " ".join(e["message"] for e in r["errors"]))
+
     def test_wrong_body_size_rejected(self):
         def mutate(d):
             next(p for p in d.paragraphs if p.style.name == "XAUFE Body").runs[0].font.size = Pt(12)

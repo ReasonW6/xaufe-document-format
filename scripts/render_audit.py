@@ -24,6 +24,7 @@ PT = 20  # twips per point
 EDGE_TOLERANCE = 2.0  # pt; drawing and image edges are exact
 TEXT_TOLERANCE = 6.0  # pt; about half a 五号 glyph, absorbs justification and font metrics
 COVER_SAFE = 28.0  # pt (~1 cm); the school cover centres 36 pt titles on its own measure
+EDGE_SAFE = 14.0  # pt (~0.5 cm); most printers cannot print closer to the paper edge
 HANGING = set("，。、；：！？）》」』”’,.;:!?)")
 
 # PDF font names that count as the requested family.
@@ -261,6 +262,13 @@ def _keep_together(doc):
             headings.append(text)
         elif p.style.name == "XAUFE Caption":
             nxt, prev = p._p.getnext(), p._p.getprevious()
+            # Look past empty paragraphs: a stray blank between them must not hide the pairing.
+            while nxt is not None and nxt.tag == qn("w:p") and not _flat("".join(nxt.xpath(".//w:t/text()"))) \
+                    and not nxt.xpath(".//w:drawing|.//w:pict"):
+                nxt = nxt.getnext()
+            while prev is not None and prev.tag == qn("w:p") and not _flat("".join(prev.xpath(".//w:t/text()"))) \
+                    and not prev.xpath(".//w:drawing|.//w:pict"):
+                prev = prev.getprevious()
             if nxt is not None and nxt.tag == qn("w:tbl"):
                 above.append(text)
             elif prev is not None and prev.xpath(".//w:drawing|.//w:pict"):
@@ -396,6 +404,10 @@ def audit(docx, pdf):
                     errors.append(_issue("error", "TEXT_OUTSIDE_MARGINS", index, "封面文字太靠近纸张边缘（不到 1 厘米）。",
                                          where=text[:30], expected=f"{COVER_SAFE:.0f}–{w - COVER_SAFE:.0f}pt",
                                          actual=f"{x0:.1f}–{x1:.1f}pt", bbox=line["bbox"]))
+                elif not cover and (y0 < EDGE_SAFE or y1 > h - EDGE_SAFE):
+                    errors.append(_issue("error", "TEXT_AT_PAPER_EDGE", index, "页眉、页脚或页码离纸张上下边缘太近，打印时可能被裁掉。",
+                                         where=text[:30], expected=f"文字在 {EDGE_SAFE:.0f}–{h - EDGE_SAFE:.0f}pt 之间",
+                                         actual=f"{y0:.1f}–{y1:.1f}pt", bbox=line["bbox"]))
                 elif not cover and (x0 < left - TEXT_TOLERANCE or ink > right + TEXT_TOLERANCE):
                     errors.append(_issue("error", "TEXT_OUTSIDE_MARGINS", index, "文字伸出了左右页边距。",
                                          where=text[:30], expected=f"{left:.1f}–{right:.1f}pt",

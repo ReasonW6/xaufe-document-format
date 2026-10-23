@@ -230,7 +230,8 @@ def _writing_problems(root, content):
         results = {_ref_key(r["text"]): r for r in saved.get("results", [])}
         accepted = _read(root / "job.json", "job.json").get("accept_unverified_refs") is True
         for index, text in enumerate(references, 1):
-            edit = f"content.json 的 references[{index - 1}]"
+            edit = (f"mapping.json 里 id 为 {content['_ref_ids'][index - 1]} 的段落" if "_ref_ids" in content
+                    else f"content.json 的 references[{index - 1}]")
             r = results.get(_ref_key(text))
             if r is None or r["status"] not in (R.PASS, R.PENDING, R.USER):
                 problems.append(_problem(f"参考文献第 {index} 条不在 refs 核对可用的条目里（要用 refs.json 里的 text 原样写）：{str(text)[:40]}", edit))
@@ -252,7 +253,7 @@ def _writing_problems(root, content):
                     "找不到能支撑的原句就换文献或删掉那句话：" + str(text)[:30], "refs.json"))
     material = _material_text(root)
     for i, block in enumerate(content.get("blocks", [])):
-        edit = f"content.json 的 blocks[{i}]"
+        edit = f"mapping.json 里 id 为 {block['_id']} 的段落" if "_id" in block else f"content.json 的 blocks[{i}]"
         if block.get("type") == "paragraph":
             runs = block.get("runs") or []
             # Each sentence with a figure needs its own citation; one [n] elsewhere in the paragraph is not enough.
@@ -295,6 +296,42 @@ def _citing_sentences(content):
     return found
 
 
+COMMON = set("研究 本文 分析 方法 系统 我们 进行 通过 基于 问题 可以 以及 发展 影响 提出 结果 表明 认为 使用 应用 方面 主要 相关 "
+             "the and for with that this from are was were study paper using based".split())
+
+
+def _terms(text):
+    """Content words of a text: CJK character pairs and Latin words, minus the commonest ones."""
+    text = str(text).lower()
+    pairs = {a + b for chunk in re.findall(r"[\u4e00-\u9fff]+", text) for a, b in zip(chunk, chunk[1:])}
+    return (pairs | set(re.findall(r"[a-z][a-z0-9-]{2,}", text))) - COMMON
+
+
+def _off_topic(root, content):
+    """[n] placed on sentences that share no content word with reference n's claim, excerpt or entry:
+    the number most likely points at the wrong reference."""
+    if not (root / "refs-result.json").is_file():
+        return None
+    results = {_ref_key(r["text"]): r for r in _read(root / "refs-result.json", "refs-result.json").get("results", [])}
+    citing = {}
+    for block in content.get("blocks", []):
+        runs = block.get("runs") or []
+        for sentence in _sentences(block.get("text") or "".join(r.get("text", "") for r in runs)):
+            for n in _cited_numbers(sentence):
+                citing.setdefault(n, []).append(CITE.sub("", sentence).strip())
+    lines = []
+    for index, text in enumerate(content.get("references") or [], 1):
+        r = results.get(_ref_key(text), {})
+        about = _terms(" ".join([str(text), str(r.get("supports") or ""), str(r.get("quote") or "")]))
+        if citing.get(index) and not any(_terms(s) & about for s in citing[index]):
+            lines.append(f"[{index}] 引用句“{citing[index][0][:30]}”和这条文献的题目、supports、quote 没有一个共同的词")
+    if not lines:
+        return None
+    return {"code": "REF_CITATION_MISMATCH",
+            "message": "这些引用号标的句子和对应文献看起来说的不是一回事，可能标错了序号：" + "；".join(lines)
+                       + "。逐条核对：序号标错就改正文里的 [n]；确实是这篇文献支撑的，在 review.json 里说明它支撑了哪一点。"}
+
+
 def _weak_support(root, content):
     """References whose quoted excerpt was not found in what could be read: the claim rests on the agent's word."""
     import refcheck as R
@@ -317,6 +354,27 @@ def _weak_support(root, content):
 
 def _readable(text):
     return re.sub(r"^\s*[\[［]\d+[\]］]\s*", "", str(text)).strip()
+
+
+def _written(root):
+    """The written text in content.json shape, also when it comes from a Word draft (mapping.json):
+    the writing checks then apply the same way, and each block remembers its mapping id."""
+    if (root / "content.json").is_file():
+        return _read(root / "content.json", "content.json")
+    if not (root / "mapping.json").is_file():
+        return None
+    rows = _read(root / "mapping.json", "mapping.json").get("paragraphs", [])
+    blocks, references, ref_ids = [], [], []
+    for r in rows:
+        role, text = r.get("role"), r.get("text", "")
+        if role == "reference" and text.strip():
+            references.append(text)
+            ref_ids.append(r.get("id"))
+        elif role in ("h1", "h2", "h3"):
+            blocks.append({"type": "heading", "level": int(role[1]), "text": text, "_id": r.get("id")})
+        elif role == "body":
+            blocks.append({"type": "paragraph", "text": text, "_id": r.get("id")})
+    return {"blocks": blocks, "references": references, "_ref_ids": ref_ids}
 
 
 def _document_references(root):
@@ -370,16 +428,16 @@ def _reference_checklist(root):
     """Ready-made table for the reply to the user (task = write)."""
     import refcheck as R
 
-    content_path = root / "content.json"
-    if not content_path.is_file():
+    written = _written(root)
+    if written is None:
         return None
-    references = _read(content_path, "content.json").get("references") or []
+    references = written.get("references") or []
     saved = _read(root / "refs-result.json", "refs-result.json") if (root / "refs-result.json").is_file() else {}
     minimum = saved.get("min", R.DEFAULT_MIN)
     by_key = {_ref_key(r["text"]): r for r in saved.get("results", [])}
     lines = []
     if references:
-        citing = _citing_sentences(_read(content_path, "content.json"))
+        citing = _citing_sentences(written)
         lines += ["| 序号 | 文献 | 真实性 | 支撑的论点 | 正文引用句 | 观点支撑 |", "|---|---|---|---|---|---|"]
         for index, text in enumerate(references, 1):
             r = by_key.get(_ref_key(text), {})
@@ -398,6 +456,9 @@ def _reference_checklist(root):
         lines.append("这次没有找到能核实的参考文献，请提供你读过的文献。")
     if 0 < len(references) < minimum:
         lines.append(f"参考文献现在 {len(references)} 篇，比要求的 {minimum} 篇少 {minimum - len(references)} 篇，请补充你读过的文献。")
+    stats = _body_length(root)
+    if stats and stats[0] < 5000:
+        lines.append(f"正文现在约 {stats[0]} 字，少于默认的 5000 字：用户另说过字数就以用户的为准，没说过就如实告诉用户。")
     lines.append("请在提交前再核对一遍全部参考文献。")
     return "\n".join(lines)
 
@@ -691,18 +752,28 @@ def cmd_run(args):
     from cover_fit import MAX_LEVEL
 
     root, _ = _work(args.work)
+    stopped = F.stopped(root)
+    if stopped and not str(getattr(args, "user_says_retry", None) or "").strip():
+        print(f"{stopped}，自动重试已经停下。先把还没解决的问题（{root / 'issues.json'}）如实告诉用户、问用户怎么处理；"
+              "用户要求再试时，用 run --user-says-retry \"用户原话\" 重新开始计数。")
+        return EXIT_ASK_USER
+    if stopped:
+        F.reset_rounds(root, args.user_says_retry)
     state = _intake(root)
     if state["stage"] != "ready":
         print(I.summary(state))
         print("\n→ 封面信息还不全。先问用户（可选“留空自己填”），写进 job.json 后重新运行 run。")
         return EXIT_ASK_USER
-    if _task(root) == "write" and (root / "content.json").is_file():
-        problems = _writing_problems(root, _read(root / "content.json", "content.json"))
+    if _task(root) == "write" and _written(root) is not None:
+        problems = _writing_problems(root, _written(root))
         if problems:
-            fix = "改 content.json / refs.json 后重新 run；不要为了通过检查编造数字或出处。"
+            def fix(text):
+                where = (getattr(text, "edit", None) or "content.json / refs.json").split(" ")[0]
+                return f"按上面的说明改 {where} 后重新 run；不要为了通过检查编造数字或出处。"
+
             issues = [
                 dict({"code": "WRITING_CHECK", "stage": "写作检查", "message": str(text),
-                      "cause": "写作模式（task 为 write）的硬性要求没满足。", "fix": fix},
+                      "cause": "写作模式（task 为 write）的硬性要求没满足。", "fix": fix(text)},
                      **({"where": {"edit": text.edit}} if getattr(text, "edit", None) else {}))
                 for text in problems
             ]
@@ -760,11 +831,12 @@ def cmd_run(args):
             level = used + 1
             print(f"封面太长，日期被挤出第一页；自动收紧封面空白（第 {level} 级）后重试……")
     F.record_round(root, [])
-    if _task(root) == "write" and (root / "content.json").is_file():
-        weak = _weak_support(root, _read(root / "content.json", "content.json"))
-        if weak:
-            result["warnings"].append(weak)
-            D.add_review_warnings(root, [weak])
+    if _task(root) == "write" and _written(root) is not None:
+        content = _written(root)
+        notes = [n for n in (_weak_support(root, content), _off_topic(root, content)) if n]
+        if notes:
+            result["warnings"].extend(notes)
+            D.add_review_warnings(root, notes)
     _write(root / "review.json", _review_template(result))
     print(I.summary(state).splitlines()[0])
     stats = _body_length(root)
@@ -797,7 +869,9 @@ def _not_accepted(root, exc):
     """Print located, actionable issues; count rounds so the agent knows when to stop."""
     _write(root / "issues.json", {"stage": exc.stage, "issues": exc.issues})
     rounds, stalled, repeated = F.record_round(root, exc.issues)
-    print(f"{exc.stage}没通过，共 {len(exc.issues)} 个问题（完整列表：{root / 'issues.json'}）：\n")
+    kinds = len(F.group(exc.issues))
+    count = f"{len(exc.issues)} 处，归成 {kinds} 类" if kinds != len(exc.issues) else f"{kinds} 个问题"
+    print(f"{exc.stage}没通过，共 {count}（完整列表：{root / 'issues.json'}）：\n")
     print(F.render_text(exc.issues))
     print("\n→ 改 job.json / content.json / mapping.json 后重新 run；不要直接改 WORK 里的 Word，也不要为了通过检查改动用户原文。")
     if stalled >= F.MAX_STALLED or rounds >= F.MAX_ROUNDS:
@@ -985,6 +1059,8 @@ def main(argv=None):
                 help="none = 用户要求不启动办公软件",
             )
             a.add_argument("--office-note", help="办公软件找到了却无法调用时，写实际原因")
+            a.add_argument("--user-says-retry", metavar="用户原话",
+                           help="自动重试已经停下后，用户要求再试时写用户的原话，计数从头开始")
     a = sub.add_parser("read", help="打印用户 Word 文件里的文字（看原稿内容用）")
     a.add_argument("--docx", required=True)
     a = sub.add_parser("preview", help="给任意 .docx 生成页图（手工处理过的文档用）")

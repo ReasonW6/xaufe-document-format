@@ -9,6 +9,8 @@ import contextlib, hashlib, io, json, sys, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -473,6 +475,9 @@ class CLI(unittest.TestCase):
         source = self.sample_docx()
         doc = Document(source)
         doc.sections[0].footer.paragraphs[0].text = "第 1 页"
+        page = OxmlElement("w:fldSimple")
+        page.set(qn("w:instr"), " PAGE ")
+        doc.sections[0].footer.paragraphs[0]._p.append(page)
         doc.sections[0].header.paragraphs[0].text = "合成学院课程作业"
         doc.save(source)
         work = self.new(JOB_B)
@@ -484,6 +489,8 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         self.assertIn("ORIGINAL_HEADER_FOOTER_REPLACED", out)
         self.assertIn("合成学院课程作业", out)
+        self.assertIn("ORIGINAL_PAGE_NUMBERS_DROPPED", out)
+        self.assertIn("footer_page_numbers", out)
 
     def test_tiny_margins_are_flagged_for_the_review(self):
         document = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": CONTENT["blocks"]}
@@ -679,6 +686,7 @@ class CLI(unittest.TestCase):
         self.assertIn("取不到原文，未能对照", out)
         self.assertIn("pandas 的使用者超过 100 万人", out)
         self.assertIn("少 5 篇", out)
+        self.assertIn("少于默认的 5000 字", out)
 
     def test_writing_mode_requires_a_quote_and_flags_unconfirmed_support(self):
         entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
@@ -696,8 +704,43 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         self.assertIn("REF_SUPPORT_UNCONFIRMED", out)
         self.assertIn("引用句“pandas 常用于数据清洗[1]。”", out)
+        self.assertIn("摘录“pandas is a library for data", out)
+        self.assertNotIn("REF_CITATION_MISMATCH", out)
         review = json.loads((work / "review.json").read_text(encoding="utf-8"))
         self.assertIn("REF_SUPPORT_UNCONFIRMED", review["warnings"])
+
+    def test_writing_on_a_word_draft_gets_the_same_reference_gate(self):
+        doc = Document()
+        doc.add_paragraph("一、引言")
+        doc.add_paragraph("这是写作模式下的合成正文[1]。")
+        doc.add_paragraph("参考文献")
+        doc.add_paragraph("[1] 张三. 合成文献题目[J]. 合成期刊, 2020, 1(1): 1-2.")
+        source = self.d / "草稿.docx"
+        doc.save(source)
+        work = self.new({**JOB_B, "task": "write"})
+        code, out, err = self.call("inspect", "--work", work, "--docx", source)
+        self.assertEqual(code, 0, err)
+        mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
+        ref = next(r for r in mapping["paragraphs"] if r["text"].startswith("[1]"))
+        self.assertEqual(ref["role"], "reference")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("参考文献还没有核对", out)
+
+    def test_citation_number_on_an_unrelated_sentence_is_flagged(self):
+        entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"],
+                 "quote": "pandas is a library for data cleaning and analysis", "supports": "pandas 适合做数据清洗"}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "卷积神经网络在图像识别上效果显著[1]。"})
+        work = self.written(content, [entry])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("REF_CITATION_MISMATCH", out)
+        self.assertIn("卷积神经网络在图像识别上效果显著", out)
+        review = json.loads((work / "review.json").read_text(encoding="utf-8"))
+        self.assertIn("REF_CITATION_MISMATCH", review["warnings"])
 
     def test_unverifiable_reference_needs_the_users_consent(self):
         import refcheck as R
@@ -798,6 +841,16 @@ class CLI(unittest.TestCase):
                 self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
         for word in ("第3页", "content.json 的 blocks", "可能原因", "怎么改", "停止自动重试"):
             self.assertIn(word, out)
+        # After the stop another run is refused until the user asks for one; their words are kept.
+        code, out, err = self.call("run", "--work", work)
+        self.assertEqual(code, X.EXIT_ASK_USER, out + err)
+        self.assertIn("--user-says-retry", out)
+        with patch("delivery.render", side_effect=fake_render), patch("office_discovery.discover", return_value={}), \
+                patch("delivery.audit_rendered", return_value=failing):
+            code, out, err = self.call("run", "--work", work, "--user-says-retry", "再试一次吧")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertNotIn("停止自动重试", out)
+        self.assertEqual(json.loads((work / "attempts.json").read_text(encoding="utf-8"))["user_retries"], ["再试一次吧"])
         issues = json.loads((work / "issues.json").read_text(encoding="utf-8"))
         self.assertEqual(issues["issues"][0]["code"], "BLANK_PAGE")
         self.assertFalse((work / "review.json").exists())

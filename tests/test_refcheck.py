@@ -240,7 +240,10 @@ class CheckEntry(unittest.TestCase):
             cn = {**book, "title": "数据结构(C语言版)", "authors": ["严蔚敏"], "text": "严蔚敏. 数据结构(C语言版)[M]. 2017."}
             self.assertEqual(R.check_all([cn])[0]["status"], R.PENDING)
         with patch("refcheck.fetch", return_value=None):
-            self.assertEqual(R.check_all([book])[0]["status"], R.DROP)
+            # Not in Open Library is not "does not exist": many Chinese books have no record there.
+            missing = R.check_all([book])[0]
+            self.assertEqual(missing["status"], R.PENDING)
+            self.assertIn("没有这本书的记录", " ".join(missing["notes"]))
         with patch("refcheck.fetch") as fetch:
             r = R.check_all([{**book, "isbn": "978-1-4919-5766-1"}])[0]
         fetch.assert_not_called()

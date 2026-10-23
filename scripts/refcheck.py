@@ -278,7 +278,9 @@ def _isbn_check(entry, result):
     if book is None:
         if entry.get("url"):
             return _page_check(entry, result)
-        result.update(status=DROP, notes=[f"ISBN {isbn} 查不到这本书；有书目页面链接就写进 url 再试"])
+        # Open Library covers few Chinese books: a valid ISBN with no record is unverified, not fake.
+        result.update(status=PENDING, notes=[f"ISBN {isbn} 校验位正确，但 Open Library 里没有这本书的记录，没法自动核对；"
+                                             "有出版社或图书馆的书目页面就写进 url 再试，否则按无法验证处理"])
         return result
     title = str(entry.get("title") or "").strip()
     record = str(book.get("title") or "")
@@ -697,6 +699,12 @@ def check_all(entries, this_year=None):
             if entry.get("from_user"):
                 _as_user(verdict)
             results.append(verdict)
+    # Keep the excerpt and the claim beside each verdict so the citing sentence can be compared with them.
+    for entry, result in zip(entries, results):
+        if isinstance(entry, dict):
+            for key in ("quote", "supports"):
+                if str(entry.get(key) or "").strip():
+                    result.setdefault(key, str(entry[key]).strip())
     return results
 
 
