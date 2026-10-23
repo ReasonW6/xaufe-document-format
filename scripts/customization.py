@@ -104,6 +104,8 @@ def unknown_key(path, key, allowed):
     import difflib
 
     close = difflib.get_close_matches(str(key), sorted(allowed), n=1, cutoff=0.5)
+    if str(key).lower() in ("font", "fonts", "font_name", "family", "font_family") and {"cn", "latin"} <= set(allowed):
+        close = ["cn（中文字体）”或“latin（西文字体）"]
     return ValueError(
         f"job.json 的 {path} 里有不认识的项“{key}”" + (f"，是不是想写“{close[0]}”？" if close else "。")
         + "可用的项：" + "、".join(sorted(allowed)) + "。写法见 references/job.md；"
@@ -161,6 +163,13 @@ def validate_style(patch, *, cover=False, path=""):
         raise ValueError(
             "这个格式要求脚本不支持；用户要求仍有效，按 references/special-cases.md 的“脚本做不到的要求”处理，不能退回默认格式。"
         )
+    if not cover and "line" in patch and "line_rule" not in patch:
+        raise ValueError(f"job.json 的 {path or 'format.styles'} 写了 line，也要写 line_rule：倍数行距用 \"auto\"（line 是 240 的倍数，"
+                         "1.5 倍写 360），固定行距用 \"exact\"（line 是磅数×20，22 磅写 440）。只写 line 时同一个数字两种理解差很多。")
+    if not cover and isinstance(patch.get("line"), (int, float)) and 0 < patch["line"] < 20:
+        raise ValueError(f"job.json 的 {path or 'format.styles'}.line={patch['line']} 太小：不是倍数也不是磅数。"
+                         f"{patch['line']:g} 倍行距写 \"line\": {round(patch['line'] * 240)}, \"line_rule\": \"auto\"；"
+                         "固定行距写磅数×20（22 磅写 440）配 \"line_rule\": \"exact\"。")
     for key, val in patch.items():
         if key in ("cn", "latin"):
             if not isinstance(val, str) or not val.strip():

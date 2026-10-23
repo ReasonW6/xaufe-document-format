@@ -452,6 +452,18 @@ def with_job_suspects(root, issues):
     return issues
 
 
+def _indent_settings(root):
+    """"body（left、first）" for each role whose indent the job changed, joined; "" when none."""
+    try:
+        styles = read_json(Path(root) / "job.json").get("format", {}).get("styles", {})
+    except (OSError, ValueError, AttributeError):
+        return ""
+    keys = ("left", "left_chars", "right", "first", "chars", "hanging")
+    found = [f"{role}（{'、'.join(k for k in v if k in keys)}）"
+             for role, v in styles.items() if isinstance(v, dict) and set(v) & set(keys)]
+    return "、".join(found)
+
+
 def from_render(audit, root=None, docx=None):
     """Rendered-page audit errors -> actionable issues (they already carry page/expected/actual)."""
     issues = []
@@ -467,6 +479,10 @@ def from_render(audit, root=None, docx=None):
                 item["where"]["edit"] = source
         if e.get("bbox_pt"):
             item["where"]["bbox_pt"] = e["bbox_pt"]
+        if e["code"] == "TEXT_OUTSIDE_MARGINS" and root is not None:
+            indents = _indent_settings(root)
+            if indents:
+                item["cause"] += f" 这次 job.json 的 format.styles 改过缩进：{indents}；缩进加上文字超出了版心，先核对这几项。"
         if e["code"] == "BLANK_PAGE" and docx and quoted:
             breaks = _page_breaks(docx, quoted.group(1))
             rows = _mapping_gap(root, quoted.group(1))
@@ -507,8 +523,12 @@ _MESSAGE_HINTS = (
      "删掉 format.parts 用默认顺序；用户要的顺序脚本不支持时，在 content.json 用 mode=document 自己安排并告诉用户。"),
     (r"先后顺序和所选版式不同", "这一段的 role 可能标错了（比如正文段标成了摘要或关键词），或者原稿本来就是这个顺序。",
      "role 标错就改 mapping.json 里这一段的 role；原稿顺序本来如此，就把 mapping.json 的 mode 改成 document，或先问用户。"),
-    (r"未标记角色|未映射|role", "mapping.json 里有段落没有可用的 role。", "按 references/content.md 的“已有 Word”一节给这一段写 role。"),
-    (r"英文摘要", "原稿有没有英文摘要和本次版式设置不一致。", "问用户：要英文摘要就在 job.json 的 format 写 \"english_abstract\": true（缺的用 mapping.json 的 add 补译文）；不要就经用户同意把那些段落设为 delete。"),
+    (r"英文摘要", "原稿有没有英文摘要和本次版式设置不一致。", "版式要英文摘要、原稿没有：问用户要你翻译补上（已有 Word 写进 mapping.json 的 add，文本写进 content.json 的 abstract_en/keywords_en/metadata.title_en），还是这次不要（job.json 的 format 写 \"english_abstract\": false）。原稿有、版式不要：保留就写 \"english_abstract\": true，用户同意删除才把那些段落设为 delete。"),
+    (r"role 是 preserve", "preserve 只用于开头的旧封面，正文里的段落用了它就保持原稿样式，模板检查不认。",
+     "把这一段的 role 改成它实际的角色（正文 body、标题 h1/h2/h3 等），旧目录用 old_toc，然后重新 run。"),
+    (r"自动编号.*认不出", "这一段的自动编号用了脚本不认识的编号格式，没法转成同样的文字。",
+     "请用户在 Word 里把这几段的自动编号转成普通文字后重新给原稿，或经用户同意把这一段的 role 改成 body（编号照原样保留）。"),
+    (r"未标记角色|未映射|mapping\.json 里没有 p\d+", "mapping.json 里有段落没有可用的 role。", "按 references/content.md 的“已有 Word”一节给这一段写 role。"),
     (r"内容控件|文本框|修订|批注|嵌入", "原稿里有脚本不能安全排版的对象。", "按 references/special-cases.md 的“输入文件”一节处理，请用户先改成普通文字/嵌入式图片或接受修订。"),
 )
 
@@ -635,12 +655,34 @@ def _fingerprint(item):
                      str(where.get("edit")), str(item.get("actual"))))
 
 
-def stopped(root):
-    """Why automatic retries must stop now (None while they may go on)."""
+def _attempts(root):
+    """(counters, session state).  The counters are kept in attempts.json and in the session
+    marker, so deleting attempts.json does not reset the stop rule."""
     try:
         data = json.loads((Path(root) / "attempts.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
+        data = {}
+    try:
+        state = json.loads((Path(root) / ".xaufe-session.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = None
+    kept = (state or {}).get("attempts") or {}
+    if int(kept.get("failed_rounds", 0)) > int(data.get("failed_rounds", 0)) \
+            or int(kept.get("stalled", 0)) > int(data.get("stalled", 0)):
+        data = dict(kept)
+    return data, state
+
+
+def _save_attempts(root, data, state):
+    (Path(root) / "attempts.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    if state is not None:
+        state["attempts"] = data
+        (Path(root) / ".xaufe-session.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def stopped(root):
+    """Why automatic retries must stop now (None while they may go on)."""
+    data, _ = _attempts(root)
     if int(data.get("stalled", 0)) >= MAX_STALLED:
         return f"连续 {data['stalled']} 次修改都没有解决任何一个问题"
     if int(data.get("failed_rounds", 0)) >= MAX_ROUNDS:
@@ -650,11 +692,10 @@ def stopped(root):
 
 def reset_rounds(root, user_said):
     """The user asked for another try: count from zero, keep their words with the attempts."""
-    path = Path(root) / "attempts.json"
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data, state = _attempts(root)
     data.setdefault("user_retries", []).append(str(user_said).strip())
     data.update(failed_rounds=0, stalled=0)
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    _save_attempts(root, data, state)
 
 
 def record_round(root, issues):
@@ -664,17 +705,13 @@ def record_round(root, issues):
     issue of the previous run is gone; ``stalled`` counts runs in a row without
     that, ``repeated`` means exactly the same issues as last time.
     """
-    path = Path(root) / "attempts.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        data = {}
+    data, state = _attempts(root)
     now = sorted(_fingerprint(i) for i in issues)  # a list: two blank pages, one fixed, is progress
     before = data.get("last_issues")
     rounds = int(data.get("failed_rounds", 0)) + 1 if issues else 0
     progress = not before or bool(Counter(before) - Counter(now))  # after a pass, a new failure is not a stall
     stalled = 0 if not issues or progress else int(data.get("stalled", 0)) + 1
     repeated = bool(issues) and now == before
-    path.write_text(json.dumps({"failed_rounds": rounds, "stalled": stalled, "last_issues": now,
-                                "user_retries": data.get("user_retries", [])}, ensure_ascii=False), encoding="utf-8")
+    _save_attempts(root, {"failed_rounds": rounds, "stalled": stalled, "last_issues": now,
+                          "user_retries": data.get("user_retries", [])}, state)
     return rounds, stalled, repeated

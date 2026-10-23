@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
-from textio import read_text_any
+from textio import read_text_any, md_visible, continues
 
 LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)[^)]*\)")
 IMAGE = re.compile(r"^!\[([^\]]*)\]\(([^)\s]+)[^)]*\)$")
@@ -30,7 +30,8 @@ def _join(lines):
 
 def _pieces(text, markdown=False):
     """The original's lines -> [("para"|"heading"|"code"|"table"|"image", payload)].  In Markdown a
-    blank line ends a table; a plain .txt often leaves blank lines between the rows of one table."""
+    blank line ends a table and a paragraph; a plain .txt often leaves blank lines between the rows of
+    one table, and puts each paragraph on its own line (see ``textio.continues``)."""
     found, lines, fence, code = [], [], None, []
 
     def flush():
@@ -39,6 +40,7 @@ def _pieces(text, markdown=False):
         lines.clear()
 
     rows = []
+    longest = max((len(x.strip()) for x in text.splitlines()), default=0)
     for raw in text.splitlines() + [""]:
         stripped = raw.strip()
         if fence:
@@ -73,14 +75,44 @@ def _pieces(text, markdown=False):
             flush()
             found.append(("heading", (len(stripped) - len(stripped.lstrip("#")), stripped.lstrip("#").strip())))
             continue
-        stripped = re.sub(r"(?<!\\)(\*\*|__|`)", "", stripped)
-        stripped = re.sub(r"^[-*+]\s+", "", stripped)
+        if markdown:  # .md: markup goes, code spans stay literal; .txt: every character is the user's
+            if re.match(r"^(?:[-*+]|\d+[.)])\s+", stripped):
+                flush()  # each list item is its own paragraph
+            stripped = md_visible(re.sub(r"^[-*+]\s+", "", stripped), keep_links=True)
+        elif lines and not continues(lines[-1], stripped, longest):
+            flush()  # .txt: a line is its own paragraph unless it continues a hard-wrapped one
         lines.append(stripped)
     if rows:
         found.append(("table", rows))
     if fence and code:
         found.append(("code", "\n".join(code)))
-    return found
+    return _tab_tables(found)
+
+
+def _tab_tables(found):
+    """Lines in a row that split into the same number of Tab-separated cells are a table (pasted
+    from Excel or Word); the cells keep every character."""
+    merged, run = [], []
+    width = lambda piece: piece[1].count("\t") if piece[0] == "para" and "\t" in piece[1] else 0
+
+    def close():
+        if len(run) >= 2:
+            merged.append(("table", [[c.strip() for c in p[1].split("\t")] for p in run]))
+        else:
+            merged.extend(run)
+        run.clear()
+
+    for piece in found:
+        if width(piece) and (not run or width(piece) == width(run[0])):
+            run.append(piece)
+            continue
+        close()
+        if width(piece):
+            run.append(piece)
+        else:
+            merged.append(piece)
+    close()
+    return merged
 
 
 def _paragraph(text):
@@ -112,7 +144,7 @@ def to_content(path, work):
     pieces = _pieces(raw, markdown=path.suffix.lower() == ".md")
     blocks, notes = [], []
     plain = re.sub(r"```.*?```|~~~.*?~~~", "", raw, flags=re.S)
-    marked = len(re.findall(r"\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`", plain))
+    marked = len(re.findall(r"\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`", plain)) if path.suffix.lower() == ".md" else 0
     if marked:
         notes.append(f"原稿有 {marked} 处 Markdown 加粗或行内代码标记（**、__、`），导入时只留了文字、没带格式："
                      "要保留某处加粗，就在 content.json 那一段改用 runs 写 {\"text\": \"…\", \"bold\": true}。")
@@ -133,7 +165,14 @@ def to_content(path, work):
         level = _heading_level(dict(b, style=None))
         if roles[b["id"]].startswith("h") and level:
             roles[b["id"]] = f"h{level}"
-    # An abstract without its "摘要" label: the body paragraphs right before the keywords, ahead of any heading.
+    # Numbered lines in a row with nothing between them are a list ("1. 需求分析" "2. 系统设计"), not headings.
+    numbered = [b for b in pseudo if roles[b["id"]].startswith("h") and re.match(r"^\s*\d+\s*[.．、)）]", b["text"])]
+    for b in numbered:
+        at = pseudo.index(b)
+        around = pseudo[at - 1 : at] + pseudo[at + 1 : at + 2]
+        if any(n in numbered and abs(int(n["id"][1:]) - int(b["id"][1:])) == 1 for n in around):
+            roles[b["id"]] = "body"
+        # An abstract without its "摘要" label: the body paragraphs right before the keywords, ahead of any heading.
     seen_heading = False
     for at, b in enumerate(pseudo):
         role = roles[b["id"]]

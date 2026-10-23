@@ -575,6 +575,7 @@ def audit(docx, pdf, adopted=False):
                     errors.append(_issue("error", "COVER_TITLE_MISALIGNED", index, "封面题目折行后，续行没有和第一行对齐。",
                                          where=drift[0]["spans"][0]["text"][:30], expected=drift[2], actual=drift[1],
                                          bbox=drift[0]["bbox"]))
+            outside = None  # the issue for the run of lines now sticking out (one per paragraph, not per line)
             for line in lines:
                 x0, y0, x1, y1 = line["bbox"]
                 text = line["spans"][0]["text"]
@@ -591,9 +592,19 @@ def audit(docx, pdf, adopted=False):
                                          where=text[:30], expected=f"文字在 {EDGE_SAFE:.0f}–{h - EDGE_SAFE:.0f}pt 之间",
                                          actual=f"{y0:.1f}–{y1:.1f}pt", bbox=line["bbox"]))
                 elif not cover and (x0 < left - TEXT_TOLERANCE or ink > right + TEXT_TOLERANCE):
-                    errors.append(_issue("error", "TEXT_OUTSIDE_MARGINS", index, "文字伸出了左右页边距。",
-                                         where=text[:30], expected=f"{left:.1f}–{right:.1f}pt",
-                                         actual=f"{x0:.1f}–{x1:.1f}pt", bbox=line["bbox"]))
+                    if outside is not None:
+                        outside["lines"] += 1
+                        outside["message"] = f"文字伸出了左右页边距（从这里起连续 {outside['lines']} 行）。"
+                        lo, hi = outside["actual"].rstrip("pt").split("–")
+                        outside["actual"] = f"{min(float(lo), x0):.1f}–{max(float(hi), x1):.1f}pt"
+                        continue
+                    outside = _issue("error", "TEXT_OUTSIDE_MARGINS", index, "文字伸出了左右页边距。",
+                                     where=text[:30], expected=f"{left:.1f}–{right:.1f}pt",
+                                     actual=f"{x0:.1f}–{x1:.1f}pt", bbox=line["bbox"])
+                    outside["lines"] = 1
+                    errors.append(outside)
+                    continue
+                outside = None
             for box in images:
                 x0, y0, x1, y1 = box
                 if x0 < -0.5 or y0 < -0.5 or x1 > w + 0.5 or y1 > h + 0.5:

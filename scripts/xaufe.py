@@ -40,12 +40,17 @@ def _read(path, what):
         raise ValueError(f"找不到 {what}：{path}")
     from textio import read_text_any
 
+    text = read_text_any(path)
     try:
-        return json.loads(read_text_any(path))
+        return json.loads(text)
     except json.JSONDecodeError as exc:
+        line = text.splitlines()[exc.lineno - 1] if 0 < exc.lineno <= len(text.splitlines()) else ""
+        near = line[max(0, exc.colno - 21):exc.colno + 20].strip()
         raise ValueError(
-            f"{what} 不是合法的 JSON（第 {exc.lineno} 行附近）：{exc.msg}。"
-            "最常见的原因是文字里用了英文双引号 \"，改成中文引号“ ”即可（中文引号在 JSON 里没问题）。"
+            f"{what} 不是合法的 JSON（第 {exc.lineno} 行第 {exc.colno} 列）：{exc.msg}。"
+            + (f"那里是：{near}。" if near else "")
+            + "最常见的原因是文字里有英文双引号 \"：写成 \\\"（前面加反斜杠）；"
+            "不要换成中文引号，那会改掉用户的原文。其次是漏了逗号或多了结尾逗号。"
         ) from exc
 
 
@@ -456,7 +461,8 @@ def _weak_support(root, content):
     for index, text in enumerate(content.get("references") or [], 1):
         r = results.get(_ref_key(text), {})
         if r.get("status") != R.USER and r.get("support") in (R.NOT_FOUND, R.UNCHECKED):
-            lines.append(f"[{index}] 引用句“{(citing.get(index) or [''])[0][:30]}”／摘录“{str(r.get('quote') or '')[:30]}”（{r['support']}）")
+            lines.append(f"[{index}]（文献核对：{r.get('status')}）引用句“{(citing.get(index) or [''])[0][:30]}”"
+                         f"／摘录“{str(r.get('quote') or '')[:30]}”（{r['support']}）")
     if not lines:
         return None
     return {"code": "REF_SUPPORT_UNCONFIRMED",
@@ -713,6 +719,10 @@ def guess_roles(blocks):
             role = "preserve"
         elif plain in ("摘要", "内容摘要", "中文摘要"):
             role, area = "abstract_label_zh", "abstract_zh"
+        elif not seen_heading and INLINE_ABSTRACT_ZH.match(plain):  # "摘要：本文……" in one paragraph
+            role, area = "abstract_zh", "abstract_zh"
+        elif not seen_heading and INLINE_ABSTRACT_EN.match(text):
+            role, area = "abstract_en", "abstract_en"
         elif re.match(r"^关键词\s*[:：]", plain):
             role, area = "keywords_zh", None
         elif plain.lower() == "abstract":
@@ -729,6 +739,8 @@ def guess_roles(blocks):
             role, area, seen_heading = "preface", None, True
         elif re.match(r"^(图|表|Figure|Table)\s*\d", text) and len(text) <= 60:
             role = "caption"
+        elif b.get("numbered"):  # a Word list item (its number is not a typed heading number)
+            role = "body"
         elif _heading_level(b):
             role, area, seen_heading = "h" + str(_heading_level(b)), None, True
         elif (
@@ -741,12 +753,17 @@ def guess_roles(blocks):
             and not roles_has(roles, "title_en")
         ):
             role = "title_en"
-        elif not seen_heading and area is None and len(text) <= 40 and not text.endswith("。") and not roles_has(roles, "title_zh"):
+        elif not seen_heading and area is None and len(text) <= 40 and not text.endswith(("。", "：", ":")) \
+                and not roles_has(roles, "title_zh"):
             role = "title_zh"
         else:
             role, area = "body", (None if area == "toc" else area)
         roles[b["id"]] = role
     return roles, cover_end
+
+
+INLINE_ABSTRACT_ZH = re.compile(r"^(?:内容|中文)?摘\s*要\s*[:：]\s*\S")
+INLINE_ABSTRACT_EN = re.compile(r"^abstract\s*[:：]\s*\S", re.I)
 
 
 def roles_has(roles, role):
@@ -818,14 +835,14 @@ def cmd_inspect(args):
         "format_tables": True,
         "replace_cover_before": (cover_end if cover_end is not None else 0) if wants_cover else None,
         "paragraphs": [
-            {"id": b["id"], "role": roles[b["id"]], "text": b["text"][:60]}
+            {"id": b["id"], "role": roles[b["id"]], "text": (b.get("list_label") or "") + b["text"][:60]}
             for b in inv["blocks"]
             if b["kind"] == "paragraph"
         ],
     }
     _write(root / "mapping.json", mapping)
     # mapping.json shows the first 60 characters; failures are located against the whole paragraph.
-    _write(root / "paragraph-text.json", {b["id"]: b["text"] for b in inv["blocks"] if b["kind"] == "paragraph"})
+    _write(root / "paragraph-text.json", {b["id"]: (b.get("list_label") or "") + b["text"] for b in inv["blocks"] if b["kind"] == "paragraph"})
     if not any(x["path"] == str(source) for x in s["source_documents"]):
         s["source_documents"].append(
             {"path": str(source), "sha256": D.sha(source), "role": "original"}
@@ -846,6 +863,13 @@ def cmd_inspect(args):
         print("  原稿有摘要和标题：按完整论文结构排（mode=paper），会自动生成目录、摘要单独成页。")
         if "old_toc" in roles.values():
             print("  原稿里的旧目录已标为 old_toc，会换成自动生成的目录。")
+        texts = {b["id"]: b["text"].strip() for b in inv["blocks"] if b["kind"] == "paragraph"}
+        for pid, role in roles.items():
+            if role in ("abstract_zh", "abstract_en") and (INLINE_ABSTRACT_ZH.match(_plain(texts.get(pid, "")))
+                                                          or INLINE_ABSTRACT_EN.match(texts.get(pid, ""))):
+                print(f"  注意：{pid} 以“{texts[pid][:3]}”开头。模板会在它上面单独放一行摘要标题，这段原样保留，"
+                      "读起来会有两个“摘要”。脚本不会改这段文字：在给用户的回复里说明，"
+                      "用户想去掉就请用户在原稿里删掉段首这几个字，再从 new 重新排。")
         from customization import profile_for
 
         if profile_for(state)["english_abstract"] and "abstract_en" not in values:
@@ -909,6 +933,10 @@ def _build(root, level):
         if result.get("typed_indent_removed") and level == 0:
             shown = result["typed_indent_removed"]
             print(f"去掉了 {len(shown)} 段段首用空格/全角空格/Tab 打出来的缩进（模板自带首行缩进，文字没动）："
+                  + "、".join(shown[:5]) + ("等" if len(shown) > 5 else ""))
+        if result.get("list_labels_frozen") and level == 0:
+            shown = result["list_labels_frozen"]
+            print(f"{len(shown)} 段标题/文献的自动编号转成了同样的文字（看到的编号不变，目录和编号检查要读文字）："
                   + "、".join(shown[:5]) + ("等" if len(shown) > 5 else ""))
         if result.get("blank_page_breaks_removed") and level == 0:
             shown = result["blank_page_breaks_removed"]

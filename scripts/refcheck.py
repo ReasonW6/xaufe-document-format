@@ -504,7 +504,12 @@ def _find_doi(entry):
             raise
         return ""
     items = (found.get("message") or {}).get("items") if isinstance(found, dict) else None
+    year = _int(entry.get("year"))
     for item in items if isinstance(items, list) else []:
+        # A preprint, repost or later edition under the same title is not the work cited.
+        issued = ((item.get("issued") or {}).get("date-parts") or [[None]])[0][0]
+        if item.get("type") == "posted-content" or (year and issued and abs(int(issued) - year) > 1):
+            continue
         family = str(((item.get("author") or [{}])[0]).get("family") or "")
         same_author = _cjk(family) != _cjk(first) or (family and _norm(family) in _norm(first))
         if same_author and any(_similar(title, t) for t in item.get("title") or []):
@@ -533,7 +538,9 @@ def check_entry(entry, this_year):
         elif entry.get("url"):
             return _page_check(entry, result)
         else:
-            result.update(status=DROP, notes=["没有 DOI，也没有可访问的链接"])
+            # Not findable is not "does not exist": many real books and Chinese papers have no DOI.
+            result.update(status=PENDING, notes=["没有 DOI、ISBN 或链接，自动核对不了（不是查到它不存在）："
+                                                 "图书补上 ISBN、文章补上 DOI 或官方页面链接后可以再核对"])
         return result
 
     agency = (fetch(RA_URL + doi.split("/", 1)[0]) or [{}])[0]

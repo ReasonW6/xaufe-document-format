@@ -174,7 +174,9 @@ class CheckEntry(unittest.TestCase):
         book = {"text": "某作者. 数据分析方法[M]. 北京: 某出版社, 2020.", "title": "数据分析方法", "url": "https://example.org/book",
                 "authors": ["某作者"], "year": 2020}
         with patch("refcheck.fetch") as fetch, patch("refcheck.fetch_page") as page:
-            self.assertEqual(R.check_all([{"text": book["text"]}])[0]["status"], R.DROP)
+            nothing = R.check_all([{"text": book["text"]}])[0]
+            self.assertEqual(nothing["status"], R.PENDING)  # not findable is not "does not exist"
+            self.assertIn("不是查到它不存在", nothing["notes"][0])
             self.assertEqual(R.check_all([{"text": "用户给的文献", "from_user": True}])[0]["status"], R.USER)
             self.assertEqual(R.check_all([{**book, "title": ""}])[0]["status"], R.FIX)
             page.return_value = "数据 分析 方法 - 某作者 著 - 出版社 2020"
@@ -217,6 +219,11 @@ class CheckEntry(unittest.TestCase):
         self.assertEqual(r["status"], R.FIX)
         self.assertIn(DOI, r["notes"][0])
         self.assertIn("刊名", " ".join(r["notes"]))
+        # A repost years later under the same title is not the work cited.
+        repost = {**hit, "DOI": "10.65215/repost", "type": "posted-content", "issued": {"date-parts": [[2025]]}}
+        later = {**hit, "DOI": "10.65215/later", "issued": {"date-parts": [[2025]]}}
+        with network(search=[repost, later]):
+            self.assertEqual(R._find_doi(entry), "")
         other_author = {**hit, "author": [{"family": "Smith"}]}
         with network(search=[other_author]), patch("refcheck.fetch_page", return_value=CSL_RECORD["title"] + " Kaiming He 2016"):
             r = R.check_all([{**entry, "journal": "CVPR"}])[0]

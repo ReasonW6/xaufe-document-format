@@ -19,7 +19,8 @@ from pathlib import Path
 import difflib, re, unicodedata
 from docx import Document
 from docx.oxml.ns import qn
-from textio import read_text_any
+from textio import read_text_any, md_visible, continues
+from numbering import list_labels
 
 GENERATED_ROLES = {
     "toc_title", "toc1", "toc2", "toc3", "toc4", "abstract_label_zh", "abstract_label_en",
@@ -77,11 +78,12 @@ def fragments(path):
         doc = Document(path)
         # TOC entries are regenerated from the headings (their page numbers change), so they are not text to keep.
         toc = {st.style_id for st in doc.styles if st.name.lower().startswith("toc ")}
+        labels = list_labels(doc)
         result, pno, tno = [], 0, 0
         for index, el in enumerate(doc.element.body):
             if el.tag == qn("w:p"):
                 if _text(el).strip() and not set(el.xpath("./w:pPr/w:pStyle/@w:val")) & toc:
-                    result.append((f"p{pno}", _text(el), index))
+                    result.append((f"p{pno}", (labels.get(el) or "") + _text(el), index))
                 pno += 1
             elif el.tag == qn("w:tbl"):
                 result += [(f"t{tno}", text, index) for text in _cells(el) if text.strip()]
@@ -90,6 +92,8 @@ def fragments(path):
     if path.suffix.lower() not in (".md", ".txt"):
         return None
     text = read_text_any(path)
+    markdown = path.suffix.lower() == ".md"
+    longest = max((len(x.strip()) for x in text.splitlines()), default=0)
     result, lines, start, fenced = [], [], 1, False
 
     def flush():
@@ -126,10 +130,12 @@ def fragments(path):
             flush()
             result.append((here, title.group(1) if title else stripped, None))
             continue
-        # Visible link labels and emphasised text, not Markdown syntax.
-        stripped = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", stripped)
-        stripped = re.sub(r"(?<!\\)(\*\*|__|`)", "", stripped)
-        stripped = re.sub(r"^[-*+]\s+", "", stripped)
+        if markdown:  # what the Markdown shows (textio.md_visible), not its syntax
+            if re.match(r"^(?:[-*+]|\d+[.)])\s+", stripped):
+                flush()  # each list item is its own paragraph
+            stripped = md_visible(re.sub(r"^[-*+]\s+", "", stripped))
+        elif lines and not continues(lines[-1], stripped, longest):
+            flush()  # .txt: each line is a paragraph unless it continues a hard-wrapped one
         if not lines:
             start = index
         lines.append(stripped)
@@ -222,6 +228,7 @@ def output_paragraphs(docx):
     doc = Document(docx)
     roles = {name: role for role, name in ROLE_STYLES.items()}
     start = _after_cover(doc)
+    labels = list_labels(doc)  # a list number is text the reader sees, as in fragments()
     result = []
     for number, el in enumerate(doc.element.body):
         if number < start:
@@ -229,7 +236,7 @@ def output_paragraphs(docx):
         if el.tag == qn("w:p") and _text(el).strip():
             style = el.xpath("./w:pPr/w:pStyle/@w:val")
             name = doc.styles.get_by_id(style[0], 1).name if style else "Normal"
-            result.append((f"成品第 {number + 1} 段", roles.get(name), _text(el)))
+            result.append((f"成品第 {number + 1} 段", roles.get(name), (labels.get(el) or "") + _text(el)))
         elif el.tag == qn("w:tbl"):
             result += [(f"成品第 {number + 1} 块（表格）", "table_text", text) for text in _cells(el) if text.strip()]
     return result

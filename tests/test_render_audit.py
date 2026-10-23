@@ -629,7 +629,7 @@ class RenderAuditRealOffice(unittest.TestCase):
             self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out)
             self.assertIn("ADOPT_USE_JOB", out)
             self.assertIn('{"body": {"color": "0055AA"}}', out)
-            self.assertIn("正文（全部 2 段）的文字颜色：模板是黑色，现在是颜色 0055AA", out)
+            self.assertIn("正文（全部 2 段）的文字颜色：模板是黑色，现在是蓝色（0055AA）", out)
 
             # One paragraph only: no job.json setting does that, so it is a hand edit.
             doc = Document(work / "final.docx")
@@ -639,7 +639,19 @@ class RenderAuditRealOffice(unittest.TestCase):
             code, out = call("adopt", "--work", work, "--docx", edited, "--note", "正文按用户要求改成蓝色")
             self.assertEqual(code, 0, out)
             self.assertIn("MANUAL_DEVIATION", out)
-            self.assertIn("正文（1 段）的文字颜色：模板是黑色，现在是颜色 0055AA", out)
+            self.assertIn("正文（1 段）的文字颜色：模板是黑色，现在是蓝色（0055AA）", out)
+            # A later adopt that is refused leaves the copy accepted last (and its page images) in place.
+            accepted = (work / "final.docx").read_bytes()
+            worse = Document(work / "final.docx")
+            from docx.shared import Pt
+            from docx.enum.text import WD_LINE_SPACING
+            for body in [p for p in worse.paragraphs if p.text.startswith("这是合成正文")][:1]:
+                body.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+                body.paragraph_format.line_spacing = Pt(5)
+            worse.save(folder / "更差.docx")
+            code, out = call("adopt", "--work", work, "--docx", folder / "更差.docx", "--note", "合成测试：行距改小")
+            self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out)
+            self.assertEqual((work / "final.docx").read_bytes(), accepted)
             self.assertNotIn("TOC_PROOF_STALE", out)
             review = json.loads((work / "review.json").read_text(encoding="utf-8"))
             self.assertIn("MANUAL_EDIT", review["warnings"])

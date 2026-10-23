@@ -207,7 +207,7 @@ class Customizations(Base):
 
     def test_custom_body_font_and_size(self):
         out, state = self.build(
-            request={"styles": {"body": {"cn": "仿宋", "size": 12, "line": 440}}}
+            request={"styles": {"body": {"cn": "仿宋", "size": 12, "line": 440, "line_rule": "exact"}}}
         )
         self.assertPass(check(out, intake_path=state))
 
@@ -860,7 +860,8 @@ class TellUser(unittest.TestCase):
             {"code": "RENDERER_FALLBACK", "message": "指定用 Word 渲染，但它这次用不了，实际是用 LibreOffice 分页和检查的。"
                                                      "用户点名要某个软件时要告诉用户；能修好那个软件就修好后重新 run。"},
             {"code": "REF_SUPPORT_UNCONFIRMED", "message": "这些引用的原文摘录没能在读得到的原文里对上，支撑关系只有你的判断："
-                                                           "[2] 引用句“快速排序平均更快”／摘录“quicksort is 37% faster on aver”（NOT_FOUND）。逐条核对引用句和摘录。"},
+                                                           "[2]（文献核对：已验证）引用句“快速排序平均更快”／摘录“quicksort is 37% faster on aver”（NOT_FOUND）；"
+                                                           "[4]（文献核对：无法验证）引用句“合成句”／摘录“synthetic”（UNCHECKED）。逐条核对引用句和摘录。"},
             {"code": "REF_CITATION_MISMATCH", "message": "这些引用号标的句子和对应文献看起来说的不是一回事，可能标错了序号：[3] “天气很好”。逐条核对。"},
             {"code": "MARGIN_TOO_SMALL", "message": "页边距 left 只有 0.30 厘米：多数打印机印不到离纸边 0.5 厘米以内的地方。是用户要求的就在回复里提醒用户。"},
             {"code": "STYLE_HARD_TO_READ", "message": "正文（body）的文字颜色是 FFFFFF，在白纸上几乎看不见。确认是用户要的就在回复里提醒用户。"},
@@ -876,6 +877,8 @@ class TellUser(unittest.TestCase):
                 self.assertNotIn(internal, line)
             self.assertTrue(line.endswith(("。", "）")), line)
         self.assertIn("第 2 条文献确认真实存在", lines[1])
+        self.assertIn("第 4 条文献既没能核对是否真实存在", lines[1])
+        self.assertNotIn("4、", lines[1].split("确认真实存在")[0])
         self.assertIn("Word 这次用不了", lines[0])
         self.assertIn("0.30 厘米", lines[3])
         self.assertIn("“待补数据”等2 处文字带的高亮或底纹", lines[-1])

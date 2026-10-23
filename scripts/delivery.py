@@ -422,7 +422,8 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
 # Warnings about something the user will see differently from what they gave or asked for:
 # finish puts them in the notice that must go into the reply, so they cannot be dropped.
 TELL_USER = {"RENDERER_DIFFERENCE", "ORIGINAL_PAGE_NUMBERS_DROPPED", "ORIGINAL_HEADER_FOOTER_REPLACED", "ORIGINAL_HIGHLIGHT_REMOVED", "HEADING_NUMBERING", "MARGIN_TOO_SMALL",
-             "STYLE_HARD_TO_READ", "FONT_MARKS", "RENDERER_FALLBACK", "REF_CITATION_MISMATCH", "REF_SUPPORT_UNCONFIRMED"}
+             "STYLE_HARD_TO_READ", "FONT_MARKS", "RENDERER_FALLBACK", "REF_CITATION_MISMATCH", "REF_SUPPORT_UNCONFIRMED",
+             "CAPTION_POSITION"}
 
 
 def _user_line(w):
@@ -444,6 +445,8 @@ def _user_line(w):
         return "原稿页脚有页码，这次按模板默认没有显示页码；需要页码可以告诉我。"
     if code == "HEADING_NUMBERING":
         return f"标题“{first}”的编号和模板的写法（一级“一、”、二级“（一）”、三级“1.”）不一样，按原稿保留了。"
+    if code == "CAPTION_POSITION":
+        return message + "按原稿位置保留了，没有替你挪；需要的话可以告诉我。"
     if code == "MARGIN_TOO_SMALL":
         size = re.search(r"只有 ([\d.]+) 厘米", message)
         return f"按要求设的页边距只有 {size.group(1) if size else '不到 0.5'} 厘米，多数打印机印不到这么靠边，边上的文字可能被裁掉。"
@@ -461,9 +464,17 @@ def _user_line(w):
         which = f"（第 {'、'.join(numbers)} 条）" if numbers else ""
         return f"有几处引用号所在的句子和所引文献{which}的主题看起来不太一致，我逐条核对过，建议你再看一眼。"
     if code == "REF_SUPPORT_UNCONFIRMED":
-        numbers = re.findall(r"[\[［](\d+)[\]］] 引用句", message)
-        which = f"第 {'、'.join(numbers)} 条" if numbers else "有几条"
-        return f"{which}文献确认真实存在，但它是否支持正文里引用它的那句话，没能在能读到的原文里确认（核实清单里标为未确认），建议你核对。"
+        import refcheck as R
+
+        found = re.findall(r"[\[［](\d+)[\]］](?:（文献核对：([^）]+)）)?\s*引用句", message)
+        real = [n for n, status in found if status == R.PASS]
+        other = [n for n, status in found if status != R.PASS]
+        parts = []
+        if real:
+            parts.append(f"第 {'、'.join(real)} 条文献确认真实存在，但它是否支持正文里引用它的那句话，没能在能读到的原文里确认")
+        if other:
+            parts.append(f"第 {'、'.join(other)} 条文献既没能核对是否真实存在，也没能确认它支持正文里引用它的那句话")
+        return "；".join(parts or ["有几条文献是否支持正文里引用它的那句话没能确认"]) + "（核实清单里有标注），建议你核对。"
     return re.split(r"要在回复里告诉用户|。逐条核对|用户点名|确认是用户要的", message)[0].strip()
 
 
@@ -751,6 +762,25 @@ STYLE_KEY = {"FONT_SIZE": "size", "FONT_CN": "cn", "FONT_EN": "latin", "FONT_BOL
              "pageBreakBefore/val": "break_before"}
 
 
+def color_name(value):
+    """'0055AA' -> '蓝色（0055AA）': a colour as people name it, the hex value kept for exactness."""
+    import colorsys
+
+    raw = str(value).strip().upper()
+    if raw in ("000000", "AUTO"):
+        return "黑色"
+    if not re.fullmatch(r"[0-9A-F]{6}", raw):
+        return raw
+    r, g, b = (int(raw[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    hue, light, sat = colorsys.rgb_to_hls(r, g, b)
+    if sat < 0.15 or light < 0.12 or light > 0.95:
+        name = "黑色" if light < 0.12 else "白色" if light > 0.95 else "灰色"
+    else:
+        name = next(n for top, n in ((15, "红色"), (45, "橙色"), (70, "黄色"), (160, "绿色"), (200, "青色"),
+                                     (255, "蓝色"), (320, "紫色"), (361, "红色")) if hue * 360 < top)
+    return f"{name}（{raw}）"
+
+
 def _property(issue):
     """'jc/val' for a PARAGRAPH issue, else the issue code."""
     m = re.search(r"(?P<what>[\w/]+)=", issue.get("message", "")) if issue["code"] == "PARAGRAPH" else None
@@ -768,7 +798,7 @@ def _readable(what, value):
     if what == "spacing/lineRule":
         return RULE_NAMES.get(raw, raw)
     if what == "FONT_COLOR":
-        return "黑色" if raw.upper() in ("000000", "AUTO") else f"颜色 {raw}"
+        return color_name(raw)
     if what.startswith(("FONT_", "TOC_")):
         return raw
     if what.endswith("/val") and raw in ("0", "1"):
@@ -881,6 +911,16 @@ def adopt(workspace, docx, note):
     intake = root / "active-intake.json"
     known = {(e["code"], e["message"]) for e in check(base, final=True, intake_path=intake)["errors"]}
     final = root / "final.docx"
+    # The copy accepted last (the run output, or an earlier adopted copy) comes back if this one fails.
+    accepted = root / "accepted-before-adopt"
+    shutil.rmtree(accepted, ignore_errors=True)
+    accepted.mkdir()
+    shutil.copy2(final, accepted / "final.docx")
+    for name in ("preview", "render-audit.json"):  # its page images and audit too
+        if (root / name).is_dir():
+            shutil.copytree(root / name, accepted / name)
+        elif (root / name).is_file():
+            shutil.copy2(root / name, accepted / name)
     shutil.copy2(source, final)
     try:
         after = check(final, final=True, intake_path=intake)
@@ -939,9 +979,17 @@ def adopt(workspace, docx, note):
         result = {"warnings": []}
         compare_originals(root, s, result)
     except Exception:
-        # The accepted output stays in place; the state still points at it.
-        shutil.copy2(base, final)
+        # The copy accepted last stays in place, with its page images; the state still points at it.
+        shutil.copy2(accepted / "final.docx", final)
+        for name in ("preview", "render-audit.json"):
+            if (accepted / name).is_dir():
+                shutil.rmtree(root / name, ignore_errors=True)
+                shutil.copytree(accepted / name, root / name)
+            elif (accepted / name).is_file():
+                shutil.copy2(accepted / name, root / name)
         raise
+    finally:
+        shutil.rmtree(accepted, ignore_errors=True)
     lines = [_group_line(k, v, totals) for k, v in groups.items()]
     warnings = rendered["warnings"] + result["warnings"] + [
         {"code": "MANUAL_EDIT", "message": "手工处理：" + note.strip() + "（交付时会告诉用户）"}
@@ -979,7 +1027,8 @@ def attest(workspace, review):
     if s.get("stage") not in ("awaiting_review", "ready"):
         raise ValueError("还没有可检查的成品；先运行 run。")
     if sha(root / "final.docx") != s.get("document_sha256"):
-        raise ValueError("成品在 run 之后被改动；请重新运行 run 再检查。")
+        raise ValueError("成品在 run（或 adopt）之后被改动：不要直接改 WORK 里的 Word。手工处理过的就重新 adopt 那份副本，"
+                         "否则重新运行 run，再检查。")
     if not isinstance(review, dict):
         raise ValueError("review.json 必须是 JSON 对象。")
     unknown = set(review) - {"vision", "no_vision_reason", "pages", *REVIEW_TEXTS, "warnings"}

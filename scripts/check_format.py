@@ -93,7 +93,8 @@ def line_check(p, label, err):
 
 CAPTION = re.compile(r"^\s*(?:图|表|续表|Figure|Fig\.?|Table)\s*[\dA-Za-z一二三四五六七八九十]", re.I)
 ROLE_NAMES = {"spacer": "空行", "abstract_spacer": "空行", "figure": "图片段", "caption": "图表标题",
-              "h1": "一级标题", "h2": "二级标题", "h3": "三级标题", "h4": "四级标题", "preface": "序言标题", "body": "正文"}
+              "h1": "一级标题", "h2": "二级标题", "h3": "三级标题", "h4": "四级标题", "preface": "序言标题", "body": "正文",
+              "equation": "公式段", "code": "代码段"}
 
 
 HEADING_LIKE = re.compile(r"^(?:[一二三四五六七八九十]+、|[（(][一二三四五六七八九十]+[）)]|第[一二三四五六七八九十\d]+[章节])\s*\S")
@@ -115,6 +116,23 @@ def caption_check(p, label, err):
         if skipped and el is not None and wanted(el):
             err("CAPTION_DETACHED", f"{label}: 图表标题和它的{name}之间隔着 {skipped} 个空段落，分页时会被拆开。")
             return
+
+
+def caption_position_check(p, label, text, warn):
+    """A table caption belongs above its table and a figure caption below its figure.  Only a
+    warning: moving a paragraph is the user's call when the job is format-only."""
+    def near(step):
+        el = step(p._p)
+        while el is not None and _blank(el):
+            el = step(el)
+        return el
+    before, after = near(lambda e: e.getprevious()), near(lambda e: e.getnext())
+    is_table = lambda e: e is not None and e.tag == qn("w:tbl")
+    is_figure = lambda e: e is not None and bool(e.xpath(".//w:drawing|.//w:pict"))
+    if text.startswith("表") and is_table(before) and not is_table(after):
+        warn("CAPTION_POSITION", f"{label}: 表题“{text[:15]}”在表格下面；模板的表题在表格上方。")
+    elif text.startswith("图") and is_figure(after) and not is_figure(before):
+        warn("CAPTION_POSITION", f"{label}: 图题“{text[:15]}”在图片上面；模板的图题在图片下方。")
 
 
 HEADING_STYLE_NUMBER = {
@@ -172,6 +190,11 @@ def role_check(p, role, label, visible, err):
         problem = "图片段里没有图片，只有文字"
     elif role == "caption" and text and not CAPTION.match(text):
         problem = "图表标题应以“图1”“表2”“Figure 3”等开头"
+    elif role == "equation" and not p._p.xpath(".//m:oMath|.//w:object|.//w:drawing") \
+            and len(re.findall(r"[\u4e00-\u9fff]", text)) >= 8:
+        problem = "公式段里没有公式对象，是一句文字"
+    elif role == "code" and len(re.findall(r"[\u4e00-\u9fff]", text)) >= 15 and re.search(r"[。！？]$", text):
+        problem = "代码段里是中文句子，像是一段正文"
     elif role in ("h1", "h2", "h3", "h4", "preface") and (len(text) > 80 or re.search(r"[。；;]$", text)):
         problem = "标题太长或以句号/分号结尾，像是一段正文"
     elif role == "body" and len(text) <= 30 and HEADING_LIKE.match(text) and not re.search(r"[。；;，,：:]$", text):
@@ -591,6 +614,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         role_check(p, role, label, visible, err)
         if role == "caption" and label.startswith("p"):
             caption_check(p, label, err)
+            caption_position_check(p, label, visible.strip(), warn)
         if (role in HEADING_STYLE_NUMBER or role == "body") and label.startswith("p"):
             headings.append((label, role, visible.strip()))
         if p._p.xpath(".//wp:inline") and role != "figure":

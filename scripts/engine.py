@@ -1016,7 +1016,9 @@ def validate_data(data, base=None):
             "title_en"
         ):
             fail(
-                "本次有效格式未启用英文摘要，但输入含英文摘要或英文题目。用户已要求保留或增加时，先记录english_abstract=true；已明确要求不纳入输出时按该范围处理，否则只询问这部分的去留。不因校徽颜色决定摘要语言。"
+                "content.json 里有英文摘要、英文关键词或英文题目（title_en），但本次版式不含英文摘要。问用户："
+                "要保留就在 job.json 的 format 写 \"english_abstract\": true；不要就从 content.json 去掉 abstract_en、keywords_en 和 metadata.title_en。"
+                "不要按校徽颜色猜。"
             )
     if data.get("mode", "paper") == "paper":
         required = ["abstract_zh", "keywords_zh", "references"]
@@ -1028,9 +1030,9 @@ def validate_data(data, base=None):
                     f"mode=paper 需要 {key}。用户要求写作就写好这一部分；只排版且原文没有这部分，就把 content.json 的 mode 改成 document。"
                 )
         if not data["blocks"] or data["blocks"][0]["type"] != "heading":
-            fail("完整文档正文第一块应标记为标题或序言。")
+            fail("content.json 的 blocks 第一块要是标题（type heading）或序言：正文从标题开始。")
         if not data["metadata"].get("title_zh"):
-            fail("完整文档必须提供正文所用题目，封面可单独留空。")
+            fail("content.json 的 metadata 要写 title_zh（论文题目，摘要页用）；封面可以不填。")
         if SPEC["english_abstract"] and not data["metadata"].get("title_en"):
             fail("本次包含英文摘要，需要在 content.json 的 metadata 里写 title_en（英文题目）。用户要求写作或翻译时由你写好；只排版且原文没有，就问用户。")
     for lang in ("zh", "en"):
@@ -1039,9 +1041,9 @@ def validate_data(data, base=None):
                 fail("关键词词项不能是空白或自带分隔符；英文短语内的单个空格可以保留。")
     for b in data["blocks"]:
         if b["type"] == "heading" and b["level"] > SPEC.get("heading_levels", 3):
-            fail("第四级标题需要用户明确heading_levels=4，不自动扩展原模板。")
+            fail("content.json 有四级标题（level 4），模板只到三级：改成三级以内，或用户同意后在 job.json 的 format 写 \"heading_levels\": 4。")
         if b["type"] == "heading" and b.get("preface") and b["level"] != 1:
-            fail("序言必须使用level=1，不能生成不一致的目录层级。")
+            fail("content.json 里序言（preface）的 level 要写 1。")
         if b["type"] == "table" and b.get("widths") is not None and len(b["widths"]) != len(b["header"]):
             fail("表格 widths 的个数要和列数相同（每列一个比例数字）。")
     if any(re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", str(x)) for x in data["metadata"].values()):
@@ -1050,7 +1052,7 @@ def validate_data(data, base=None):
 
 def add_abstract(doc, data, meta, english=False):
     if english and not SPEC["english_abstract"]:
-        fail("本次有效格式未启用英文摘要；用户明确要求时先记录english_abstract覆盖。")
+        fail("本次版式不含英文摘要：用户要英文摘要就在 job.json 的 format 写 \"english_abstract\": true 再 run。")
     sp = ROLES["abstract_spacer"]
     doc.add_paragraph("", sp)
     doc.add_paragraph(
@@ -1155,6 +1157,9 @@ def inventory(input_path):
     doc = Document(input_path)
     blocks = []
     pno = tno = 0
+    from numbering import list_labels
+
+    labels = list_labels(doc)
     for bi, el in enumerate(doc.element.body):
         if el.tag == qn("w:p"):
             p = Paragraph(el, doc._body)
@@ -1170,6 +1175,8 @@ def inventory(input_path):
                     "equations": len(el.xpath(".//m:oMath")),
                     "section_break": bool(el.xpath("./w:pPr/w:sectPr")),
                     "has_fields": bool(el.xpath(".//w:instrText|.//w:fldSimple")),
+                    "numbered": el in labels,  # an auto number or bullet Word shows before the text
+                    "list_label": labels.get(el) or "",
                 }
             )
             pno += 1
@@ -1252,6 +1259,65 @@ def drop_blank_page_breaks(doc):
         i, node, text = found
         node.getparent().remove(node)
         removed.append((i, text))
+
+
+def keep_list_numbering(p):
+    """A bullet or number that comes from the paragraph's style ("List Bullet") would vanish when the
+    template style replaces it: copy it onto the paragraph.  True when the paragraph is numbered."""
+    from style_model import style_chain
+
+    if p._p.xpath("./w:pPr/w:numPr"):
+        return True
+    for style in reversed(style_chain(p.style) if p.style is not None else []):
+        num = style.element.find(f"{qn('w:pPr')}/{qn('w:numPr')}")
+        if num is not None:
+            if num.xpath('./w:numId[@w:val="0"]'):
+                return False
+            ppr = p._p.get_or_add_pPr()
+            ppr.insert(1 if ppr.find(qn("w:pStyle")) is not None else 0, deepcopy(num))
+            return True
+    return False
+
+
+# Roles whose auto number becomes typed text: the template numbers headings and references in
+# the text itself, and the TOC, the heading-number check and the citation check all read text.
+LIVE_LIST_ROLES = {"body", "table_text", "code", "cover", "spacer", "abstract_spacer", "preserve"}
+
+
+def freeze_list_labels(doc, roles, default, ids):
+    """Turn the auto number of headings, references etc. into the same visible text.
+
+    Returns {"p<i>": "p<i>“label text…”"} for the paragraphs changed; the reader sees the same
+    characters as before (the source comparison counts list labels as text on both sides)."""
+    from numbering import list_labels
+
+    labels = list_labels(doc)
+    frozen = {}
+    for i, p in enumerate(doc.paragraphs):
+        role = roles.get(ids[i], default)
+        if role in LIVE_LIST_ROLES or p._p not in labels:
+            continue
+        label = labels[p._p]
+        if label is None:
+            fail(f"原稿 {ids[i]}“{p.text.strip()[:15]}”（role {role}）用的是自动编号，但编号格式认不出来，"
+                 "转不成文字。请用户在 Word 里把自动编号转成文字（选中这些段落，复制后“选择性粘贴→只保留文本”），"
+                 "或者在 mapping.json 里把它改成 body。")
+        ppr = p._p.get_or_add_pPr()
+        for num in ppr.findall(qn("w:numPr")):
+            ppr.remove(num)
+        if not label:
+            continue
+        run = OxmlElement("w:r")
+        first = p._p.find(f".//{qn('w:r')}/{qn('w:rPr')}")
+        if first is not None:
+            run.append(deepcopy(first))
+        t = OxmlElement("w:t")
+        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        t.text = label
+        run.append(t)
+        ppr.addnext(run)
+        frozen[f"{ids[i]}"] = f"{ids[i]}“{label}{p.text[len(label):].strip()[:12]}”"
+    return frozen
 
 
 LEADING_BLANKS = " \t\u3000\u00a0"
@@ -1431,11 +1497,14 @@ def structure_paper(doc, has_cover, meta, additions):
             head.append(Paragraph(OxmlElement("w:p"), doc._body))
             head[-1].add_run(title)
             head[-1].style = ROLES[title_role]
+        label = []
         if label_role not in roles:
-            head.append(Paragraph(OxmlElement("w:p"), doc._body))
-            head[-1].add_run("Abstract" if english else "内 容 摘 要")
-            head[-1].style = ROLES[label_role]
-        sequence = [p._p for p in head] + elements
+            label.append(Paragraph(OxmlElement("w:p"), doc._body))
+            label[-1].add_run("Abstract" if english else "内 容 摘 要")
+            label[-1].style = ROLES[label_role]
+        # A generated label goes after the paper's own title, never above it.
+        after = max((i + 1 for i, role in enumerate(roles) if role == title_role), default=0)
+        sequence = [p._p for p in head] + elements[:after] + [p._p for p in label] + elements[after:]
         # Same blank lines as the template's abstract page: before the title and
         # between title / label / text / keywords, only where none exists yet.
         spaced, previous = [], None
@@ -1512,11 +1581,12 @@ def structure_paper(doc, has_cover, meta, additions):
 
 def _delete_marked(doc, roles, mapping):
     """Remove paragraphs the user agreed to delete (role "delete") and the old TOC the
-    template replaces (role "old_toc"); renumber the rest."""
+    template replaces (role "old_toc").  Returns the mapping id of each paragraph left (messages
+    and roles keep using the ids the user saw in mapping.json) and the deleted texts."""
     old = list(doc.paragraphs)
     marked = [p for i, p in enumerate(old) if roles.get(f"p{i}") in ("delete", "old_toc")]
     if not marked:
-        return roles, []
+        return [f"p{i}" for i in range(len(old))], []
     body = list(doc.element.body)
     end = mapping.get("replace_cover_before")
     shift = 0
@@ -1527,13 +1597,12 @@ def _delete_marked(doc, roles, mapping):
         if isinstance(end, int) and not isinstance(end, bool) and body.index(p._p) < end:
             shift += 1
         deleted.append(p.text[:60])
-    keep = [(i, p) for i, p in enumerate(old) if roles.get(f"p{i}") not in ("delete", "old_toc")]
+    ids = [f"p{i}" for i, p in enumerate(old) if roles.get(f"p{i}") not in ("delete", "old_toc")]
     for p in marked:
         p._p.getparent().remove(p._p)
-    renumbered = {f"p{new}": roles[f"p{i}"] for new, (i, _) in enumerate(keep) if f"p{i}" in roles}
     if shift:
         mapping["replace_cover_before"] = end - shift
-    return renumbered, deleted
+    return ids, deleted
 
 
 def restyle(input_path, map_path, output, force=False, intake_path=None, cover_min_level=0):
@@ -1557,8 +1626,11 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
     # These require a dedicated OOXML preservation workflow; do not flatten them via python-docx.
     if any(x.tag not in (qn("w:p"), qn("w:tbl"), qn("w:sectPr")) for x in doc.element.body):
         fail("存在内容控件或其他复杂顶层对象。请采用保全OOXML的专门流程，不静默跳过。")
-    if doc.element.body.xpath(".//w:ins|.//w:del|.//w:altChunk"):
-        fail("存在修订或嵌入文档。请先确认修订处理方式；本通用排版脚本不自动接受、拒绝或丢弃。")
+    tracked = doc.element.body.xpath(".//w:ins|.//w:del|.//w:altChunk")
+    if tracked:
+        from unsupported import where
+        fail(f"原稿有修订或嵌入文档（{where(doc, tracked)}）：脚本不会替用户接受、拒绝或丢弃。"
+             "请用户在 Word 的“审阅”里接受或拒绝这些修订后重新给原稿。")
     from unsupported import unsupported_reasons
 
     problems = unsupported_reasons(doc)
@@ -1566,45 +1638,53 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         fail("；".join(problems))
     roles = dict(m.get("roles", {}))
     default = m.get("default_role")
-    roles, deleted = _delete_marked(doc, roles, m)
+    ids, deleted = _delete_marked(doc, roles, m)
     spacing_changes = []
     # Only this explicit formatting whitelist is allowed to change visible ASCII spaces.
     for i, p in enumerate(doc.paragraphs):
-        if roles.get(f"p{i}", default) in ("keywords_zh", "keywords_en"):
+        if roles.get(ids[i], default) in ("keywords_zh", "keywords_en"):
             try:
-                change = normalize_keywords(p, m.get("keyword_items", {}).get(f"p{i}"))
+                change = normalize_keywords(p, m.get("keyword_items", {}).get(ids[i]))
             except ValueError as exc:
-                fail(f"原稿 p{i}“{p.text.strip()[:15]}”（role {roles.get(f'p{i}', default)}）：{exc}")
+                fail(f"原稿 {ids[i]}“{p.text.strip()[:15]}”（role {roles.get(ids[i], default)}）：{exc}")
             if change:
-                spacing_changes.append(dict(change, paragraph=f"p{i}"))
+                spacing_changes.append(dict(change, paragraph=ids[i]))
     # The template indents; a typed indent is layout, not text (the source comparison ignores it too).
     indent_changes = []
     for i, p in enumerate(doc.paragraphs):
-        if roles.get(f"p{i}", default) in INDENTED_ROLES and strip_typed_indent(p):
-            indent_changes.append(f"p{i}“{p.text.strip()[:15]}”")
+        if roles.get(ids[i], default) in INDENTED_ROLES and strip_typed_indent(p):
+            indent_changes.append(f"{ids[i]}“{p.text.strip()[:15]}”")
+    frozen = freeze_list_labels(doc, roles, default, ids)
     for i, p in enumerate(doc.paragraphs):
-        role = roles.get(f"p{i}", default)
+        role = roles.get(ids[i], default)
         wanted = m["metadata"].get(role, "") if role in ("title_zh", "title_en") else None
         if wanted and re.sub(r"\s+", "", p.text) != re.sub(r"\s+", "", wanted):
-            fail(f"原稿 p{i} 的题目“{p.text.strip()[:30]}”和 job.json 的 info.{role}“{wanted[:30]}”不一致："
+            fail(f"原稿 {ids[i]} 的题目“{p.text.strip()[:30]}”和 job.json 的 info.{role}“{wanted[:30]}”不一致："
                  "封面和页眉用的是 job.json 里的题目，两处会对不上。问用户哪个是对的，改 job.json 的 info 或原稿后重新 run。")
     before = content_signature(doc)
     install_styles(doc)
+    styled = None
     for i, p in enumerate(doc.paragraphs):
-        role = roles.get(f"p{i}")
+        role = roles.get(ids[i])
         if role is None:
             if not p.text and not p._p.xpath(".//w:drawing|.//m:oMath"):
                 role = "spacer"
             elif default:
                 role = default
             else:
-                fail(f"p{i} 未标记角色：{p.text[:60]}。请查看 inventory 后补充映射。")
+                fail(f"mapping.json 里没有 {ids[i]}“{p.text.strip()[:30]}”：在 paragraphs 里给它一个 role（正文用 body）。")
         if role == "preserve":
+            if styled is not None and p.text.strip() and not (p.style is not None and p.style.name.lower().startswith("toc ")):
+                fail(f"原稿 {ids[i]}“{p.text.strip()[:15]}”的 role 是 preserve，但它在 {styled}（已经开始排版的内容）后面："
+                     "preserve 只用于开头的旧封面，保留下来的段落用的是原稿样式，模板检查不认。"
+                     "改成它实际的 role（正文 body、标题 h1/h2/h3 等）；旧目录用 old_toc。")
             continue
+        if role != "spacer" and styled is None:
+            styled = ids[i]
         try:
-            style_paragraph(p, role, preserve_num=bool(p._p.xpath("./w:pPr/w:numPr")))
+            style_paragraph(p, role, preserve_num=ids[i] not in frozen and keep_list_numbering(p))
         except ValueError as exc:
-            fail(f"原稿 p{i}“{p.text.strip()[:15]}”（role {role}）：{exc}")
+            fail(f"原稿 {ids[i]}“{p.text.strip()[:15]}”（role {role}）：{exc}")
         if role == "figure":
             resize_inline(
                 p,
@@ -1702,5 +1782,6 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         "keyword_spacing_changes": spacing_changes,
         "typed_indent_removed": indent_changes,
         "blank_page_breaks_removed": break_changes,
+        "list_labels_frozen": list(frozen.values()),
         "message": "重排初稿已生成；内容保全检查通过。",
     }
