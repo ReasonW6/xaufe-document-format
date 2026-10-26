@@ -163,6 +163,8 @@ def correction_line(c):
     part = E.CORRECTION_PARTS.get(c.get("part"), "文字")
     before, after = (c.get("before") or "").strip(), (c.get("after") or "").strip()
     short = lambda t: t[:24] + ("…" if len(t) > 24 else "")
+    if before and before == after:  # moved, not reworded
+        return f"{part}“{short(before)}”" + (c.get("why") or "换了位置")
     if before and after:
         what = f"{part}“{short(before)}”改为“{short(after)}”"
     elif after:
@@ -779,7 +781,7 @@ ROLE_NAMES = {
     "abstract_zh": "中文摘要", "abstract_en": "英文摘要", "keywords_zh": "中文关键词", "keywords_en": "英文关键词",
     "toc_title": "目录标题", "toc1": "目录一级", "toc2": "目录二级", "toc3": "目录三级", "toc4": "目录四级",
     "reference_title": "参考文献标题", "reference": "参考文献条目", "caption": "图表标题", "figure": "图片段",
-    "table_text": "表格文字", "table_note": "表注", "code": "代码", "equation": "公式", "header": "页眉",
+    "table_text": "表格文字", "table_note": "表注", "table_unit": "表格单位", "code": "代码", "equation": "公式", "header": "页眉",
 }
 # How the same change is asked for in job.json (format.styles.<role>.<key>), when it is one.
 STYLE_KEY = {"FONT_SIZE": "size", "FONT_CN": "cn", "FONT_EN": "latin", "FONT_BOLD": "bold", "FONT_COLOR": "color",

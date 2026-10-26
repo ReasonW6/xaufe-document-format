@@ -94,7 +94,7 @@ def line_check(p, label, err):
 CAPTION = re.compile(r"^\s*(?:图|表|续表|Figure|Fig\.?|Table)\s*[\dA-Za-z一二三四五六七八九十]", re.I)
 ROLE_NAMES = {"spacer": "空行", "abstract_spacer": "空行", "figure": "图片段", "caption": "图表标题",
               "h1": "一级标题", "h2": "二级标题", "h3": "三级标题", "h4": "四级标题", "preface": "序言标题", "body": "正文",
-              "equation": "公式段", "code": "代码段"}
+              "equation": "公式段", "code": "代码段", "table_note": "表注", "table_unit": "表格单位"}
 
 
 HEADING_LIKE = re.compile(r"^(?:[一二三四五六七八九十]+、|[（(][一二三四五六七八九十]+[）)]|第[一二三四五六七八九十\d]+[章节])\s*\S")
@@ -118,9 +118,9 @@ def caption_check(p, label, err):
             return
 
 
-def caption_position_check(p, label, text, warn):
-    """A table caption belongs above its table and a figure caption below its figure.  Only a
-    warning: moving a paragraph is the user's call when the job is format-only."""
+def caption_position_check(p, label, text, err):
+    """A table caption belongs above its table and a figure caption below its figure (the generator
+    moves one on the wrong side, so one left there is an error)."""
     def near(step):
         el = step(p._p)
         while el is not None and _blank(el):
@@ -130,9 +130,9 @@ def caption_position_check(p, label, text, warn):
     is_table = lambda e: e is not None and e.tag == qn("w:tbl")
     is_figure = lambda e: e is not None and bool(e.xpath(".//w:drawing|.//w:pict"))
     if text.startswith("表") and is_table(before) and not is_table(after):
-        warn("CAPTION_POSITION", f"表题“{text[:15]}”在表格下面；模板的表题在表格上方。")
+        err("CAPTION_POSITION", f"{label}: 表题“{text[:15]}”在表格下面；学校规定表题在表格上方。")
     elif text.startswith("图") and is_figure(after) and not is_figure(before):
-        warn("CAPTION_POSITION", f"图题“{text[:15]}”在图片上面；模板的图题在图片下方。")
+        err("CAPTION_POSITION", f"{label}: 图题“{text[:15]}”在图片上面；学校规定图题在图片下方。")
 
 
 HEADING_STYLE_NUMBER = {
@@ -179,6 +179,32 @@ def page_break_check(doc, err):
         err("WORD_BLANK_PAGE", f"p{index}: 分页符后面{what}，中间没有内容，Word 会在这里多出一页空白{after}。")
 
 
+def _neighbour_el(el, step):
+    el = step(el)
+    while el is not None and el.tag == qn("w:p") and not "".join(el.xpath(".//w:t/text()")).strip() \
+            and not el.xpath(".//w:drawing|.//m:oMath"):
+        el = step(el)
+    return el
+
+
+def _style_of(el):
+    ids = el.xpath("./w:pPr/w:pStyle/@w:val") if el is not None and el.tag == qn("w:p") else []
+    return ids[0] if ids else None
+
+
+def _after_table(p):
+    prev = _neighbour_el(p._p, lambda e: e.getprevious())
+    if prev is not None and prev.tag == qn("w:tbl"):
+        return True
+    note = p.part.document.styles[E.ROLES["table_note"]].style_id
+    return _style_of(prev) == note
+
+
+def _before_table(p):
+    nxt = _neighbour_el(p._p, lambda e: e.getnext())
+    return nxt is not None and nxt.tag == qn("w:tbl")
+
+
 def role_check(p, role, label, visible, err):
     """Catch a paragraph whose role (from mapping.json or content.json) does not fit its content:
     the formatting would then be "correct" for the wrong role and pass unnoticed."""
@@ -195,12 +221,20 @@ def role_check(p, role, label, visible, err):
         problem = "公式段里没有公式对象，是一句文字"
     elif role == "code" and len(re.findall(r"[\u4e00-\u9fff]", text)) >= 15 and re.search(r"[。！？]$", text):
         problem = "代码段里是中文句子，像是一段正文"
+    elif role == "table_note" and not _after_table(p):
+        problem = "表注要紧跟在表格（或上一条表注）下面"
+    elif role == "table_unit" and not _before_table(p):
+        problem = "表格单位要紧挨在它的表格上面"
     elif role in ("h1", "h2", "h3", "h4", "preface") and (len(text) > 80 or re.search(r"[。；;]$", text)):
         problem = "标题太长或以句号/分号结尾，像是一段正文"
     elif role == "body" and len(text) <= 30 and HEADING_LIKE.match(text) and not re.search(r"[。；;，,：:]$", text):
         problem = "它是“一、”“（一）”“第一章”这样开头的短行，像是标题（标成正文会从目录里漏掉）"
     if problem:
         err("ROLE_MISMATCH", f"{label}: 这一段标成了{ROLE_NAMES[role]}（{role}），但{problem}：“{text[:20]}”。")
+    if role == "table_note" and re.match(r"^\s*(附\s*注|注)\s*\d*\s*[:：]", text):
+        err("TABLE_NOTE_LABEL", f"{label}: 表注“{text[:15]}”以“注”开头；学校规定表注不写“注”“附注”，整表说明用“说明”。")
+    if role == "table_unit" and "单位" in re.sub(r"\s+", "", text):
+        err("TABLE_UNIT_WORD", f"{label}: 表格单位“{text[:15]}”里有“单位”二字；学校规定全表单位写在右上方，不写“单位”。")
 
 
 FRONT = {"title_zh", "title_en", "abstract_label_zh", "abstract_label_en", "abstract_zh", "abstract_en",
@@ -615,7 +649,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         role_check(p, role, label, visible, err)
         if role == "caption" and label.startswith("p"):
             caption_check(p, label, err)
-            caption_position_check(p, label, visible.strip(), warn)
+            caption_position_check(p, label, visible.strip(), err)
         if (role in HEADING_STYLE_NUMBER or role == "body") and label.startswith("p"):
             headings.append((label, role, visible.strip()))
         if p._p.xpath(".//wp:inline") and role != "figure":

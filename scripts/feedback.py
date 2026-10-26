@@ -131,6 +131,10 @@ HINTS = {
     # rendered-page audit
     "PAGE_SIZE": ("办公软件按别的纸张大小导出了。", "核对 job.json 的 page_twips；仍不对就换一个办公软件（--office word/wps/libreoffice）。"),
     "OFF_PAGE": ("内容超出纸张，打印会被裁掉：通常是超宽表格、长网址或图片；也可能是 job.json 的 page_twips 把纸张设得太小或页边距设成了负数/零。", "先核对 job.json 的 page_twips（单位 twip，1 厘米 = 567，A4 宽 11906、高 16838）；没问题就拆表、给网址加空格断行，或缩小图片，改 content.json / 原稿后重新 run。"),
+    "CAPTION_POSITION": ("表题不在表格上方，或图题不在图片下方。", "已有 Word 的图表题脚本会自动挪；仍出现说明图表题和图表之间隔着别的段落，或 caption 标在了别处：看 mapping.json 里这一段和相邻段落的 role。"),
+    "TABLE_NOTE_LABEL": ("表注以“注”或“附注”开头，学校不允许。", "已有 Word 的表注（role table_note）脚本会自动去掉；content.json 的表格 note 里也会去掉。仍出现说明这段没标成 table_note：改 mapping.json 的 role。"),
+    "TABLE_UNIT_WORD": ("表格单位里写了“单位”二字。", "表格单位段（role table_unit，或 content.json 表格的 unit）脚本会自动去掉“单位：”；仍出现说明这段没标成 table_unit。"),
+    "TABLE_PADDING": ("表格单元格左右没有留白。", "已有 Word 和 content.json 的表格脚本都会设好留白，仍出现说明这一份是手工处理过的，重新 run。"),
     "TABLE_RULES": ("表格不是三线表（顶线、底线 1.5 磅，表头下 0.25 磅，没有其他线）。", "已有 Word 的表格脚本会自动改成三线表，仍出现说明这一份是手工处理过的，重新 run；content.json 的表格不用写边框。"),
     "TEXT_OUTSIDE_MARGINS": ("文字伸进了页边距：常见于不能断行的长英文、网址、公式或代码，或 page_twips 的页边距设得太小。", "在 content.json 里给长串加断行（代码块用 code 类型），或请用户同意缩短；封面就缩短这一项或问用户能否缩小封面字号；改过 page_twips 就核对它（1 厘米 = 567）。"),
     "IMAGE_OFF_PAGE": ("图片超出纸张。", "把图片改小，或确认这一段 role 是 figure。"),

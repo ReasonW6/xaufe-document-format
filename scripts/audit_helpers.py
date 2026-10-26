@@ -152,6 +152,8 @@ def paragraph_check(p, role, label, want, err, warn):
             # A table caption must stay with its following table; a bare figure has no caption.
             if role == "caption" and tag == "keepNext":
                 nxt = p._p.getnext()
+                if nxt is not None and nxt.xpath('./w:pPr/w:pStyle[@w:val="XAUFETableUnit"]'):
+                    nxt = nxt.getnext()  # caption, unit line, table: all three stay together
                 value = "1" if nxt is not None and nxt.tag == qn("w:tbl") else "0"
             if role == "figure" and tag == "keepNext":
                 nxt = p._p.getnext()
@@ -312,6 +314,9 @@ def _visible(edge):
     return edge is not None and edge.get(qn("w:val")) not in (None, "nil", "none")
 
 
+MIN_PADDING = 80  # twips; Word's usual cell margin is 108
+
+
 def three_line_check(table, label, err):
     where = f"{label}（第 {int(label[1:]) + 1} 个表格）"
     borders = table._tbl.tblPr.find(qn("w:tblBorders"))
@@ -324,6 +329,12 @@ def three_line_check(table, label, err):
     for e in ("left", "right", "insideH", "insideV"):
         if _visible(edges[e]):
             err("TABLE_RULES", f"{where}: 三线表不设竖线和其他横线，表格还有{ {'left': '左边框', 'right': '右边框', 'insideH': '内部横线', 'insideV': '内部竖线'}[e] }。")
+    mar = table._tbl.tblPr.find(qn("w:tblCellMar"))
+    for side in ("left", "right"):
+        edge = mar.find(qn("w:" + side)) if mar is not None else None
+        if edge is None or int(edge.get(qn("w:w"), "0")) < MIN_PADDING:
+            err("TABLE_PADDING", f"{where}: 单元格{'左' if side == 'left' else '右'}边没有留白（应约 0.19 厘米），文字会贴着表格边缘。")
+            break
     rows = table._tbl.tr_lst
     marked = [i for i, tr in enumerate(rows) if tr.xpath('./w:trPr/w:tblHeader[not(@w:val="0") and not(@w:val="false")]')]
     header = max(marked or [0])

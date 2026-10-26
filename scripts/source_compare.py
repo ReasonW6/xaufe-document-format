@@ -26,7 +26,8 @@ GENERATED_ROLES = {
     "toc_title", "toc1", "toc2", "toc3", "toc4", "abstract_label_zh", "abstract_label_en",
     "reference_title", "header", "spacer", "abstract_spacer",
 }
-MOVABLE_ROLES = {"title_zh", "title_en", "abstract_zh", "abstract_en", "keywords_zh", "keywords_en"}
+MOVABLE_ROLES = {"title_zh", "title_en", "abstract_zh", "abstract_en", "keywords_zh", "keywords_en",
+                 "caption"}  # a caption moves to the side of its table/figure the school asks for
 NUMBER = re.compile(r"^\s*[\[［]\d+[\]］]\s*")
 KEYWORDS = re.compile(r"^\s*(关键词|key\s*words?)\s*[:：]", re.I)
 # Part labels the template prints itself; the original's own copy is replaced, not lost.
@@ -120,6 +121,10 @@ def fragments(path):
             cells = [c.strip() for c in stripped.strip("|").split("|")]
             if not all(re.fullmatch(r":?-+:?", c) for c in cells if c):
                 result += [(here, c, None) for c in cells if c]
+            continue
+        if "\t" in stripped and not markdown:  # a pasted table row: its cells, as the Word table shows them
+            flush()
+            result += [(here, c.strip(), None) for c in stripped.split("\t") if c.strip()]
             continue
         if stripped.startswith("#"):
             flush()

@@ -731,6 +731,7 @@ def guess_roles(blocks):
     mapped exactly; other documents are guessed from text patterns.
     """
     from customization import ROLE_STYLES
+    from engine import TABLE_NOTE, TABLE_UNIT
 
     known = {name: role for role, name in ROLE_STYLES.items() if role != "cover"}
     paragraphs = [b for b in blocks if b["kind"] == "paragraph"]
@@ -788,6 +789,11 @@ def guess_roles(blocks):
             role = area
         elif plain in ("序言", "引言", "前言"):
             role, area, seen_heading = "preface", None, True
+        elif TABLE_NOTE.match(text) and (_neighbour(blocks, b, -1).get("kind") == "table"
+                                         or roles.get(_neighbour(blocks, b, -1).get("id")) == "table_note"):
+            role = "table_note"
+        elif TABLE_UNIT.match(text) and _neighbour(blocks, b, 1).get("kind") == "table":
+            role = "table_unit"
         elif re.match(r"^(图|表|Figure|Table)\s*\d", text) and len(text) <= 60:
             role = "caption"
         elif b.get("numbered"):  # a Word list item (its number is not a typed heading number)
@@ -813,6 +819,17 @@ def guess_roles(blocks):
     return roles, cover_end
 
 
+def _neighbour(blocks, b, step):
+    """The nearest non-blank block before (step -1) or after (step 1) block b."""
+    at = next(i for i, x in enumerate(blocks) if x is b) + step
+    while 0 <= at < len(blocks):
+        x = blocks[at]
+        if x["kind"] == "table" or x["text"].strip() or x.get("images") or x.get("equations"):
+            return x
+        at += step
+    return {}
+
+
 INLINE_ABSTRACT_ZH = re.compile(r"^(?:内容|中文)?摘\s*要\s*[:：]\s*\S")
 INLINE_ABSTRACT_EN = re.compile(r"^abstract\s*[:：]\s*\S", re.I)
 
@@ -831,11 +848,12 @@ def _inspect_text(root, s, source):
     for name in ("content.json", "mapping.json"):
         if (root / name).exists():
             raise ValueError(f"WORK 里已经有 {name}：要从原稿重新导入就先删掉它。")
-    content, notes = to_content(source, root)
+    content, notes, changes = to_content(source, root)
+    s["import_corrections"] = changes
     _write(root / "content.json", content)
     if not any(x["path"] == str(source) for x in s["source_documents"]):
         s["source_documents"].append({"path": str(source), "sha256": D.sha(source), "role": "original"})
-        D.write_json(root / D.MARKER, s)
+    D.write_json(root / D.MARKER, s)
     kinds = {}
     for b in content["blocks"]:
         kinds[b["type"]] = kinds.get(b["type"], 0) + 1
@@ -1070,6 +1088,8 @@ def _build(root, level):
         raise ValueError("还没有内容：新写文档请写 content.json；已有 Word 请先运行 inspect。")
     applied += [dict(zip(("part", "before", "after", "why"), c)) for c in result.get("auto_corrections", [])]
     r, st = D.load(root)
+    if content.is_file():  # what reading the .txt/.md original already put the school's way
+        applied = st.get("import_corrections", []) + applied
     st["corrections"] = applied
     D.write_json(r / D.MARKER, st)
     if applied and level == 0:

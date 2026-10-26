@@ -1479,6 +1479,55 @@
         "size_half_points": 18,
         "bold_required": false
       }
+    },
+    "table_unit": {
+      "pPr": {
+        "jc": {
+          "val": "right"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 18,
+        "bold_required": false
+      }
     }
   },
   "overrides": {

@@ -223,6 +223,15 @@
       "line_rule": "exact",
       "before": 0,
       "after": 0
+    },
+    "XAUFE Table Unit": {
+      "size": 9,
+      "align": "right",
+      "keep": true,
+      "line": 400,
+      "line_rule": "exact",
+      "before": 0,
+      "after": 0
     }
   }
 }

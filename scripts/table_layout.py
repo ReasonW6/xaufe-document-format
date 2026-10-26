@@ -138,11 +138,34 @@ def three_line(table):
                     tcpr.append(cell_borders)
 
 
+CELL_PADDING = 108  # Word's usual left/right cell margin; B's master has no table style that sets one
+
+
+def pad(table):
+    """Explicit left/right cell margins, so text never touches the rules in any template or office suite."""
+    pp = table._tbl.tblPr
+    for old in pp.findall(qn("w:tblCellMar")):
+        pp.remove(old)
+    mar = OxmlElement("w:tblCellMar")
+    for side, width in (("top", 0), ("left", CELL_PADDING), ("bottom", 0), ("right", CELL_PADDING)):
+        setel(mar, side, w=width, type="dxa")
+    look = pp.find(qn("w:tblLook"))
+    if look is not None:
+        look.addprevious(mar)
+    else:
+        pp.append(mar)
+    for tc in table._tbl.iter(qn("w:tc")):
+        if tc.getparent().getparent() is table._tbl:  # this table's own cells, not a nested table's
+            for old in tc.xpath("./w:tcPr/w:tcMar"):
+                old.getparent().remove(old)
+
+
 def fit_table(table, max_width, style_paragraph, *, repeat_header=False, max_height=13958, top_level=True):
     if max_width < 426:
         raise ValueError("表格可用宽度不足以容纳五号文字及边距；不能擅自缩小字号。")
     if table._tbl.xpath("./w:tblPr/w:tblpPr"):
         raise ValueError("浮动表格需专门核对锚点；本路径只处理行内表格。")
+    pad(table)
     rows = list(raw_rows(table))
     widths = [int(c.get(qn("w:w"), "0")) for c in table._tbl.tblGrid.gridCol_lst]
     if not widths or min(widths) <= 0:

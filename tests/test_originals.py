@@ -141,7 +141,7 @@ class Originals(base.CLI):
         self.assertIn("p2“另一段合成正文。”的 role 是 preserve，但它在 p1", out)
         self.assertIn("旧目录用 old_toc", out)
 
-    def test_table_caption_below_its_table_is_told(self):
+    def test_table_caption_below_its_table_is_moved_above_and_told(self):
         doc = Document()
         doc.add_paragraph("合成正文，下表是合成数据。")
         table = doc.add_table(rows=2, cols=2)
@@ -150,9 +150,12 @@ class Originals(base.CLI):
                 cell.text = value
         doc.add_paragraph("表1 合成表")
         doc.add_paragraph("合成正文结尾。")
-        _, code, _, out = self.run_docx(doc, "表题在下.docx")
+        work, code, _, out = self.run_docx(doc, "表题在下.docx")
         self.assertEqual(code, 0, out)
-        self.assertIn("表题“表1 合成表”在表格下面", out)
+        self.assertIn("表题按规定挪到了表格上方", out)
+        body = list(Document(work / "final.docx").element.body)
+        caption = next(i for i, el in enumerate(body) if "".join(el.xpath(".//w:t/text()")) == "表1 合成表")
+        self.assertEqual(body[caption + 1].tag, qn("w:tbl"))
 
     def test_tracked_changes_are_located(self):
         from unsupported import unsupported_reasons
@@ -351,6 +354,40 @@ class Originals(base.CLI):
         self.assertNotIn("诚信承诺", text)
         import delivery as D
         self.assertIn("旧封面", " ".join(D.load(work)[1].get("tell_user", [])))
+
+    def test_table_unit_and_note_follow_the_school_rules(self):
+        doc = Document()
+        doc.add_paragraph("合成正文，详见表1。")
+        doc.add_paragraph("表1 合成收入表")
+        doc.add_paragraph("单位：万元")
+        table = doc.add_table(rows=2, cols=2)
+        for row, values in zip(table.rows, (("年份", "收入"), ("2020", "12"))):
+            for cell, value in zip(row.cells, values):
+                cell.text = value
+        doc.add_paragraph("注：数据为合成数据。")
+        doc.add_paragraph("由表1可见，合成收入不变。")
+        work, code, inspected, out = self.run_docx(doc, "表注.docx")
+        self.assertEqual(code, 0, out)
+        roles = {r["text"]: r["role"] for r in json.loads((work / "mapping.json").read_text(encoding="utf-8"))["paragraphs"]}
+        self.assertEqual((roles["单位：万元"], roles["注：数据为合成数据。"]), ("table_unit", "table_note"))
+        final = {p.text: p for p in Document(work / "final.docx").paragraphs}
+        self.assertEqual(final["万元"].style.name, "XAUFE Table Unit")
+        self.assertEqual(final["数据为合成数据。"].style.name, "XAUFE Table Note")
+        self.assertNotIn("注：数据为合成数据。", final)
+        self.assertIn("不写“单位”二字", out)
+
+    def test_text_original_table_unit_note_and_caption_below(self):
+        source = self.d / "表.txt"
+        source.write_text("\n".join(["合成正文，详见表1。", "单位：元", "编号\t金额", "1\t30", "表1 合成表",
+                                      "注：合成说明。", "由表1可见，金额不变。"]), encoding="utf-8")
+        work = self.new(JOB_B, sources=[source])
+        code, out, err = self.call("inspect", "--work", work, "--text", source)
+        self.assertEqual(code, 0, out + err)
+        table = next(b for b in json.loads((work / "content.json").read_text(encoding="utf-8"))["blocks"] if b["type"] == "table")
+        self.assertEqual((table.get("caption"), table.get("unit"), table.get("note")), ("表1 合成表", "元", "合成说明。"))
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("表题按规定挪到了表格上方", out)
 
 
 # The inherited CLI tests already run in test_xaufe_cli.

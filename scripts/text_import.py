@@ -11,6 +11,7 @@ import re
 import shutil
 from pathlib import Path
 from textio import read_text_any, md_visible, continues
+from engine import TABLE_NOTE, TABLE_UNIT, note_text, unit_text
 
 LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)[^)]*\)")
 IMAGE = re.compile(r"^!\[([^\]]*)\]\(([^)\s]+)[^)]*\)$")
@@ -190,15 +191,26 @@ def to_content(path, work):
     front = []  # abstract pieces, kept as paragraphs if this turns out not to be a full paper
     references = []
     pending_caption = None
+    changes = []  # wording and places the school's rules change, told to the user at delivery
     for i, (kind, payload) in enumerate(pieces):
         role = role_of.get(i)
         text = text_of.get(i)
+        if kind == "para" and TABLE_UNIT.match(text or "") and i + 1 < len(pieces) and pieces[i + 1][0] == "table":
+            role = "table_unit"  # a short line right above a table, never the title
+        if role == "table_unit":
+            blocks.append({"type": "paragraph", "text": text})  # the table takes it (a caption above stays pending)
+            continue
         if kind == "code":
             blocks.append({"type": "code", "text": payload})
         elif kind == "table":
             width = max(len(r) for r in payload)
             rows = [r + [""] * (width - len(r)) for r in payload]
             table = {"type": "table", "header": rows[0], "rows": rows[1:] or [[""] * width]}
+            if blocks and blocks[-1].get("type") == "paragraph" and TABLE_UNIT.match(blocks[-1].get("text", "")):
+                line = blocks.pop()["text"]
+                table["unit"] = unit_text(line)
+                changes.append({"part": "text", "before": line, "after": table["unit"],
+                                "why": "全表单位写在表格右上方，不写“单位”二字"})
             if pending_caption is not None and blocks and blocks[-1] is pending_caption:
                 table["caption"] = blocks.pop()["text"]
             blocks.append(table)
@@ -232,6 +244,18 @@ def to_content(path, work):
             blocks.append({"type": "heading", "level": int(role[1]), "text": text})
         elif role == "caption" and text.startswith(("图", "Figure")) and blocks and blocks[-1]["type"] == "image":
             blocks[-1]["caption"] = text
+        elif role == "caption" and text.startswith(("表", "Table")) and blocks and blocks[-1]["type"] == "table" \
+                and not blocks[-1].get("caption"):
+            blocks[-1]["caption"] = text  # the school puts a table caption above its table
+            changes.append({"part": "caption", "before": text, "after": text, "why": "表题按规定挪到了表格上方"})
+        elif blocks and blocks[-1]["type"] == "table" and TABLE_NOTE.match(text or ""):
+            fixed = note_text(text)
+            blocks[-1]["note"] = (blocks[-1]["note"] + "\n" if blocks[-1].get("note") else "") + fixed
+            if fixed != text:
+                changes.append({"part": "text", "before": text, "after": fixed,
+                                "why": "表注前不写“注”“附注”（整表说明用“说明”）"})
+            pending_caption = None
+            continue
         else:
             blocks.append({"type": "paragraph", "text": text} if role == "caption" else _paragraph(text))
             pending_caption = blocks[-1] if role == "caption" else None
@@ -239,13 +263,19 @@ def to_content(path, work):
         pending_caption = None
     if references:
         content["references"] = references
-    paper = abstract["abstract_zh"] and content.get("keywords_zh") and references and any(
-        b["type"] == "heading" for b in blocks)
+    # Chapter headings make it a paper: the parts it lacks are completed, not skipped.
+    paper = any(b["type"] == "heading" for b in blocks)
     if paper:
         content["mode"] = "paper"
         for role, parts in abstract.items():
             if parts:
                 content[role] = "\n".join(parts)
+        missing = [name for have, name in ((abstract["abstract_zh"], "中文摘要"), (content.get("keywords_zh"), "关键词"),
+                                           (references, "参考文献")) if not have]
+        if missing:
+            notes.append(f"原稿缺{'、'.join(missing)}：只排版也要补全。摘要（150～300 字）和关键词根据正文起草，参考文献只补"
+                         "联网查到并用 refs 核实通过的真实文献；直接写进 content.json（abstract_zh / keywords_zh / references），"
+                         "并在 job.json 的 corrections 登记（part、after、why），交付时会逐条告诉用户。")
     else:
         content.pop("keywords_zh", None)
         content.pop("keywords_en", None)
@@ -258,4 +288,4 @@ def to_content(path, work):
                          "要按论文结构排就先问用户，再把它们移到 abstract_zh / keywords_zh 并改 mode。")
     if not content["metadata"].get("title_zh"):
         notes.append("没认出全篇题目：把题目写进 metadata.title_zh（和 job.json 的 info.title_zh 一致）。")
-    return content, notes
+    return content, notes, changes

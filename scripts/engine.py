@@ -273,7 +273,7 @@ def _default_role_format(role):
         return FONT_H if role == "toc1" else FONT_CN, 14, False
     if role == "caption":  # 图题、表题：五号黑体（2026-10-26 用户规则）
         return FONT_H, 10.5, False
-    if role in ("header", "table_note"):  # 页眉、表注：小五宋体
+    if role in ("header", "table_note", "table_unit"):  # 页眉、表注、表格单位：小五宋体
         return FONT_CN, 9, False
     return FONT_CN, 10.5, False
 
@@ -927,6 +927,9 @@ def _add_block(doc, b, base, heading_iter):
         if b.get("caption"):
             p = doc.add_paragraph(b["caption"], ROLES["caption"])
             p.paragraph_format.keep_with_next = True
+        if b.get("unit"):
+            p = doc.add_paragraph(b["unit"], ROLES["table_unit"])
+            p.paragraph_format.keep_with_next = True
         rows = [b["header"]] + b["rows"]
         n = len(rows[0])
         t = doc.add_table(rows=len(rows), cols=n)
@@ -937,6 +940,9 @@ def _add_block(doc, b, base, heading_iter):
             for ci, value in enumerate(row):
                 t.cell(ri, ci).text = value
         format_table(t, repeat_header=True)
+        for line in str(b.get("note") or "").split("\n"):
+            if line.strip():
+                doc.add_paragraph(line, ROLES["table_note"])
     elif typ == "page_break":
         p = doc.add_paragraph(style=ROLES["spacer"])
         p.paragraph_format.line_spacing = Pt(1)
@@ -1125,6 +1131,15 @@ def build(input_path, output, force=False, intake_path=None, cover_min_level=0):
             if e.tag != qn("w:sectPr"):
                 doc.element.body.remove(e)
     renumbered = renumber_blocks(data["blocks"], state)
+    for b in data["blocks"]:
+        if b["type"] != "table":
+            continue
+        for key, fix, why in (("note", lambda t: "\n".join(note_text(x) for x in t.split("\n")),
+                               "表注前不写“注”“附注”（整表说明用“说明”）"),
+                              ("unit", unit_text, "全表单位写在表格右上方，不写“单位”二字")):
+            if b.get(key) and fix(b[key]) != b[key]:
+                renumbered.append(("text", b[key], fix(b[key]), why))
+                b[key] = fix(b[key])
     entries = []
     for b in data["blocks"]:
         if b["type"] == "heading":
@@ -1620,7 +1635,7 @@ def structure_paper(doc, has_cover, meta, additions):
 
 CORRECTION_PARTS = {"title": "题目", "abstract": "摘要", "keywords": "关键词", "title_en": "英文题目",
                     "abstract_en": "英文摘要", "keywords_en": "英文关键词", "references": "参考文献",
-                    "heading": "标题", "text": "正文", "cover": "封面"}
+                    "heading": "标题", "text": "正文", "cover": "封面", "caption": "图表题"}
 _ADDED_ROLE = {"title": "title_zh", "abstract": "abstract_zh", "keywords": "keywords_zh", "title_en": "title_en",
                "abstract_en": "abstract_en", "keywords_en": "keywords_en", "references": "reference",
                "heading": "h1", "text": "body"}
@@ -1760,6 +1775,78 @@ def relabel_paragraphs(doc, roles):
     return done
 
 
+# A note under a table ("注：…", "说明：…", "资料来源：…") and a unit line above it ("单位：万元").
+TABLE_NOTE = re.compile(r"^\s*(?:附\s*注|注|说\s*明|资料来源|数据来源|来源|Notes?|Source)\s*\d*\s*[:：]", re.I)
+NOTE_LABEL = re.compile(r"^\s*(?:附\s*注|注)\s*\d*\s*[:：]\s*")  # the school forbids these two labels
+TABLE_UNIT = re.compile(r"^\s*[（(]?\s*单\s*位\s*[:：]\s*(.+?)\s*[)）]?\s*$")
+
+
+def note_text(text):
+    """A table note without the "注："/"附注：" label the school forbids ("说明：" stays)."""
+    return NOTE_LABEL.sub("", text, count=1)
+
+
+def unit_text(text):
+    """"单位：万元" -> "万元": the shared unit goes at the top right without the word 单位."""
+    m = TABLE_UNIT.match(text)
+    return m.group(1) if m else text
+
+
+def fix_table_text(doc, roles):
+    """Restyle: the note and unit wording the school asks for.  Returns the changes as corrections."""
+    done = []
+    for p, role in zip(list(doc.paragraphs), roles):
+        fix = {"table_note": note_text, "table_unit": unit_text}.get(role)
+        if not fix or p._p.xpath(".//w:drawing|.//m:oMath|.//w:fldChar"):
+            continue
+        before = p.text
+        after = fix(before)
+        if after != before and after.strip():
+            _set_text(p, after)
+            done.append(("text", before, after, "表注前不写“注”“附注”（整表说明用“说明”）" if role == "table_note"
+                         else "全表单位写在表格右上方，不写“单位”二字"))
+    return done
+
+
+def heads_table(el):
+    """True when a table follows this caption directly or after its unit line ("万元")."""
+    nxt = el.getnext()
+    if nxt is not None and nxt.tag == qn("w:p") and nxt.xpath("./w:pPr/w:pStyle/@w:val") == [ROLES["table_unit"].replace(" ", "")]:
+        nxt = nxt.getnext()
+    return nxt is not None and nxt.tag == qn("w:tbl")
+
+
+def _blank_el(el):
+    return el.tag == qn("w:p") and not "".join(el.xpath(".//w:t/text()")).strip() \
+        and not el.xpath(".//w:drawing|.//w:pict|.//m:oMath|./w:pPr/w:sectPr")
+
+
+def place_captions(doc, roles):
+    """A table caption goes above its table, a figure caption below its figure (the school's rule);
+    a caption on the wrong side of its object is moved there.  Returns the moves as corrections."""
+    def near(el, step):
+        el = step(el)
+        while el is not None and _blank_el(el):
+            el = step(el)
+        return el
+
+    is_table = lambda e: e is not None and e.tag == qn("w:tbl")
+    is_figure = lambda e: e is not None and e.tag == qn("w:p") and bool(e.xpath(".//w:drawing|.//w:pict"))
+    moved = []
+    for p, role in zip(list(doc.paragraphs), roles):
+        text = p.text.strip()
+        if role != "caption" or not text:
+            continue
+        before, after = near(p._p, lambda e: e.getprevious()), near(p._p, lambda e: e.getnext())
+        if re.match(r"^(表|Table)\s*\d", text) and is_table(before) and not is_table(after):
+            before.addprevious(p._p)
+            moved.append(("caption", text, text, "表题按规定挪到了表格上方"))
+        elif re.match(r"^(图|Figure)\s*\d", text) and is_figure(after) and not is_figure(before):
+            after.addnext(p._p)
+            moved.append(("caption", text, text, "图题按规定挪到了图片下方"))
+    return moved
+
+
 def renumber_blocks(blocks, state):
     """content.json: the same numbering for heading blocks (a preface heading is never numbered)."""
     import heading_numbers as HN
@@ -1868,6 +1955,8 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
     frozen = freeze_list_labels(doc, roles, default, ids)
     renumbered = renumber_paragraphs(doc, [roles.get(x, default) for x in ids], ids, state)
     renumbered += relabel_paragraphs(doc, [roles.get(x, default) for x in ids])
+    renumbered += place_captions(doc, [roles.get(x, default) for x in ids])
+    renumbered += fix_table_text(doc, [roles.get(x, default) for x in ids])
     for i, p in enumerate(doc.paragraphs):
         role = roles.get(ids[i], default)
         wanted = m["metadata"].get(role, "") if role in ("title_zh", "title_en") else None
@@ -1919,7 +2008,7 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         elif p.style.name == ROLES["caption"]:
             # Restyling resets direct pPr. Rebind a table caption to its table;
             # a figure caption must not pull unrelated following prose along.
-            p.paragraph_format.keep_with_next = nxt is not None and nxt.tag == qn("w:tbl")
+            p.paragraph_format.keep_with_next = heads_table(p._p)
     # A page break that only makes an empty page is layout, not content (the template's own
     # "start on a new page" headings often meet a typed page break).
     break_changes = [f"“{text.strip()[-15:]}”后面" if text.strip() else f"第 {i + 1} 段"
