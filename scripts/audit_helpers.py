@@ -303,6 +303,43 @@ def run_check(p, role, label, want, err, warn=None):
         warn("FONT_BOLD_PARAGRAPH", f"{label}: 整段都是加粗，模板正文不加粗（只强调个别词可以）。")
 
 
+# 三线表 (user rule 2026-10-26): top and bottom 1.5 pt (sz 12), under the header 0.25 pt (sz 2),
+# no vertical rules and no other horizontal rules.  Written here from the rule, not from table_layout.
+OUTER_RULE, HEADER_RULE = "12", "2"
+
+
+def _visible(edge):
+    return edge is not None and edge.get(qn("w:val")) not in (None, "nil", "none")
+
+
+def three_line_check(table, label, err):
+    where = f"{label}（第 {int(label[1:]) + 1} 个表格）"
+    borders = table._tbl.tblPr.find(qn("w:tblBorders"))
+    edges = {e: borders.find(qn("w:" + e)) if borders is not None else None
+             for e in ("top", "bottom", "left", "right", "insideH", "insideV")}
+    for e in ("top", "bottom"):
+        if not _visible(edges[e]) or edges[e].get(qn("w:sz")) != OUTER_RULE:
+            got = f"{int(edges[e].get(qn('w:sz'), '0')) / 8:g} 磅" if _visible(edges[e]) else "没有"
+            err("TABLE_RULES", f"{where}: {'顶线' if e == 'top' else '底线'}应为 1.5 磅，实际{got}。")
+    for e in ("left", "right", "insideH", "insideV"):
+        if _visible(edges[e]):
+            err("TABLE_RULES", f"{where}: 三线表不设竖线和其他横线，表格还有{ {'left': '左边框', 'right': '右边框', 'insideH': '内部横线', 'insideV': '内部竖线'}[e] }。")
+    rows = table._tbl.tr_lst
+    marked = [i for i, tr in enumerate(rows) if tr.xpath('./w:trPr/w:tblHeader[not(@w:val="0") and not(@w:val="false")]')]
+    header = max(marked or [0])
+    for ri, tr in enumerate(rows):
+        for tc in tr.tc_lst:
+            sides = {e.tag.split("}")[1]: e for e in tc.xpath("./w:tcPr/w:tcBorders/*")}
+            for side, edge in sides.items():
+                wanted = ri == header and side == "bottom"
+                if _visible(edge) and not wanted:
+                    err("TABLE_RULES", f"{where} 第 {ri + 1} 行: 单元格自带{side}边框，三线表只在表头下有一条线。")
+                    return
+            if ri == header and (not _visible(sides.get("bottom")) or sides["bottom"].get(qn("w:sz")) != HEADER_RULE):
+                err("TABLE_RULES", f"{where}: 表头下面的分隔线应为 0.25 磅。")
+                return
+
+
 def tables_check(doc, width, err):
     count = 0
     for i, t in enumerate(doc.tables):
@@ -317,6 +354,8 @@ def tables_check(doc, width, err):
                 if total > available:
                     err("TABLE_WIDTH", f"{label}: {total}twip超过可用{available}twip。")
                 pp = table._tbl.tblPr
+                if "/" not in label:
+                    three_line_check(table, label, err)
                 tw = pp.find(qn("w:tblW"))
                 if tw is None or tw.get(qn("w:type")) != "dxa" or tw.get(qn("w:w")) != str(total):
                     err("TABLE_WIDTH", label + ": 表格首选宽度与网格宽度不一致。")
@@ -488,3 +527,16 @@ def toc_proof_check(path, entries, vv, final, err, warn, proof_path=None):
             )
     except (ValueError, KeyError, TypeError, OSError) as exc:
         (err if final else warn)("TOC_PROOF_STALE", "目录验证证据无效：" + str(exc))
+
+
+CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿　-〿＀-￯‘-‟…—·]")
+
+
+def word_count(text):
+    """Word's 字数统计: each CJK character or full-width mark counts 1, each other run without spaces counts 1."""
+    text = text or ""
+    return len(CJK.findall(text)) + len(CJK.sub(" ", text).split())
+
+
+def lengths():
+    return json.loads((ROOT / "assets/checks/audit-baseline.json").read_text(encoding="utf-8"))["lengths"]

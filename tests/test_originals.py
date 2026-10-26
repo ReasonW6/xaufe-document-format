@@ -9,6 +9,7 @@ from docx.oxml.ns import nsdecls, qn
 import test_xaufe_cli as base  # a module import: its CLI tests are not collected here a second time
 from test_xaufe_cli import CONTENT, JOB_B
 import xaufe as X
+from fixtures import ABSTRACT
 
 
 class Originals(base.CLI):
@@ -29,7 +30,7 @@ class Originals(base.CLI):
     def test_plain_text_keeps_every_character_and_its_line_breaks(self):
         source = self.d / "原稿.txt"
         source.write_text("\n".join([
-            "排序算法比较", "", "摘要", "这是合成摘要。", "", "关键词：合成；测试", "", "一、引言",
+            "排序算法比较", "", "摘要", ABSTRACT, "", "关键词：合成；测试", "", "一、引言",
             "第一行是一个段落", "第二行是另一个段落", "（一）背景", "需要的步骤：", "1. 需求分析", "2. 系统设计",
             "表1 合成表", "编号\t名称\t密码", "1\t甲\t***", "二、结论", "合成结论。", "", "参考文献",
             "[1] 合成作者. 合成文献[M]. 北京: 合成出版社, 2020.",
@@ -66,7 +67,7 @@ class Originals(base.CLI):
         doc = Document()
         doc.add_paragraph("排序算法比较")
         doc.add_paragraph("摘要")
-        doc.add_paragraph("这是合成摘要。")
+        doc.add_paragraph(ABSTRACT)
         doc.add_paragraph("关键词：编号；标题")
         numbering = doc.part.numbering_part.element
         numbering.insert(0, parse_xml(
@@ -114,7 +115,7 @@ class Originals(base.CLI):
     def test_inline_abstract_label_is_kept_and_the_generated_label_follows_the_title(self):
         doc = Document()
         doc.add_paragraph("排序算法比较")
-        doc.add_paragraph("摘要：本文是一段合成摘要，说明了研究内容。")
+        doc.add_paragraph("摘要：" + ABSTRACT)
         doc.add_paragraph("关键词：合成；摘要")
         doc.add_heading("一、绪论", 1)
         doc.add_paragraph("合成正文。")
@@ -125,7 +126,7 @@ class Originals(base.CLI):
         self.assertEqual(code, 0, out)
         shown = [p.text for p in Document(work / "final.docx").paragraphs if p.text.strip()]
         self.assertLess(shown.index("排序算法比较"), shown.index("内 容 摘 要"))
-        self.assertLess(shown.index("内 容 摘 要"), shown.index("摘要：本文是一段合成摘要，说明了研究内容。"))
+        self.assertLess(shown.index("内 容 摘 要"), shown.index("摘要：" + ABSTRACT))
 
     def test_errors_after_a_delete_name_the_ids_in_mapping_json(self):
         doc = Document()
@@ -188,6 +189,98 @@ class Originals(base.CLI):
         with self.assertRaises(ValueError) as caught:
             locate_format({"styles": {"body": {"font": "宋体"}}})
         self.assertIn("cn（中文字体）", str(caught.exception))
+
+    # ------------------------------------------------------------ format-only corrections
+    def paper_doc(self, abstract, title="排序算法比较", references=True):
+        doc = Document()
+        doc.add_paragraph(title)
+        doc.add_paragraph("摘要")
+        doc.add_paragraph(abstract)
+        doc.add_paragraph("关键词：排序；算法")
+        doc.add_heading("一、引言", 1)
+        doc.add_paragraph("合成正文。")
+        if references:
+            doc.add_paragraph("参考文献")
+            doc.add_paragraph("[1] 合成作者. 合成文献[M]. 北京: 合成出版社, 2020.")
+        return doc
+
+    def with_job(self, work, **extra):
+        job = json.loads((work / "job.json").read_text(encoding="utf-8"))
+        job.update(extra)
+        (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+
+    def test_short_abstract_blocks_until_corrected_and_the_user_is_told(self):
+        source = self.d / "短摘要.docx"
+        self.paper_doc("本文比较了几种排序算法。").save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertNotEqual(code, 0)
+        self.assertIn("[ABSTRACT_LENGTH]", out)
+        self.assertIn("学校要求 150～300 字", out)
+        self.with_job(work, corrections=[{"part": "abstract", "before": "本文比较了几种排序算法。", "after": ABSTRACT,
+                                          "why": "原摘要 12 字，学校要求 150～300 字"}])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("按版式要求改了 1 处文字", out)
+        shown = [p.text for p in Document(work / "final.docx").paragraphs]
+        self.assertIn(ABSTRACT, shown)
+        self.assertNotIn("本文比较了几种排序算法。", shown)
+        import delivery as D
+        self.assertTrue(any("原摘要 12 字" in line for line in D.load(work)[1].get("tell_user", [])))
+
+    def test_user_can_keep_an_off_limit_abstract(self):
+        source = self.d / "保留.docx"
+        self.paper_doc("本文比较了几种排序算法。").save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        self.with_job(work, keep_as_is="摘要就这样，别动")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        import delivery as D
+        self.assertTrue(any("按你的意思保留了原样" in line for line in D.load(work)[1].get("tell_user", [])))
+
+    def test_added_reference_must_be_verified_first(self):
+        source = self.d / "无文献.docx"
+        self.paper_doc(ABSTRACT, references=False).save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertNotEqual(code, 0)
+        self.assertIn("只排版也要补", out)
+        self.with_job(work, corrections=[{"part": "references", "after": "合成作者. 补的文献[M]. 北京: 合成出版社, 2020.",
+                                          "why": "原稿没有参考文献"}])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertNotEqual(code, 0)
+        self.assertIn("还没有核对", out)
+
+    def test_correction_before_must_quote_the_original(self):
+        source = self.d / "找不到.docx"
+        self.paper_doc(ABSTRACT).save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        self.with_job(work, corrections=[{"part": "title", "before": "不存在的题目", "after": "排序算法比较", "why": "题目超长"}])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertNotEqual(code, 0)
+        self.assertIn("before 在原稿里找不到这一段", out)
+        self.with_job(work, corrections=[{"part": "title", "after": "x"}])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertIn("缺 why", out + err)
+
+    def test_long_title_is_flagged_with_its_count(self):
+        from audit_helpers import word_count
+
+        self.assertEqual(word_count("基于BERT的文本分类研究"), 10)
+        self.assertEqual(word_count("城市公共交通票价结构对居民通勤方式选择的影响研究"), 24)
+        source = self.d / "长题目.docx"
+        title = "城市公共交通票价结构对居民通勤方式选择影响的实证分析研究"
+        self.paper_doc(ABSTRACT, title=title).save(source)
+        work = self.new({**JOB_B, "info": {**JOB_B["info"], "title_zh": title}})
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertNotEqual(code, 0)
+        self.assertIn("[TITLE_TOO_LONG]", out)
+        self.assertIn("有 28 字", out)
 
 
 # The inherited CLI tests already run in test_xaufe_cli.

@@ -455,7 +455,7 @@ def customize(path, request, user_request, *, replace=False, reset=False):
 
 # "task" (write / format) is read by xaufe.py, not by the cover workflow.
 JOB_KEYS = {"task", "template", "logo", "cover", "info", "blank", "format", "timezone",
-            "approved_changes", "accept_unverified_refs"}
+            "approved_changes", "accept_unverified_refs", "corrections", "keep_as_is"}
 JOB_EVIDENCE = "job.json（执行者按用户在对话中的原话填写）"
 
 
@@ -487,6 +487,9 @@ def from_job(job, path, now=None):
         raise ValueError(
             'job.json 的 approved_changes 是用户同意的增删列表：[{"text": "原稿或成品里那段文字", "why": "用户怎么说的"}]。'
         )
+    if "keep_as_is" in job and not (isinstance(job["keep_as_is"], str) and job["keep_as_is"].strip()):
+        raise ValueError("job.json 的 keep_as_is 写用户要求保持原样时的原话（字符串），例如 \"题目不要动，就用我原来的\"；"
+                         "用户没这么说就不要写。")
     if not isinstance(job.get("accept_unverified_refs", False), bool):
         raise ValueError("job.json 的 accept_unverified_refs 只能是 true 或 false。")
     template = job.get("template")

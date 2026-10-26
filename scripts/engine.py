@@ -271,7 +271,9 @@ def _default_role_format(role):
         return FONT_EN, 10.5, True
     if role.startswith("toc") and role[-1:].isdigit():
         return FONT_H if role == "toc1" else FONT_CN, 14, False
-    if role == "header":
+    if role == "caption":  # 图题、表题：五号黑体（2026-10-26 用户规则）
+        return FONT_H, 10.5, False
+    if role in ("header", "table_note"):  # 页眉、表注：小五宋体
         return FONT_CN, 9, False
     return FONT_CN, 10.5, False
 
@@ -1595,6 +1597,99 @@ def structure_paper(doc, has_cover, meta, additions):
         fail("整理论文结构时原稿内容数量不一致，已停止。")
 
 
+CORRECTION_PARTS = {"title": "题目", "abstract": "摘要", "keywords": "关键词", "title_en": "英文题目",
+                    "abstract_en": "英文摘要", "keywords_en": "英文关键词", "references": "参考文献",
+                    "heading": "标题", "text": "正文", "cover": "封面"}
+_ADDED_ROLE = {"title": "title_zh", "abstract": "abstract_zh", "keywords": "keywords_zh", "title_en": "title_en",
+               "abstract_en": "abstract_en", "keywords_en": "keywords_en", "references": "reference",
+               "heading": "h1", "text": "body"}
+# Where an added front part goes: after the last front paragraph that comes before it in this order.
+_FRONT_ORDER = {"title_zh": 0, "abstract_label_zh": 0, "abstract_zh": 1, "keywords_zh": 2,
+                "title_en": 3, "abstract_label_en": 3, "abstract_en": 4, "keywords_en": 5}
+
+
+def _same(a, b):
+    return re.sub(r"\s+", "", a or "") == re.sub(r"\s+", "", b or "")
+
+
+def _set_text(p, text):
+    """Replace a plain-text paragraph's words, keeping its paragraph and first-run formatting."""
+    if p._p.xpath(".//w:drawing|.//w:pict|.//m:oMath|.//w:fldChar|.//w:fldSimple|.//w:object"):
+        raise ValueError("这一段里有图片、公式或域，不能整段替换文字")
+    runs = p._p.xpath("./w:r|./w:hyperlink|./w:ins|./w:smartTag")
+    rpr = p._p.find(f"./{qn('w:r')}/{qn('w:rPr')}")
+    for r in runs:
+        p._p.remove(r)
+    run = p.add_run(text)
+    if rpr is not None:
+        run._r.insert(0, deepcopy(rpr))
+
+
+def apply_corrections(doc, corrections, roles, ids, default=None):
+    """job.json "corrections": the agent's fixes to the user's text (format-only included), each with
+    the reason the user is told.  {"part", "before", "after", "why"}; an empty "before" adds a
+    paragraph (abstract/keywords/title before the body, references at the end, other text after
+    "insert_after"); an empty "after" removes the paragraph.  Returns [(part, before, after, why)]."""
+    done = []
+    for n, c in enumerate(corrections or []):
+        where = f"job.json 的 corrections[{n}]"
+        before, after, part = str(c.get("before") or ""), str(c.get("after") or ""), c.get("part")
+        paragraphs = list(doc.paragraphs)
+        if before:
+            hits = [i for i, p in enumerate(paragraphs) if _same(p.text, before)]
+            if not hits:
+                fail(f"{where} 的 before 在原稿里找不到这一段：要把原稿的整段文字原样照抄（只差空格可以）：“{before[:30]}”。")
+            i = hits[0]
+            if after:
+                try:
+                    _set_text(paragraphs[i], after)
+                except ValueError as exc:
+                    fail(f"{where}：原稿 {ids[i]}“{before[:15]}”{exc}；只改这一段里的文字请用户在原稿里改。")
+            else:
+                paragraphs[i]._p.getparent().remove(paragraphs[i]._p)
+                del ids[i]
+            done.append((part, before, after, c.get("why", "")))
+            continue
+        role = _ADDED_ROLE[part]
+        new = OxmlElement("w:p")
+        anchor_text = c.get("insert_after")
+        current = [roles.get(x, default) for x in ids]
+        if anchor_text:
+            hits = [i for i, p in enumerate(paragraphs) if _same(p.text, anchor_text)]
+            if not hits:
+                fail(f"{where} 的 insert_after 在原稿里找不到这一段：要整段原样照抄。")
+            at = hits[0] + 1
+        elif part == "references":
+            last_ref = max((i for i, r in enumerate(current) if r in ("reference", "reference_title")), default=None)
+            if last_ref is None:  # no reference list at all: a title, then the entries
+                title = OxmlElement("w:p")
+                paragraphs[-1]._p.addnext(title)
+                Paragraph(title, doc._body).add_run("参 考 文 献")
+                ids.append(f"added{len(ids)}t")
+                roles[ids[-1]] = "reference_title"
+                at = len(ids)
+            else:
+                at = last_ref + 1
+        else:
+            body_start = next((i for i, r in enumerate(current) if r in BODY_START), len(ids))
+            if role in _FRONT_ORDER:
+                front = [i for i, r in enumerate(current[:body_start])
+                         if r in _FRONT_ORDER and _FRONT_ORDER[r] <= _FRONT_ORDER[role]]
+                at = (max(front) + 1) if front else body_start
+            else:
+                at = body_start
+        paragraphs = list(doc.paragraphs)
+        if at < len(paragraphs):
+            paragraphs[at]._p.addprevious(new)
+        else:
+            paragraphs[-1]._p.addnext(new)
+        Paragraph(new, doc._body).add_run(after)
+        ids.insert(at, f"added{n}")
+        roles[f"added{n}"] = role
+        done.append((part, before, after, c.get("why", "")))
+    return done
+
+
 def _delete_marked(doc, roles, mapping):
     """Remove paragraphs the user agreed to delete (role "delete") and the old TOC the
     template replaces (role "old_toc").  Returns the mapping id of each paragraph left (messages
@@ -1668,6 +1763,7 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
                 end.getparent().remove(end)
             mark.getparent().remove(mark)
     ids, deleted = _delete_marked(doc, roles, m)
+    corrected = apply_corrections(doc, m.get("corrections"), roles, ids, default)
     spacing_changes = []
     # Only this explicit formatting whitelist is allowed to change visible ASCII spaces.
     for i, p in enumerate(doc.paragraphs):
@@ -1812,5 +1908,6 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         "typed_indent_removed": indent_changes,
         "blank_page_breaks_removed": break_changes,
         "list_labels_frozen": list(frozen.values()),
+        "corrections_applied": corrected,
         "message": "重排初稿已生成；内容保全检查通过。",
     }

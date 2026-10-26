@@ -24,6 +24,7 @@ from audit_helpers import toc_entries
 from keywords import normalize, visible
 from refresh_toc import logical_policy, update, verify_existing
 from render_preview import font_report
+from fixtures import ABSTRACT
 
 
 def candidate(value, source="user", **kwargs):
@@ -75,7 +76,7 @@ class Fixture(unittest.TestCase):
         }
         if paper:
             data.update(
-                abstract_zh="中文排版测试摘要。",
+                abstract_zh=ABSTRACT,
                 keywords_zh=["格式", "验证"],
                 references=["合成参考条目，仅作格式测试。"],
             )
@@ -492,7 +493,7 @@ class TableRepairs(Fixture):
         d, _ = self.table_doc()
         out, r, _, _ = self.restyle(d)
         self.assertPass(r)
-        self.assertLessEqual(sum(c.width.twips for c in out.tables[0].columns), 8306)
+        self.assertLessEqual(sum(c.width.twips for c in out.tables[0].columns), 8958)
 
     def test_table_grid_centered_not_cell_text_left_aligned(self):
         d, _ = self.table_doc()
@@ -701,7 +702,7 @@ class KeywordAndPreservation(Fixture):
         with self.assertRaises(ValueError):
             self.restyle(d, roles={"p0": "keywords_zh"})
 
-    def test_empty_keywords_are_not_hard_content_gate(self):
+    def test_empty_parts_must_be_completed_unless_the_user_keeps_them(self):
         out, state = self.build(
             paper=True,
             extras={
@@ -713,8 +714,13 @@ class KeywordAndPreservation(Fixture):
             },
         )
         r = check(out, intake_path=state)
+        self.assertIn("EMPTY_CONTENT", [x["code"] for x in r["errors"]])
+        self.assertIn("只排版也要补", next(x["message"] for x in r["errors"] if x["code"] == "EMPTY_CONTENT"))
+        (Path(state).parent / "job.json").write_text(json.dumps({"keep_as_is": "摘要先空着，我自己写"}, ensure_ascii=False),
+                                                     encoding="utf-8")
+        r = check(out, intake_path=state)
         self.assertPass(r)
-        self.assertIn("EMPTY_CONTENT", [x["code"] for x in r["warnings"]])
+        self.assertIn("PART_LEFT_EMPTY", [x["code"] for x in r["warnings"]])
 
     def test_input_image_blob_hash_unchanged(self):
         d = Document()
@@ -851,9 +857,11 @@ class TocRepairs(Fixture):
         ):
             report = update(out, target, intake_path=state)
         self.assertEqual(len(report["passes"]), 2)
+        (Path(state).parent / "job.json").write_text(json.dumps({"keep_as_is": "这些部分先空着"}, ensure_ascii=False),
+                                                     encoding="utf-8")
         r = check(target, final=True, intake_path=state)
         self.assertPass(r)
-        self.assertIn("EMPTY_CONTENT", [w["code"] for w in r["warnings"]])
+        self.assertIn("PART_LEFT_EMPTY", [w["code"] for w in r["warnings"]])
 
     def test_font_environment_change_requires_new_toc_render(self):
         out, state = self.build(paper=True)

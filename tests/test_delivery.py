@@ -18,6 +18,7 @@ from check_format import check
 from toc_format import enforce
 import office_discovery as O
 import office_backend as B
+from fixtures import ABSTRACT
 
 
 def sha(p):
@@ -75,7 +76,7 @@ class Base(unittest.TestCase):
         }
         if paper:
             data.update(
-                abstract_zh="这是合成摘要。",
+                abstract_zh=ABSTRACT,
                 keywords_zh=["合成数据", "格式检查"],
                 references=["[1] 虚构参考文献，仅测试排版。"],
             )

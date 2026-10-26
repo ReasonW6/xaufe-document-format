@@ -100,11 +100,11 @@ class PortableBehavior(Fixture):
         state = self.path("json")
         self.assertEqual(I.start(state, "synthetic")["timezone"], "Asia/Shanghai")
 
-    def test_twenty_character_title_wraps_without_changing_words(self):
+    def test_long_title_wraps_without_changing_words(self):
         import cover_fit
         from customization import apply_cover, effective_profile
 
-        title = "城市公共交通票价结构对通勤方式选择的影响"
+        title = "城市公共交通票价结构对居民通勤方式选择的影响研究"  # 24 characters, the longest allowed
 
         def lines(spec):
             master = Document(E.ROOT / spec["master_file"])

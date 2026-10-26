@@ -53,8 +53,8 @@
       "size": 16,
       "bold": false,
       "align": "center",
-      "line": 360,
-      "line_rule": "auto",
+      "line": 400,
+      "line_rule": "exact",
       "keep": true
     },
     "XAUFE English Title": {
@@ -62,8 +62,8 @@
       "size": 16,
       "bold": true,
       "align": "center",
-      "line": 360,
-      "line_rule": "auto",
+      "line": 400,
+      "line_rule": "exact",
       "keep": true
     },
     "XAUFE Chinese Abstract Label": {
@@ -71,8 +71,8 @@
       "size": 14,
       "bold": false,
       "align": "center",
-      "line": 360,
-      "line_rule": "auto",
+      "line": 400,
+      "line_rule": "exact",
       "keep": true
     },
     "XAUFE English Abstract Label": {
@@ -80,28 +80,28 @@
       "size": 14,
       "bold": true,
       "align": "center",
-      "line": 360,
-      "line_rule": "auto",
+      "line": 400,
+      "line_rule": "exact",
       "keep": true
     },
     "XAUFE Abstract Chinese": {
       "first": 420,
       "chars": 200,
-      "line": 360,
-      "line_rule": "auto"
+      "line": 400,
+      "line_rule": "exact"
     },
     "XAUFE Abstract English": {
       "cn": "Times New Roman",
       "first": 420,
       "chars": 200,
-      "line": 360,
-      "line_rule": "auto"
+      "line": 400,
+      "line_rule": "exact"
     },
     "XAUFE Keywords Chinese": {
       "cn": "黑体",
       "align": "left",
-      "line": 360,
-      "line_rule": "auto",
+      "line": 400,
+      "line_rule": "exact",
       "left": 1154,
       "hanging": 1154
     },
@@ -109,14 +109,14 @@
       "cn": "Times New Roman",
       "bold": true,
       "align": "left",
-      "line": 360,
-      "line_rule": "auto",
+      "line": 400,
+      "line_rule": "exact",
       "left": 1435,
       "hanging": 1435
     },
     "XAUFE Abstract Spacer": {
-      "line": 360,
-      "line_rule": "auto",
+      "line": 400,
+      "line_rule": "exact",
       "align": "left"
     },
     "XAUFE TOC Title": {
@@ -153,13 +153,13 @@
       "outline": 0,
       "keep": true,
       "break_before": true,
-      "line": 360,
-      "line_rule": "auto"
+      "line": 400,
+      "line_rule": "exact"
     },
     "XAUFE Reference": {
       "align": "both",
-      "line": 360,
-      "line_rule": "auto"
+      "line": 400,
+      "line_rule": "exact"
     },
     "XAUFE Caption": {
       "align": "center",
@@ -167,7 +167,8 @@
       "line": 400,
       "line_rule": "exact",
       "before": 0,
-      "after": 0
+      "after": 0,
+      "cn": "黑体"
     },
     "XAUFE Figure": {
       "align": "center",
@@ -214,6 +215,14 @@
       "size": 14,
       "align": "left",
       "left": "$toc_indent"
+    },
+    "XAUFE Table Note": {
+      "size": 9,
+      "align": "left",
+      "line": 400,
+      "line_rule": "exact",
+      "before": 0,
+      "after": 0
     }
   }
 }

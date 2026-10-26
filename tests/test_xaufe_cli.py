@@ -18,6 +18,7 @@ import xaufe as X
 import delivery as D
 import intake as I
 from run_acceptance import original_text
+from fixtures import ABSTRACT
 
 JOB_B = {
     "task": "format",
@@ -34,7 +35,7 @@ JOB_B = {
 CONTENT = {
     "mode": "paper",
     "metadata": {"title_zh": "排序算法比较"},
-    "abstract_zh": "这是合成摘要。",
+    "abstract_zh": ABSTRACT,
     "keywords_zh": ["排序", "算法"],
     "references": ["合成作者. 合成文献[M]. 北京: 合成出版社, 2020."],
     "blocks": [
@@ -366,7 +367,7 @@ class CLI(unittest.TestCase):
     def test_text_original_is_imported_word_for_word(self):
         source = self.d / "原稿.md"
         source.write_text("\n".join([
-            "# 排序算法比较", "", "## 摘要", "", "本文比较了几种排序算法，", "说明各自的适用场合。", "",
+            "# 排序算法比较", "", "## 摘要", "", "本文比较了几种排序算法，", "说明各自的适用场合。" + ABSTRACT, "",
             "关键词：排序；算法", "", "一、引言", "", "排序是常用操作，详见[课程网站](https://example.org/sort)。", "",
             "（一）背景", "", "表1 三种算法", "", "| 算法 | 复杂度 |", "|---|---|", "| 冒泡 | O(n²) |",
             "| 快速 | O(n log n) |", "", "```", "print('hello')", "```", "", "## 参考文献", "",
@@ -378,7 +379,7 @@ class CLI(unittest.TestCase):
         self.assertIn("mode=paper", out)
         content = json.loads((work / "content.json").read_text(encoding="utf-8"))
         self.assertEqual(content["metadata"], {"title_zh": "排序算法比较"})
-        self.assertEqual(content["abstract_zh"], "本文比较了几种排序算法，说明各自的适用场合。")
+        self.assertEqual(content["abstract_zh"], "本文比较了几种排序算法，说明各自的适用场合。" + ABSTRACT)
         self.assertEqual(content["keywords_zh"], ["排序", "算法"])
         self.assertEqual(content["references"], ["[1] 合成作者. 合成文献[M]. 北京: 合成出版社, 2020."])
         self.assertEqual([b["type"] for b in content["blocks"]], ["heading", "paragraph", "heading", "table", "code"])
@@ -400,7 +401,7 @@ class CLI(unittest.TestCase):
         for text in [
             "排序算法比较",
             "摘要",
-            "本文比较了几种排序算法。",
+            ABSTRACT,
             "关键词：排序   算法",
             "一、引言",
             "这是正文。",
@@ -834,7 +835,7 @@ class CLI(unittest.TestCase):
 
     def test_old_manual_toc_is_replaced_by_generated_one(self):
         doc = Document()
-        for text in ["排序算法比较", "摘要", "本文比较了几种排序算法。", "关键词：排序   算法", "目录",
+        for text in ["排序算法比较", "摘要", ABSTRACT, "关键词：排序   算法", "目录",
                      "一、引言……………1", "二、方法……………2", "一、引言", "这是正文。", "二、方法", "方法正文。", "参考文献",
                      "[1] 合成作者. 合成文献[M]. 2020."]:
             doc.add_paragraph(text)
@@ -854,7 +855,7 @@ class CLI(unittest.TestCase):
 
     def test_english_title_and_spaced_keyword_labels_are_kept(self):
         doc = Document()
-        for text in ["排序算法比较", "摘要", "本文比较了几种排序算法。", "关键词：排序 算法 ", "Comparison of Sorting Algorithms",
+        for text in ["排序算法比较", "摘要", ABSTRACT, "关键词：排序 算法 ", "Comparison of Sorting Algorithms",
                      "Abstract", "This paper compares sorting algorithms.", "Key words: sorting; algorithms",
                      "一、引言", "这是正文。", "参考文献", "[1] 合成作者. 合成文献[M]. 2020."]:
             doc.add_paragraph(text)
@@ -1108,7 +1109,7 @@ class CLI(unittest.TestCase):
                 shutil.copy2(ROOT / "examples" / template / name, work / name)
             shutil.copy2(ROOT / "examples/layout-test.png", work / "layout-test.png")
             code, out, err = self.call("run", "--work", work, "--office", "none")
-            self.assertEqual(code, 0, err)
+            self.assertEqual(code, 0, out + err)
             self.call("cancel", "--work", work)
 
     def test_writing_mode_rejects_reference_not_in_refs_json(self):

@@ -158,6 +158,19 @@ def _painted(run):
     shade = rpr.find(qn("w:shd"))
     return shade is not None and (shade.get(qn("w:fill")) or "auto").upper() not in ("AUTO", "FFFFFF")
 
+def correction_line(c):
+    """One correction as the user reads it: what changed and why."""
+    part = E.CORRECTION_PARTS.get(c.get("part"), "文字")
+    before, after = (c.get("before") or "").strip(), (c.get("after") or "").strip()
+    short = lambda t: t[:24] + ("…" if len(t) > 24 else "")
+    if before and after:
+        what = f"{part}“{short(before)}”改为“{short(after)}”"
+    elif after:
+        what = f"补了{part}“{short(after)}”"
+    else:
+        what = f"删去{part}“{short(before)}”"
+    return what + (f"（{c['why']}）" if c.get("why") else "")
+
 
 def compare_originals(root, state, result):
     """Format-only (task "format"): any text added or dropped without the user's say blocks delivery.
@@ -173,6 +186,11 @@ def compare_originals(root, state, result):
                   "写不进的就在新成品上重新手工处理后 adopt；用户这次不要了，就在这里写明用户的原话。"})
     job = _job(root)
     strict = job.get("task") == "format"
+    corrections = state.get("corrections") or []
+    if corrections:
+        result["warnings"].append({"code": "TEXT_CORRECTED", "message": "按学校版式要求改动了这些文字："
+                                   + "；".join(f"{n}. {correction_line(c)}" for n, c in enumerate(corrections, 1))
+                                   + "。要在回复里逐条告诉用户，用户不同意的就从 job.json 的 corrections 里去掉后重新 run。"})
     if not originals:
         if strict and job:
             raise AcceptanceFailed("原文保全", [{
@@ -216,6 +234,7 @@ def compare_originals(root, state, result):
         else:
             generated.append(value)
     approved = [c["text"] for c in job.get("approved_changes", []) if isinstance(c, dict) and c.get("text")]
+    approved += [t for c in corrections for t in (c.get("before"), c.get("after")) if t]
     report = compare(originals, root / "final.docx", approved=approved, generated=[str(g) for g in generated],
                      replaced=mapping.get("replace_cover_before"), old_toc=old_toc)
     write_json(root / "source-comparison.json", report)
@@ -423,7 +442,8 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
 # finish puts them in the notice that must go into the reply, so they cannot be dropped.
 TELL_USER = {"RENDERER_DIFFERENCE", "ORIGINAL_PAGE_NUMBERS_DROPPED", "ORIGINAL_HEADER_FOOTER_REPLACED", "ORIGINAL_HIGHLIGHT_REMOVED", "HEADING_NUMBERING", "MARGIN_TOO_SMALL",
              "STYLE_HARD_TO_READ", "FONT_MARKS", "RENDERER_FALLBACK", "REF_CITATION_MISMATCH", "REF_SUPPORT_UNCONFIRMED",
-             "CAPTION_POSITION", "PAPER_STRUCTURE_SKIPPED"}
+             "CAPTION_POSITION", "PAPER_STRUCTURE_SKIPPED", "TEXT_CORRECTED",
+             "PART_LEFT_EMPTY", "TITLE_TOO_LONG", "ABSTRACT_LENGTH"}
 
 
 def _user_line(w):
@@ -445,6 +465,10 @@ def _user_line(w):
         return "原稿页脚有页码，这次按模板默认没有显示页码；需要页码可以告诉我。"
     if code == "HEADING_NUMBERING":
         return f"标题“{first}”的编号和模板的写法（一级“一、”、二级“（一）”、三级“1.”）不一样，按原稿保留了。"
+    if code in ("PART_LEFT_EMPTY", "TITLE_TOO_LONG", "ABSTRACT_LENGTH"):
+        return message.split("用户说过保持原样")[0] + "按你的意思保留了原样。"
+    if code == "TEXT_CORRECTED":
+        return message.split("。要在回复里")[0] + "。不同意哪一处告诉我，我改回去。"
     if code == "PAPER_STRUCTURE_SKIPPED":
         return "这次按普通文档排的：没有生成目录，摘要也没有单独成页（模板的完整论文结构里有这些）；需要的话可以告诉我。"
     if code == "CAPTION_POSITION":
@@ -753,7 +777,7 @@ ROLE_NAMES = {
     "abstract_zh": "中文摘要", "abstract_en": "英文摘要", "keywords_zh": "中文关键词", "keywords_en": "英文关键词",
     "toc_title": "目录标题", "toc1": "目录一级", "toc2": "目录二级", "toc3": "目录三级", "toc4": "目录四级",
     "reference_title": "参考文献标题", "reference": "参考文献条目", "caption": "图表标题", "figure": "图片段",
-    "table_text": "表格文字", "code": "代码", "equation": "公式", "header": "页眉",
+    "table_text": "表格文字", "table_note": "表注", "code": "代码", "equation": "公式", "header": "页眉",
 }
 # How the same change is asked for in job.json (format.styles.<role>.<key>), when it is one.
 STYLE_KEY = {"FONT_SIZE": "size", "FONT_CN": "cn", "FONT_EN": "latin", "FONT_BOLD": "bold", "FONT_COLOR": "color",

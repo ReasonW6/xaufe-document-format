@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import engine as E
 import intake as I
 from check_format import check
+from fixtures import ABSTRACT
 
 
 def candidate(v, source="user", **extra):
@@ -291,7 +292,7 @@ class ProfileTests(unittest.TestCase):
         if mode == "paper":
             data.update(
                 {
-                    "abstract_zh": "中文格式测试摘要。",
+                    "abstract_zh": ABSTRACT,
                     "keywords_zh": ["格式", "测试"],
                     "references": ["格式测试条目，不是真实参考文献。"],
                 }
@@ -432,15 +433,15 @@ class ProfileTests(unittest.TestCase):
         st = d.styles["XAUFE Abstract Chinese"]
         self.assertEqual(st.font.size.pt, 10.5)
 
-    def test_both_abstract_and_reference_have_one_point_five_spacing(self):
+    def test_abstract_and_reference_use_the_fixed_twenty_point_line(self):
         for id in ["A", "B"]:
             E.select_profile(id)
             d = Document()
             E.install_styles(d)
             for name in ["XAUFE Abstract Chinese", "XAUFE Abstract English", "XAUFE Reference"]:
                 e = d.styles[name].element.pPr.find(qn("w:spacing"))
-                self.assertEqual(e.get(qn("w:line")), "360")
-                self.assertEqual(e.get(qn("w:lineRule")), "auto")
+                self.assertEqual(e.get(qn("w:line")), "400")  # 2026-10-26: all text fixed 20 pt
+                self.assertEqual(e.get(qn("w:lineRule")), "exact")
             e = d.styles["XAUFE Body"].element.pPr.find(qn("w:spacing"))
             self.assertEqual(e.get(qn("w:line")), "400")
             self.assertEqual(e.get(qn("w:lineRule")), "exact")

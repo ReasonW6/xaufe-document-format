@@ -144,7 +144,7 @@ class LongCoverLayout(Fixture):
         return out, state
 
     def test_green_long_cover_continuation_aligns_to_title(self):
-        out, state = self.make("A", "校园自习空间预约与服务质量分析系统的设计与排版测试")
+        out, state = self.make("A", "校园自习空间预约与服务质量分析系统设计与排版测试")
         self.assertPass(check(out, intake_path=state))
         ind = Document(out).paragraphs[5]._p.pPr.find(qn("w:ind"))
         self.assertEqual(
@@ -152,7 +152,7 @@ class LongCoverLayout(Fixture):
         )
 
     def test_red_long_cover_keeps_original_indents(self):
-        out, state = self.make("B", "校园自习空间预约与服务质量分析系统的设计与排版测试")
+        out, state = self.make("B", "校园自习空间预约与服务质量分析系统设计与排版测试")
         self.assertPass(check(out, intake_path=state))
         d = Document(out)
         baseline = Document(E.ROOT / E.SPEC["master_file"])
@@ -172,7 +172,7 @@ class LongCoverLayout(Fixture):
         )
 
     def test_tampered_long_cover_indent_rejected(self):
-        out, state = self.make("A", "校园自习空间预约与服务质量分析系统的设计与排版测试")
+        out, state = self.make("A", "校园自习空间预约与服务质量分析系统设计与排版测试")
         d = Document(out)
         d.paragraphs[5]._p.pPr.find(qn("w:ind")).set(qn("w:left"), "999")
         d.save(out)

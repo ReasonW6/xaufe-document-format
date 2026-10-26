@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import intake as I
 import engine as E
 from check_format import check
+from fixtures import ABSTRACT
 
 
 def value(text):
@@ -112,7 +113,7 @@ class InstructionClarity(unittest.TestCase):
         data = self.sample(
             mode="paper",
             metadata={"title_en": "Synthetic title"},
-            abstract_zh="合成摘要。",
+            abstract_zh=ABSTRACT,
             abstract_en="Synthetic abstract.",
             keywords_zh=["合成"],
             keywords_en=["synthetic"],

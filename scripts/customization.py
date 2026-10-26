@@ -31,6 +31,7 @@ ROLE_STYLES = {
     "caption": "XAUFE Caption",
     "figure": "XAUFE Figure",
     "table_text": "XAUFE Table Text",
+    "table_note": "XAUFE Table Note",
     "code": "XAUFE Code",
     "equation": "XAUFE Equation",
     "spacer": "XAUFE Spacer",

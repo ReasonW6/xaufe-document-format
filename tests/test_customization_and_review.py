@@ -171,7 +171,7 @@ class MergeTests(Fixture):
                     self.assertEqual(page_contract(template, request), C.effective_profile(template, request)["page_twips"])
         # Hand-checked values, not copied from layout.json.
         self.assertEqual((page_contract("B")["left"], page_contract("B")["right"]), (1701, 1247))
-        self.assertEqual((page_contract("A")["left"], page_contract("A")["header"]), (1800, 851))
+        self.assertEqual((page_contract("A")["left"], page_contract("A")["header"]), (1701, 851))
         # A narrowed margin pulls the default header/footer distance in; one the user gave stays.
         narrow = page_contract("A", {"page_twips": {"top": 1000, "bottom": 1000}})
         self.assertEqual((narrow["header"], narrow["footer"]), (700, 700))

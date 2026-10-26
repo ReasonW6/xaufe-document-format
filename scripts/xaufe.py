@@ -496,13 +496,53 @@ def _written(root):
 
 
 def _document_references(root):
-    """Reference lines of the document being laid out: content.json references or mapping rows."""
+    """Reference lines of the document being laid out: content.json references or mapping rows,
+    plus the references job.json "corrections" adds to an existing Word."""
     if (root / "content.json").is_file():
         return [str(r) for r in _read(root / "content.json", "content.json").get("references") or []]
     if (root / "mapping.json").is_file():
         rows = _read(root / "mapping.json", "mapping.json").get("paragraphs", [])
-        return [r.get("text", "") for r in rows if r.get("role") == "reference" and r.get("text", "").strip()]
+        return [r.get("text", "") for r in rows if r.get("role") == "reference" and r.get("text", "").strip()] \
+            + _added_references(root)
     return []
+
+
+def _added_references(root):
+    """References the agent adds or rewrites through job.json "corrections"."""
+    return [str(c["after"]) for c in _corrections(root) if c.get("part") == "references" and str(c.get("after") or "").strip()]
+
+
+def _added_reference_problems(root):
+    """A reference the agent adds to the user's paper must be found and confirmed real first (PASS);
+    one that cannot be confirmed is left out and the user is told, never added on trust."""
+    import refcheck as R
+
+    added = _added_references(root)
+    if not added:
+        return []
+    result_path = root / "refs-result.json"
+    if not result_path.is_file():
+        return [_problem("job.json 的 corrections 补了参考文献，但还没有核对：运行 refs --from-document（会带上补的条目），"
+                         "全部“通过”才能补；核实不了的那条去掉，交付时告诉用户。", "refs.json")]
+    if _refs_result_forged(root):
+        return [_problem("refs-result.json 不是 refs 命令写出的那一份（被手写或改过）：删掉它，重新运行 refs。", "refs-result.json")]
+    saved = _read(result_path, "refs-result.json")
+    refs_json = root / "refs.json"
+    if saved.get("refs_sha256") != (hashlib.sha256(refs_json.read_bytes()).hexdigest() if refs_json.is_file() else None):
+        return [_problem("refs.json 改过以后还没有重新运行 refs。", "refs.json")]
+    results = {_ref_key(r["text"]): r for r in saved.get("results", [])}
+    problems = []
+    for text in added:
+        r = results.get(_ref_key(text))
+        if r is None:
+            problems.append(_problem("corrections 补的这条参考文献不在 refs.json 里：删掉 refs.json 后运行 refs --from-document，"
+                                     "或把它原样写进 refs.json 再运行 refs：" + text[:40], "refs.json"))
+        elif r["status"] != R.PASS:
+            reason = "连不上核对服务，没能核对" if r.get("unreachable") else R.plain_reason(r)[:40]
+            problems.append(_problem(f"corrections 补的这条参考文献没有核实通过（{reason}）：按用户的要求，核实不了的不补——"
+                                     "从 job.json 的 corrections 里去掉它，换一条能核实的真实文献，或交付时告诉用户少补了一条：" + text[:40],
+                                     "job.json"))
+    return problems
 
 
 def _save_refs_result(root, data):
@@ -564,11 +604,14 @@ def _original_reference_report(root):
         return (f"这是只排版：文中的 {count} 条参考文献按原文保留，只统一了格式；{why}没有核对它们是否真实存在、"
                 "信息是否准确。需要的话可以再帮你逐条核对。") if count else None
     saved = _read(root / "refs-result.json", "refs-result.json")
-    lines = ["| 序号 | 文献（原文） | 核对结果 | 说明 |", "|---|---|---|---|"]
+    added = {_ref_key(t) for t in _added_references(root)}
+    lines = ["| 序号 | 文献 | 核对结果 | 说明 |", "|---|---|---|---|"]
     for index, r in enumerate(saved.get("results", []), 1):
         reason = "" if r["status"] == R.PASS else R.plain_reason(r)[:80]
-        lines.append(f"| {index} | {_readable(r['text'])[:60]} | {r['status']} | {reason} |")
-    lines.append("这是只排版：原文的参考文献没有改动。“信息不一致”“排除”的条目建议你自己核对后再决定要不要改。")
+        mark = "（补充）" if _ref_key(r["text"]) in added else ""
+        lines.append(f"| {index} | {_readable(r['text'])[:60]}{mark} | {r['status']} | {reason} |")
+    lines.append(("标“补充”的是原稿缺少、按要求补上并逐条核实过的文献；其余是原文的，没有改动。" if added else
+                  "这是只排版：原文的参考文献没有改动。") + "“信息不一致”“排除”的条目建议你自己核对后再决定要不要改。")
     return "\n".join(lines)
 
 
@@ -898,6 +941,34 @@ def cmd_inspect(args):
 
 
 # ---------------------------------------------------------------- run
+def _corrections(root):
+    """job.json "corrections", checked for shape: the fixes the agent made to the user's text."""
+    import engine as E
+
+    if not (root / "job.json").is_file():
+        return []
+    items = _read(root / "job.json", "job.json").get("corrections") or []
+    if not isinstance(items, list):
+        raise ValueError("job.json 的 corrections 要写成列表：[{\"part\": \"abstract\", \"before\": \"原文整段\", "
+                         "\"after\": \"改后整段\", \"why\": \"为什么改\"}]。")
+    for n, c in enumerate(items):
+        where = f"job.json 的 corrections[{n}]"
+        if not isinstance(c, dict):
+            raise ValueError(f"{where} 要写成 {{\"part\": …, \"before\": …, \"after\": …, \"why\": …}}。")
+        if c.get("part") not in E.CORRECTION_PARTS:
+            raise ValueError(f"{where} 的 part 只能是：" + "、".join(f"{k}（{v}）" for k, v in E.CORRECTION_PARTS.items()) + "。")
+        if not str(c.get("why") or "").strip():
+            raise ValueError(f"{where} 缺 why：写清为什么改（交付时原样告诉用户），例如“摘要只有 120 字，按规定补到 150 字以上”。")
+        if not str(c.get("before") or "").strip() and not str(c.get("after") or "").strip():
+            raise ValueError(f"{where} 的 before 和 after 都是空的：改一段就两样都写，补一段只写 after，删一段只写 before。")
+        if not str(c.get("before") or "").strip() and c.get("part") == "cover":
+            raise ValueError(f"{where}：封面由模板生成，不能补写；封面信息写在 job.json 的 info 里。")
+        extra = set(c) - {"part", "before", "after", "why", "insert_after"}
+        if extra:
+            raise ValueError(f"{where} 有不认识的项“{sorted(extra)[0]}”；只能有 part、before、after、why、insert_after。")
+    return items
+
+
 def _resolve_mapping(root):
     mapping = _read(root / "mapping.json", "mapping.json")
     rows = mapping.get("paragraphs")
@@ -921,11 +992,15 @@ def _resolve_mapping(root):
         resolved["add"] = mapping["add"]
     if mapping.get("rebuild_structure"):
         resolved["rebuild_structure"] = True
+    corrections = _corrections(root)
+    if corrections:
+        resolved["corrections"] = corrections
     _write(root / "mapping.resolved.json", resolved)
     return Path(mapping["source"]), root / "mapping.resolved.json"
 
 
 def _build(root, level):
+    import delivery as D
     import engine as E
 
     content = root / "content.json"
@@ -934,7 +1009,8 @@ def _build(root, level):
     if content.is_file() and mapping.is_file():
         raise ValueError("WORK 里同时有 content.json 和 mapping.json，只能保留一个：新写文档用 content.json，已有 Word 用 mapping.json。")
     if content.is_file():
-        E.build(content, draft, force=True, intake_path=root / "intake.json", cover_min_level=level)
+        result = E.build(content, draft, force=True, intake_path=root / "intake.json", cover_min_level=level) or {}
+        applied = _declared_corrections(root, content)
     elif mapping.is_file():
         source, resolved = _resolve_mapping(root)
         result = E.restyle(
@@ -956,9 +1032,41 @@ def _build(root, level):
             shown = result["blank_page_breaks_removed"]
             print(f"去掉了 {len(shown)} 个只会在 Word 里多出空白页的分页符（文字没动）：" + "、".join(shown[:5])
                   + ("等" if len(shown) > 5 else ""))
+        applied = [dict(zip(("part", "before", "after", "why"), c)) for c in result.get("corrections_applied", [])]
     else:
         raise ValueError("还没有内容：新写文档请写 content.json；已有 Word 请先运行 inspect。")
+    applied += [dict(zip(("part", "before", "after", "why"), c)) for c in result.get("auto_corrections", [])]
+    r, st = D.load(root)
+    st["corrections"] = applied
+    D.write_json(r / D.MARKER, st)
+    if applied and level == 0:
+        print(f"按版式要求改了 {len(applied)} 处文字（交付时会逐条告诉用户）：")
+        for c in applied:
+            print("  - " + D.correction_line(c))
     return draft
+
+
+def _declared_corrections(root, content):
+    """content.json is written by the agent, so its corrections are already in it: check each one is."""
+    items = _corrections(root)
+    if not items:
+        return []
+
+    def flat(value):
+        if isinstance(value, dict):
+            return "".join(flat(v) for v in value.values())
+        if isinstance(value, list):
+            return "".join(flat(v) for v in value)
+        return value if isinstance(value, str) else ""
+
+    squash = lambda t: re.sub(r"\s+", "", t or "")
+    text = squash(flat(_read(content, "content.json")))
+    for n, c in enumerate(items):
+        after = squash(c.get("after"))
+        if after and after not in text:
+            raise ValueError(f"job.json 的 corrections[{n}] 写了改后的文字，但 content.json 里没有它：content.json 是你写的，"
+                             f"改动要直接写进 content.json，corrections 只是登记（交付时告诉用户）。没找到：“{c['after'][:30]}”。")
+    return [{k: c.get(k, "") for k in ("part", "before", "after", "why")} for c in items]
 
 
 def _body_length(root):
@@ -1013,16 +1121,18 @@ def cmd_run(args):
         print(I.summary(state))
         print("\n→ 封面信息还不全。先问用户（可选“留空自己填”），写进 job.json 后重新运行 run。")
         return EXIT_ASK_USER
-    if _task(root) == "write" and _written(root) is not None:
-        problems = _writing_problems(root, _written(root))
+    writing = _task(root) == "write" and _written(root) is not None
+    if writing or _added_references(root):
+        problems = (_writing_problems(root, _written(root)) if writing else []) + _added_reference_problems(root)
         if problems:
             def fix(text):
                 where = (getattr(text, "edit", None) or "content.json / refs.json").split(" ")[0]
                 return f"按上面的说明改 {where} 后重新 run；不要为了通过检查编造数字或出处。"
 
+            cause = "写作模式（task 为 write）的硬性要求没满足。" if writing else "补进论文的参考文献必须先核实是真实存在的。"
             issues = [
                 dict({"code": "WRITING_CHECK", "stage": "写作检查", "message": str(text),
-                      "cause": "写作模式（task 为 write）的硬性要求没满足。", "fix": fix(text)},
+                      "cause": cause, "fix": fix(text)},
                      **({"where": {"edit": text.edit}} if getattr(text, "edit", None) else {}))
                 for text in problems
             ]

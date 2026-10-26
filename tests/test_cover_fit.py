@@ -65,8 +65,11 @@ class Fixture(unittest.TestCase):
         if fmt and fmt.get("cover_supervisor"):
             fields = fields + ["supervisor"]
         job = {"template": template, "info": {k: v for k, v in info.items() if k in fields}, "format": fmt or {}}
+        # The stress title is far over the school's 24-character limit: the user keeps it on purpose.
+        job["keep_as_is"] = "题目就用这个长的，不要缩"
         state = self.d / "intake.json"
         I.from_job(job, state)
+        (self.d / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
         content = self.d / "content.json"
         content.write_text(
             json.dumps({"mode": "document", "metadata": {}, "blocks": [{"type": "paragraph", "text": "合成正文。"}]}, ensure_ascii=False),

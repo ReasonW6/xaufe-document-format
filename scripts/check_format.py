@@ -298,6 +298,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         err("UNSUPPORTED_STRUCTURE", reason)
     has_cover = vv.get("XAUFE_HAS_COVER") == "1"
     mode = vv.get("XAUFE_MODE", "unknown")
+    keep = _keep_as_is(intake_path)
     count = spec["cover"]["paragraph_count"]
     state = None
     if mode != "template":
@@ -794,15 +795,19 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
                 candidates += [f"p{i}“{q.text.strip()[:15]}”（现在是 {reverse.get(q.style.name) or q.style.name}）" for i, q in found[:2]]
             labels = {"abstract_zh": "中文摘要", "keywords_zh": "中文关键词", "reference": "参考文献条目",
                       "abstract_en": "英文摘要", "keywords_en": "英文关键词"}
-            warn(
-                "EMPTY_CONTENT",
+            (warn if keep else err)(
+                "PART_LEFT_EMPTY" if keep else "EMPTY_CONTENT",
                 "这些部分在成品里是空的："
                 + "、".join(labels[r] for r in missing_content)
-                + "。先排除角色标错：已有 Word 时打开 mapping.json，看原稿里对应的文字是不是被标成了 body 或别的角色"
-                "（例如摘要正文应为 abstract_zh，参考文献条目应为 reference），改对后重新 run。"
-                + ("可能是这几段：" + "；".join(candidates) + "。" if candidates else "")
-                + "原稿本来就没有这部分时：写作模式补写；只排版模式不补，在 review.json 说明原稿就是空的。",
+                + ("。用户说过保持原样（job.json 的 keep_as_is），按原稿留空了。" if keep else
+                   "。先排除角色标错：已有 Word 时打开 mapping.json，看原稿里对应的文字是不是被标成了 body 或别的角色"
+                   "（例如摘要正文应为 abstract_zh，参考文献条目应为 reference），改对后重新 run。"
+                   + ("可能是这几段：" + "；".join(candidates) + "。" if candidates else "")
+                   + "原稿本来就没有这部分时要补全（只排版也要补）：摘要和关键词根据正文起草，参考文献只补联网查到、"
+                   "用 refs 核实通过的真实文献；补的内容写进 job.json 的 corrections（content.json 时直接写进 content.json"
+                   "并在 corrections 登记），交付时逐条告诉用户。"),
             )
+    length_check(doc, reverse, warn if keep else err, keep)
     for i, img in enumerate(doc.inline_shapes):
         if i == 0 and has_cover:
             continue
@@ -836,6 +841,45 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         "validation_scope": validation_scope,
         "fully_validated": False,
     }
+
+
+def _keep_as_is(intake_path):
+    """job.json "keep_as_is": the user's words for leaving a part empty or a length off-limit."""
+    job = Path(intake_path).parent / "job.json" if intake_path else None
+    if not job or not job.is_file():
+        return None
+    try:
+        value = json.loads(job.read_text(encoding="utf-8")).get("keep_as_is")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def length_check(doc, reverse, report, keep):
+    """The school's limits: paper title within 24 characters, Chinese abstract 150-300 (Word's count)."""
+    from audit_helpers import lengths, word_count
+
+    limits = lengths()
+    by_role = lambda role: [(i, p) for i, p in enumerate(doc.paragraphs) if reverse.get(p.style.name) == role and p.text.strip()]
+    kept = "用户说过保持原样（job.json 的 keep_as_is），按原稿保留了。" if keep else None
+    titles = by_role("title_zh")
+    title = titles[0][1].text.strip() if titles else (doc.core_properties.title or "").strip()
+    count = word_count(title)
+    if title and count > limits["title_zh_max"]:
+        where = f"p{titles[0][0]}: " if titles else ""
+        report("TITLE_TOO_LONG", f"{where}论文题目“{title}”有 {count} 字，学校要求 {limits['title_zh_max']} 字以内。" + (kept or
+               "只排版也要改：保留原意精简到 24 字以内（去掉“关于”“浅谈”“的研究”之类可省的字），封面的 job.json info.title_zh "
+               "和摘要页题目一起改；已有 Word 时原稿题目段写进 job.json 的 corrections（part 为 title），交付时告诉用户原题和新题。"))
+    abstract = by_role("abstract_zh")
+    count = sum(word_count(p.text) for _, p in abstract)
+    low, high = limits["abstract_zh"]
+    if abstract and not low <= count <= high:
+        short = count < low
+        report("ABSTRACT_LENGTH", f"p{abstract[0][0]}: 中文摘要有 {count} 字，学校要求 {low}～{high} 字。" + (kept or (
+               ("要补写（只排版也要）：根据正文补上研究方法、主要结论等正文里已有的内容，" if short else
+                "要精简（只排版也要）：保留研究目的、方法、结论，删去背景铺垫和重复的话，")
+               + f"改到 {low}～{high} 字；已有 Word 时把整段原文和改后的写进 job.json 的 corrections（part 为 abstract），"
+               "content.json 时直接改 abstract 并在 corrections 登记，交付时告诉用户。")))
 
 
 def check(path, final=False, intake_path=None, toc_report=None, validation_scope="full"):
