@@ -86,6 +86,6 @@
 |---|---|
 | “还缺：……” | 封面信息不全，去问用户 |
 | “不是当前版式的封面字段” / “不认识的项” | 报错会写出 JSON 路径（如 format.styles.h1）和最接近的正确写法，按提示改 |
-| “mode: paper 需要 ……” | 完整结构缺了摘要/关键词/参考文献：写作时补写；只排版就改成 `"mode": "document"` |
+| “mode: paper 需要 ……” | 完整结构缺了摘要/关键词/参考文献：写作时补写；只排版也要补，见 job.md 的“只排版时的纠正” |
 | SOURCE_DIFFERENCES（写作模式的提示） | 原稿只是素材，没用上的文字只是提示：看 `WORK/source-comparison.json` 有没有用户要保留的，在 review.json 的 warnings 写明 |
 | “检查之后 Word 又被改动” | 不要直接改 WORK 里的 Word，改输入文件后重新 `run` |

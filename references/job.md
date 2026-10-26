@@ -39,6 +39,8 @@
 | `timezone` | 例如 `"Asia/Shanghai"` | 可不写，默认北京时间，用来算“今天” |
 | `approved_changes` | `[{"text": "那段文字", "why": "用户怎么说的"}]` | 只排版时用户明确同意增删的文字；图片等对象写种类和数量（“删去图片 1 张”）。其他增删一律拦下；`add` 补的译文不用写 |
 | `accept_unverified_refs` | `true` | 写作时连不上文献核对服务、且用户明确同意先用未核实的文献时才写；不写则 `run` 拦下 |
+| `corrections` | 见下面“只排版时的纠正” | 只排版时为符合学校格式你补的、改的文字，交付时都会告诉用户 |
+| `keep_as_is` | `"用户原话"` | 用户坚持题目、摘要等保持原样（或不要补）时写；超字数和缺的部分改为交付时提醒 |
 
 `info` 和 `blank` 里能用的字段：
 
@@ -52,6 +54,21 @@
 | `class_name` | 班级 | ✓ | ✓ |
 | `supervisor` | 指导教师 | ✓ | 需先在 format 写 `"cover_supervisor": true` |
 | `date` | 完成日期，写成 `2026-10-07` | 不写=今天 | 不写=今天 |
+
+## 只排版时的纠正（corrections）
+
+换旧封面、去旧目录和图表目录、标题重编号、统一“内 容 摘 要”等标签、挪图题表题、表注和单位的写法、公式编号由脚本做并自己登记。下面这些由你做，每条写成 `{"part": …, "before": "原稿整段", "after": "改后整段", "why": "告诉用户的理由"}`：
+
+| 情况 | part 和写法 |
+|---|---|
+| 缺中文摘要 / 关键词 | `abstract` / `keywords`，只写 after（按正文拟；关键词写成“关键词：词1；词2；词3”，3～5 个）和 why |
+| A 版缺英文摘要 | `title_en`、`abstract_en`、`keywords_en`，只写 after（照中文翻译） |
+| 摘要不在 150～300 字 | `abstract`，before 原文整段，after 改后整段，why 如“原摘要 139 字，学校要求 150～300 字，按正文补了一句” |
+| 题目超过 24 字 | `title`，同时改 `info.title_zh` |
+| 缺参考文献 | `references`，每条一项、只写 after；先 `refs --from-document` 核实通过，核实不了的不补 |
+| 删一段 / 在某段后补一段 | after 写 `""` / 加 `"insert_after": "前一段整段原文"` |
+
+before 要和原稿整段一致（只差空格可以）；before 为空表示补一段，题目摘要关键词放在正文前，文献放在最后。原稿是 Word 时脚本照 corrections 改；用 content.json 时你直接改 content.json，corrections 只登记，`run` 会核对改后的文字确实在里面。
 
 ## 用户说什么 → format 里怎么写
 

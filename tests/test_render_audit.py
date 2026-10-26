@@ -283,6 +283,14 @@ class RenderAudit(unittest.TestCase):
         self.assertEqual(hit[0]["page"], 1)
         self.assertIn("177.5", hit[0]["expected"])
 
+    def test_wrapped_red_cover_title_hangs_like_green(self):
+        doc = self.docx("B")
+        first = ("text", 125, 340, "题目：基于某某数据的")
+        aligned = audit(doc, self.pdf([[first, ("text", 156.5, 356, "方法研究")], self.body()]))
+        self.assertNotIn("COVER_TITLE_MISALIGNED", self.codes(aligned))
+        centred = audit(doc, self.pdf([[first, ("text", 200, 356, "方法研究")], self.body()]))
+        self.assertIn("COVER_TITLE_MISALIGNED", self.codes(centred))
+
     def test_every_overlap_on_a_page_is_reported(self):
         pairs = [("text", 90, 200, "第一行文字"), ("text", 90, 203, "第二行文字"),
                  ("text", 90, 400, "第三行文字"), ("text", 90, 403, "第四行文字")]

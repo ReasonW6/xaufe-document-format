@@ -185,3 +185,20 @@ class LongCoverLayout(Fixture):
         d.paragraphs[6].paragraph_format.line_spacing = Pt(1)
         d.save(out)
         self.assertCode(check(out, intake_path=state), "COVER_LAYOUT")
+
+
+class LongLines(Fixture):
+    def test_paragraph_with_a_long_url_is_flush_left_not_stretched(self):
+        url = "https://example.org/a/very/long/path/that/keeps/going/without/any/space.html"
+        path, state = self.build(blocks=[{"type": "paragraph", "text": "长链接示例：" + url},
+                                         {"type": "paragraph", "text": "普通正文。"}])
+        self.assertPass(check(path, intake_path=state))
+        jc = {p.text: p.alignment for p in Document(path).paragraphs if p.text.startswith(("长链接", "普通正文"))}
+        self.assertEqual(str(jc["长链接示例：" + url]), "LEFT (0)")
+        self.assertIsNone(jc["普通正文。"])  # the style's justification
+
+    def test_each_code_line_is_its_own_paragraph(self):
+        path, state = self.build(blocks=[{"type": "code", "text": "def f(a):\n    return a"}])
+        self.assertPass(check(path, intake_path=state))
+        code = [p.text for p in Document(path).paragraphs if p.style.name == E.ROLES["code"]]
+        self.assertEqual(code, ["def f(a):", "    return a"])

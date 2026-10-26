@@ -41,11 +41,20 @@ def example(template):
     return job, content
 
 
+def word_job(template):
+    """The example's job for an existing Word: its corrections fix the example's own content.json."""
+    job, _ = example(template)
+    job.pop("corrections", None)
+    return job
+
+
 def long_job(template, logo=None):
     job, content = example(template)
     fields = {"A": ("title_zh", "student_name", "student_id", "major", "class_name", "supervisor"),
               "B": ("course_name", "title_zh", "student_name", "student_id", "major", "class_name")}[template]
-    job = {"task": "format", "template": template, "info": {k: LONG[k] for k in fields}}
+    # Cover stress: the user keeps the over-long title, so the length rule is only told to them.
+    job = {"task": "format", "template": template, "info": {k: LONG[k] for k in fields},
+           "keep_as_is": "题目就用这个长的，不要改"}
     if logo:
         job["logo"] = logo
     content["metadata"]["title_zh"] = LONG["title_zh"]
@@ -181,6 +190,14 @@ def plain_word(path):
     return path
 
 
+def lengthen(abstract):
+    """The correction the ABSTRACT_LENGTH hint asks for: a one-sentence abstract filled out from the body."""
+    more = ("正文依次说明了合成章节的结构、表格和图片的排版方式以及参考文献的写法，"
+            "用来检验已有 Word 套用模板之后的分页、目录、页眉和页码是否符合要求。") * 2
+    return {"part": "abstract", "before": abstract, "after": abstract + more,
+            "why": "原摘要不到 150 字，学校要求 150～300 字，按正文补写"}
+
+
 def call(*args):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -272,10 +289,9 @@ def main():
     rows.append(run_case(out, "02-B-green-logo-pagenum-blank-id", job, content))
     job, content = long_job("A", "red")
 
-    def short_header(job):  # what the HEADER_OVERFLOW hint asks for (the user picks the short title)
-        job.setdefault("format", {})["header"] = {"right": "城市交通信号自适应协同控制研究"}
-
-    rows.append(run_case(out, "03-A-red-logo-long-cover", job, content, retry=("HEADER_OVERFLOW", short_header)))
+    # With the 3 / 2.2 cm margins the 49-character title fits one header line once the header stacks
+    # its two parts (the wrapped-header path is case 14).
+    rows.append(run_case(out, "03-A-red-logo-long-cover", job, content))
     job, content = long_job("B")
     rows.append(run_case(out, "04-B-long-cover", job, content))
     job, content = example("B")
@@ -285,13 +301,13 @@ def main():
     }
     rows.append(run_case(out, "05-B-custom-formats", job, content))
     previous = out / "02-B-green-logo-pagenum-blank-id" / "final.docx"
-    job, _ = example("B")
+    job = word_job("B")  # `new` restores the job without corrections: the earlier output already has its fixes
     job["logo"] = "red"
     rows.append(run_case(out, "06-revise-previous-logo-red", job, docx=previous))
     job, content = example("A")
     rows.append(run_case(out, "07-A-static-no-office", job, content, office="none"))
     existing = existing_paper(out / "existing-paper.docx")
-    job, _ = example("A")
+    job = word_job("A")
     job["info"]["title_zh"] = "高校图书馆座位预约系统的设计与实现"
 
     def translated(mapping):
@@ -301,14 +317,16 @@ def main():
             "keywords_en": ["seat reservation", "web system"],
         }
 
+    job["corrections"] = [lengthen("本文设计并实现了一个基于Web的座位预约系统，用于合成排版验收。")]
     rows.append(run_case(out, "08-A-existing-paper-structured", job, docx=existing, mapping_edit=translated))
     job, content = long_document("B")
     rows.append(run_case(out, "09-B-long-document-tables-formulas", job, content))
     complex_docx = complex_paper(out / "complex-paper.docx")
-    job, _ = example("B")
+    job = word_job("B")
     job["info"]["title_zh"] = "复杂表格合成论文"
+    job["corrections"] = [lengthen("本文仅用于复杂表格和图片的排版验收，不含真实研究内容。")]
     rows.append(run_case(out, "10-B-existing-complex-tables", job, docx=complex_docx))
-    job, _ = example("B")
+    job = word_job("B")
     job["info"]["title_zh"] = "普通文档合成标题"
     job["format"] = {"footer_page_numbers": True}
     rows.append(run_case(out, "11-B-plain-word-cover-page-numbers", job, docx=plain_word(out / "plain-word.docx")))
@@ -317,6 +335,7 @@ def main():
     job, content = example("A")
     job["info"]["title_zh"] = "基于多源数据融合与用户行为分析的高校图书馆座位预约与服务质量评价系统的设计与实现——以某财经类高校为例"
     content["metadata"]["title_zh"] = job["info"]["title_zh"]
+    job["keep_as_is"] = "题目就用这个，不要缩短"
 
     def short_library_header(job):
         job.setdefault("format", {})["header"] = {"right": "图书馆座位预约系统设计研究"}
@@ -330,7 +349,7 @@ def main():
     # Two page breaks in a row leave an empty page in Word (LibreOffice may fold them): an existing
     # Word gets the extra break removed when it is laid out; a new document's extra page_break block
     # is the agent's own input and is refused with a pointer to it.
-    job, _ = example("B")
+    job = word_job("B")
     job["info"]["title_zh"] = "空白页合成文档"
     row = run_case(out, "13-existing-double-page-break-removed", job, docx=blank_page_paper(out / "blank-page.docx"))
     if "多出空白页的分页符" not in (out / "13-existing-double-page-break-removed" / "run-output.txt").read_text(encoding="utf-8"):

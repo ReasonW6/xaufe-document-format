@@ -79,7 +79,7 @@ def _pieces(text, markdown=False):
         if markdown:  # .md: markup goes, code spans stay literal; .txt: every character is the user's
             if re.match(r"^(?:[-*+]|\d+[.)])\s+", stripped):
                 flush()  # each list item is its own paragraph
-            stripped = md_visible(re.sub(r"^[-*+]\s+", "", stripped), keep_links=True)
+            stripped = md_visible(re.sub(r"^[-*+]\s+", "• ", stripped), keep_links=True)  # the bullet the reader saw
         elif lines and not continues(lines[-1], stripped, longest):
             flush()  # .txt: a line is its own paragraph unless it continues a hard-wrapped one
         lines.append(stripped)
@@ -236,6 +236,12 @@ def to_content(path, work):
         elif role in ("keywords_zh", "keywords_en"):
             content[role] = _keywords(text)
             front.append((role, text))
+            from keywords import PUNCT
+
+            if PUNCT.search(re.sub(r"^\s*(关键词|key\s*words?)\s*[:：]", "", text, flags=re.I)):
+                label = "Key words：" if role == "keywords_en" else "关键词："
+                changes.append({"part": "keywords", "before": text, "after": label + "   ".join(content[role]),
+                                "why": "关键词之间按模板用空格分开，去掉了原来的标点"})
         elif role == "reference":
             references.append(text)
         elif role == "preface":

@@ -391,6 +391,29 @@ class Command(unittest.TestCase):
                 self.assertEqual(X.main(["refs", "--work", str(work), "--from-document"]), 2)
             self.assertIn("已经有 refs.json", err.getvalue())
 
+    def test_offline_run_keeps_the_earlier_verdict_of_an_unchanged_entry(self):
+        import delivery as D
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("tempfile.gettempdir", return_value=tmp):
+                job = D.create(Path(tmp) / "out" / "成品.docx")
+            work = Path(job["workspace"])
+            (work / "refs.json").write_text(json.dumps([GOOD], ensure_ascii=False), encoding="utf-8")
+            offline = patch("refcheck.fetch", side_effect=R.Offline("no route", down=True))
+            with network(), contextlib.redirect_stdout(io.StringIO()):
+                X.main(["refs", "--work", str(work), "--min", "1"])
+            with offline, contextlib.redirect_stdout(io.StringIO()):
+                X.main(["refs", "--work", str(work), "--min", "1"])
+            r = json.loads((work / "refs-result.json").read_text(encoding="utf-8"))["results"][0]
+            self.assertEqual(r["status"], R.PASS)
+            self.assertIn("沿用上次", " ".join(r["notes"]))
+            # A changed entry is a new question: nothing earlier answers it.
+            (work / "refs.json").write_text(json.dumps([{**GOOD, "year": 2015}], ensure_ascii=False), encoding="utf-8")
+            with offline, contextlib.redirect_stdout(io.StringIO()):
+                X.main(["refs", "--work", str(work), "--min", "1"])
+            r = json.loads((work / "refs-result.json").read_text(encoding="utf-8"))["results"][0]
+            self.assertTrue(r.get("unreachable"))
+
 
 if __name__ == "__main__":
     unittest.main()

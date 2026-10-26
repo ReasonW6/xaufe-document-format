@@ -103,6 +103,8 @@ def _previous_job(source):
         job["cover"] = False
     if request:
         job["format"] = request
+    if vv.get("XAUFE_KEEP_AS_IS"):
+        job["keep_as_is"] = vv["XAUFE_KEEP_AS_IS"]
     return job
 
 
@@ -1086,6 +1088,15 @@ def _build(root, level):
             print(f"去掉了 {len(shown)} 个只会在 Word 里多出空白页的分页符（文字没动）：" + "、".join(shown[:5])
                   + ("等" if len(shown) > 5 else ""))
         applied = [dict(zip(("part", "before", "after", "why"), c)) for c in result.get("corrections_applied", [])]
+        for c in result.get("keyword_spacing_changes", []):
+            if not c.get("punctuation"):
+                continue
+            own = next((a for a in applied if a.get("after") == c["before"]), None)
+            if own:  # a keyword line the agent added: report it as it now reads
+                own["after"] = c["after"]
+            else:
+                applied.append({"part": "keywords", "before": c["before"], "after": c["after"],
+                                "why": "关键词之间按模板用空格分开，去掉了原来的标点"})
         rows = _read(mapping, "mapping.json")
         if rows.get("old_cover") and rows.get("replace_cover_before"):
             applied.append({"part": "cover", "before": "；".join(rows["old_cover"]), "after": "",
@@ -1375,6 +1386,7 @@ def cmd_refs(args):
     if not isinstance(entries, list):
         raise ValueError("refs.json 应该是一个列表：[{...}, {...}]，写法见 references/citations.md")
     results = R.check_all(entries)
+    _keep_earlier_verdicts(root, results, entries)
     originals = None
     for result, entry in zip(results, entries):
         if isinstance(entry, dict):
@@ -1392,6 +1404,25 @@ def cmd_refs(args):
     only_report = (root / "job.json").is_file() and _task(root) == "format"
     print(R.report(results, entries, args.min, report_only=only_report))
     return 0
+
+
+def _entry_sha(entry):
+    return hashlib.sha256(json.dumps(entry, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _keep_earlier_verdicts(root, results, entries):
+    """A refs run that could not reach the checking services says nothing new: an unchanged entry
+    keeps the verdict an earlier refs run reached (a 排除 must not turn back into 连不上)."""
+    earlier = {}
+    if (root / "refs-result.json").is_file() and not _refs_result_forged(root):
+        earlier = {r.get("entry_sha256"): r for r in _read(root / "refs-result.json", "refs-result.json").get("results", [])
+                   if r.get("entry_sha256") and not r.get("unreachable")}
+    for i, (result, entry) in enumerate(zip(results, entries)):
+        sha = _entry_sha(entry)
+        if result.get("unreachable") and sha in earlier:
+            results[i] = {**earlier[sha], "notes": list(earlier[sha].get("notes", []))
+                          + ["这次连不上核对服务，沿用上次核对的结论"]}
+        results[i]["entry_sha256"] = sha
 
 
 def cmd_read(args):

@@ -148,7 +148,7 @@ def fragments(path):
         if markdown:  # what the Markdown shows (textio.md_visible), not its syntax
             if re.match(r"^(?:[-*+]|\d+[.)])\s+", stripped):
                 flush()  # each list item is its own paragraph
-            stripped = md_visible(re.sub(r"^[-*+]\s+", "", stripped))
+            stripped = md_visible(re.sub(r"^[-*+]\s+", "• ", stripped))
         elif lines and not continues(lines[-1], stripped, longest):
             flush()  # .txt: each line is a paragraph unless it continues a hard-wrapped one
         if "=" in stripped and EQUATION_NUMBER.search(stripped):  # a formula line's own number is layout

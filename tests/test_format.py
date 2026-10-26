@@ -490,6 +490,16 @@ class FormatTests(unittest.TestCase):
                           {"type": "table", "caption": "表2 合成表", "header": ["编号"], "rows": [["1"]]}]
         codes = {w["code"] for w in check(self.make(data))["warnings"]}
         self.assertTrue({"OBJECT_NOT_CITED", "OBJECT_NOT_DISCUSSED", "OBJECT_ORDER"} <= codes)
+        self.assertNotIn("CAPTION_MISSING", codes)
+
+    def test_table_without_a_caption_is_told(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、图表"},
+                          {"type": "paragraph", "text": "下面是一个没有表题的表。"},
+                          {"type": "table", "header": ["编号"], "rows": [["1"]]}]
+        hits = [w for w in check(self.make(data))["warnings"] if w["code"] == "CAPTION_MISSING"]
+        self.assertEqual(len(hits), 1)
+        self.assertIn("第 1 个表格（“编号", hits[0]["message"])
 
     def test_wrong_header_size_rejected(self):
         def mutate(d):

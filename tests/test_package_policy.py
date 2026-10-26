@@ -95,7 +95,9 @@ class PackagePolicy(unittest.TestCase):
         self.assertLess(len((ROOT / "SKILL.md").read_bytes()), 12000)
         refs = list((ROOT / "references").glob("*.md"))
         self.assertLessEqual(len(refs), 6)
-        self.assertLess(sum(len(p.read_bytes()) for p in refs), 40000)
+        self.assertLess(sum(len(p.read_bytes()) for p in refs), 45000)
+        for p in refs:  # each one is read on its own when needed
+            self.assertLess(len(p.read_bytes()), 12000, p.name)
 
     def test_examples_are_valid_inputs(self):
         import intake as I

@@ -48,6 +48,7 @@ class Originals(base.CLI):
         self.assertIn(["1", "甲", "***"], [table["header"]] + table["rows"])  # *** is the user's text
         code, out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, 0, out + err)
+        self.assertIn("关键词：合成；测试”改为“关键词：合成   测试", out)  # the template spaces keywords, and says so
 
     def test_markdown_reads_as_shown(self):
         from textio import md_visible, continues
@@ -56,6 +57,7 @@ class Originals(base.CLI):
         self.assertEqual(md_visible("用 `a*b*c` 和 **加粗** 以及 snake_case_name"), "用 a*b*c 和 加粗 以及 snake_case_name")
         self.assertEqual(md_visible("单独的 * 号和 2*3"), "单独的 * 号和 2*3")
         self.assertEqual(len(_pieces("- 第一项\n- 第二项", markdown=True)), 2)
+        self.assertIn("• 第一项", str(_pieces("- 第一项\n- 第二项", markdown=True)))  # the bullet the reader saw stays
         long = "这是一行被硬折行的很长的合成正文，它在固定宽度处断开了没有标点"
         self.assertTrue(continues(long, "下一行接着写。", len(long)))
         self.assertFalse(continues("短行", "下一行。", len(long)))
@@ -327,8 +329,42 @@ class Originals(base.CLI):
         self.assertEqual(code, 0, out + err)
         shown = [p.text for p in Document(work / "final.docx").paragraphs if p.text.strip()]
         self.assertLess(shown.index("内 容 摘 要"), shown.index(ABSTRACT))
-        self.assertLess(shown.index(ABSTRACT), shown.index("关键词：排序；算法"))
+        self.assertLess(shown.index(ABSTRACT), shown.index("关键词：排序   算法"))  # the template spaces keywords
         self.assertIn("补了摘要", out)
+        self.assertNotIn("去掉了原来的标点", out)  # the added keyword line is told once, as it now reads
+
+    def test_keyword_punctuation_is_spaced_the_template_way_and_told(self):
+        source = self.d / "关键词.docx"
+        self.paper_doc(ABSTRACT).save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("关键词：排序   算法", [p.text for p in Document(work / "final.docx").paragraphs])
+        self.assertIn("去掉了原来的标点", out)
+
+    def test_revising_an_output_keeps_the_users_words_and_its_fixes(self):
+        source = self.d / "长题目.docx"
+        title = "城市公共交通票价结构对居民通勤方式选择影响的实证分析研究"
+        self.paper_doc("本文比较了几种排序算法。", title=title).save(source)
+        work = self.new({**JOB_B, "info": {**JOB_B["info"], "title_zh": title}, "keep_as_is": "题目不要动",
+                         "corrections": [{"part": "abstract", "before": "本文比较了几种排序算法。", "after": ABSTRACT,
+                                          "why": "原摘要太短"}]})
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        earlier = self.d / "上一版.docx"
+        earlier.write_bytes((work / "final.docx").read_bytes())
+        again = self.new(sources=[earlier])
+        job = json.loads((again / "job.json").read_text(encoding="utf-8"))
+        self.assertEqual(job.get("keep_as_is"), "题目不要动")
+        # The agent copies the earlier corrections back by mistake: they are already in the file.
+        self.with_job(again, logo="red", corrections=[{"part": "abstract", "before": "本文比较了几种排序算法。",
+                                                       "after": ABSTRACT, "why": "原摘要太短"}])
+        self.call("inspect", "--work", again, "--docx", earlier)
+        code, out, err = self.call("run", "--work", again, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertNotIn("原摘要太短", out)
 
     def test_old_cover_ending_in_a_page_break_is_replaced_and_told(self):
         from docx.enum.text import WD_BREAK

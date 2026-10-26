@@ -869,7 +869,7 @@ class CLI(unittest.TestCase):
         code, out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, 0, err)
         text = [p.text for p in Document(work / "final.docx").paragraphs]
-        self.assertIn("Key words: sorting; algorithms", text)
+        self.assertIn("Key words: sorting   algorithms", text)  # the label as typed, words spaced the template's way
         self.assertIn("关键词：排序   算法", text)
 
     # ------------------------------------------------------------ writing mode

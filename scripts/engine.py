@@ -787,6 +787,29 @@ def _spacer_el(doc):
     return p
 
 
+# A run of Latin text with no break opportunity (a URL, a long identifier) at least this long.
+UNBREAKABLE = re.compile(r"[!-~]{40,}")
+
+
+def unstretch_long_runs(doc):
+    """A justified body paragraph with a long URL stretches the line before it (the URL drops to the
+    next line whole and the short line left behind is spread across the column).  Such paragraphs are
+    set flush left, as the reference list already is.  Returns how many."""
+    count = 0
+    for p in doc.paragraphs:
+        if p.style is not None and p.style.name == ROLES["body"] and UNBREAKABLE.search(p.text):
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            count += 1
+    return count
+
+
+def _keep_words(intake_path):
+    """job.json "keep_as_is", recorded in the output so a later revision keeps the user's words."""
+    from check_format import _keep_as_is
+
+    return _keep_as_is(intake_path) or ""
+
+
 def finalize(doc, out, meta, has_cover, mode, state=None):
     if state and "include_cover" in state and state["include_cover"] != bool(has_cover):
         fail(
@@ -794,6 +817,7 @@ def finalize(doc, out, meta, has_cover, mode, state=None):
         )
     set_page(doc)
     space_objects(doc)
+    unstretch_long_runs(doc)
     headers_footers(doc, meta, has_cover)
     front = {ROLES["toc_title"], ROLES["abstract_label_zh"], ROLES["abstract_label_en"]}
     if mode == "paper" or any(p.style is not None and p.style.name in front for p in doc.paragraphs):
@@ -837,8 +861,12 @@ def finalize(doc, out, meta, has_cover, mode, state=None):
                 SPEC.get("_format_request", {}), ensure_ascii=False, sort_keys=True
             ),
             "XAUFE_FORMAT_REQUEST_HASH": fingerprint(SPEC.get("_format_request", {})),
+            "XAUFE_KEEP_AS_IS": SPEC.get("_keep_as_is", ""),
         },
     )
+    for var in doc.settings.element.xpath("./w:docVars/w:docVar"):
+        if var.get(qn("w:name")) == "XAUFE_KEEP_AS_IS" and not var.get(qn("w:val")):
+            var.getparent().remove(var)  # Word wants a value on every docVar
     element(doc.settings.element, "w:updateFields", val="false")
     doc.core_properties.author = ""
     doc.core_properties.last_modified_by = ""
@@ -1077,6 +1105,11 @@ def _add_block(doc, b, base, heading_iter):
         p = doc.add_paragraph(b["text"], ROLES[role])
         name, _, _ = next(heading_iter)
         bookmark(p, name, int(name.rsplit("_", 1)[-1]) + 10)
+    elif typ == "code" and "runs" not in b:
+        # One paragraph per code line: each line starts at the margin and only a line too long for
+        # the column hangs under it (a line break inside one paragraph would indent every later line).
+        for line in str(b.get("text", "")).split("\n"):
+            add_text(doc.add_paragraph(style=ROLES["code"]), {**b, "text": line})
     elif typ in ("paragraph", "code", "equation"):
         p = doc.add_paragraph(style=ROLES["body" if typ == "paragraph" else typ])
         add_text(p, b)
@@ -1295,6 +1328,7 @@ def build(input_path, output, force=False, intake_path=None, cover_min_level=0):
     state = require_intake(intake_path)
     select_profile(state["template"], state.get("format_request"))
     SPEC["_cover_min_level"] = cover_min_level
+    SPEC["_keep_as_is"] = _keep_words(intake_path)
     asset_check()
     data = load_json(input_path)
     data["metadata"] = merge_metadata(data.get("metadata", {}), state)
@@ -1849,10 +1883,14 @@ def apply_corrections(doc, corrections, roles, ids, default=None):
     paragraph (abstract/keywords/title before the body, references at the end, other text after
     "insert_after"); an empty "after" removes the paragraph.  Returns [(part, before, after, why)]."""
     done = []
+    revising = bool(get_vars(doc).get("XAUFE_TEMPLATE"))  # an earlier output of this skill
     for n, c in enumerate(corrections or []):
         where = f"job.json 的 corrections[{n}]"
         before, after, part = str(c.get("before") or ""), str(c.get("after") or ""), c.get("part")
         paragraphs = list(doc.paragraphs)
+        if revising and after and any(_same(p.text, after) for p in paragraphs) and not any(
+                before and _same(p.text, before) for p in paragraphs):
+            continue  # an earlier output revised again: this fix is already in it (and was told then)
         if before:
             hits = [i for i, p in enumerate(paragraphs) if _same(p.text, before)]
             if not hits:
@@ -2075,6 +2113,7 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
     state = require_intake(intake_path)
     select_profile(state["template"], state.get("format_request"))
     SPEC["_cover_min_level"] = cover_min_level
+    SPEC["_keep_as_is"] = _keep_words(intake_path)
     asset_check()
     m = load_json(map_path)
     m["metadata"] = merge_metadata(m.get("metadata", {}), state)

@@ -337,6 +337,28 @@ def object_citation_check(doc, reverse, warn):
         if len(simple) == len(numbers) and simple != list(range(1, len(simple) + 1)):
             warn("OBJECT_ORDER", f"{kind}的编号是 " + "、".join(f"{kind}{n}" for n in numbers)
                  + f"，学校要求按出现顺序从{kind}1 起连续编号。")
+    # Every table has a caption above it and every figure one below (学校：表题在表上、图题在图下).
+    role_of = {p._p: role for p, role in zip(paragraphs, roles)}
+
+    def neighbour(el, step):
+        """The next element that is not a blank line or a table's unit line."""
+        while True:
+            el = el.getprevious() if step < 0 else el.getnext()
+            if el is None or el.tag != qn("w:p"):
+                return el
+            blank = not "".join(el.xpath(".//w:t/text()")).strip() and not el.xpath(".//w:drawing|.//w:pict")
+            if not blank and role_of.get(el) != "table_unit":
+                return el
+
+    for n, el in enumerate(doc.element.body.iterchildren(qn("w:tbl")), 1):
+        above = neighbour(el, -1)
+        if above is None or role_of.get(above) != "caption":
+            first = "".join(el.xpath("./w:tr[1]//w:t/text()")).strip()[:12]
+            warn("CAPTION_MISSING", f"第 {n} 个表格（“{first}”）上面没有表题（学校要求“表1 …”放在表上方）。")
+    for n, (p, role) in enumerate(((p, r) for p, r in zip(paragraphs, roles) if r == "figure"), 1):
+        below = neighbour(p._p, 1)
+        if below is None or role_of.get(below) != "caption":
+            warn("CAPTION_MISSING", f"第 {n} 张图片下面没有图题（学校要求“图1 …”放在图下方）。")
 
 
 def role_check(p, role, label, visible, err):

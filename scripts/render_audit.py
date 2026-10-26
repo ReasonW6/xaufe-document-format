@@ -421,9 +421,9 @@ def _is_part(line, texts):
     return bool(key) and any(key == t or (len(key) >= 6 and (t.startswith(key) or t.endswith(key))) for t in texts)
 
 
-def _cover_title_misaligned(lines, template):
-    """A wrapped cover title whose continuation lines drift: A hangs them under the first
-    character of the value, B keeps them on one centre axis.  None when they line up."""
+def _cover_title_misaligned(lines):
+    """A wrapped cover title whose continuation lines drift: both templates hang them under the
+    first character of the value.  None when they line up."""
     ordered = sorted(lines, key=lambda l: l["bbox"][1])
     head = next((i for i, l in enumerate(ordered) if re.match(r"^(论文)?题\s*目\s*[:：]", l["spans"][0]["text"])), None)
     if head is None:
@@ -442,13 +442,8 @@ def _cover_title_misaligned(lines, template):
         bottom = line["bbox"][3]
     if not rest:
         return None
-    if template == "A":
-        off = [l for l in rest if abs(l["bbox"][0] - value_x) > 3]
-        return (off[0], f"续行左端 {off[0]['bbox'][0]:.1f}pt", f"和第一行题目文字左端对齐（{value_x:.1f}pt）") if off else None
-    centres = [(l["bbox"][0] + l["bbox"][2]) / 2 for l in rest]
-    if max(centres) - min(centres) > 0.5 * size:
-        return rest[-1], f"续行中心 {min(centres):.1f}–{max(centres):.1f}pt", "各续行居中在同一条中线上"
-    return None
+    off = [l for l in rest if abs(l["bbox"][0] - value_x) > 3]
+    return (off[0], f"续行左端 {off[0]['bbox'][0]:.1f}pt", f"和第一行题目文字左端对齐（{value_x:.1f}pt）") if off else None
 
 
 ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100}
@@ -573,7 +568,7 @@ def audit(docx, pdf, adopted=False):
                                              where=line["spans"][0]["text"][:30], expected=f"{top:.1f}–{bottom:.1f}pt",
                                              actual=f"{line['bbox'][1]:.1f}–{line['bbox'][3]:.1f}pt", bbox=line["bbox"]))
             if cover:
-                drift = _cover_title_misaligned(lines, want["template"])
+                drift = _cover_title_misaligned(lines)
                 if drift:
                     errors.append(_issue("error", "COVER_TITLE_MISALIGNED", index, "封面题目折行后，续行没有和第一行对齐。",
                                          where=drift[0]["spans"][0]["text"][:30], expected=drift[2], actual=drift[1],

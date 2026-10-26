@@ -163,6 +163,9 @@ def paragraph_check(p, role, label, want, err, warn):
                     or not nxt.xpath('./w:pPr/w:pStyle[@w:val="XAUFECaption"]')
                 ):
                     value = "0"
+            # A body paragraph holding a long URL is set flush left so the line before it is not spread.
+            if role == "body" and tag == "jc" and value == "both" and re.search(r"[!-~]{40,}", visible(p)):
+                value = "left"
             if got != value:
                 err("PARAGRAPH", f"{label}: {tag}/{key}={got!r}，应为{value!r}。")
         # Extra properties can override an otherwise correct indent or spacing.

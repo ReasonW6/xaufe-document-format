@@ -98,6 +98,7 @@ HINTS = {
     "OBJECT_HEIGHT": ("大图片放在固定行距的段落里，会被裁掉。", "把这一段的 role 改成 figure。"),
     "PART_MISSING": ("完整论文结构缺了一部分（摘要、目录、正文或参考文献）。", "先看 mapping.json 是不是把那部分标成了别的 role；原稿真的没有就补全（只排版也要补）：摘要、关键词根据正文起草，参考文献只补 refs 核实通过的真实文献，写进 job.json 的 corrections；正文缺了没法补，问用户。"),
     "EMPTY_CONTENT": ("摘要、关键词或参考文献在成品里是空的。", "先排除 role 标错；原稿真的没有就补全：摘要、关键词根据正文起草，参考文献只补 refs 核实通过的真实文献，写进 job.json 的 corrections，交付时告诉用户。用户明确说不要补，就把原话写进 job.json 的 keep_as_is。"),
+    "CAPTION_MISSING": ("学校要求每个表有表题（表上方）、每张图有图题（图下方），这个表或图没有。", "写作时在 content.json 的 caption 补上；只排版时问用户要题目，或按内容拟一个经用户同意后写进 job.json 的 corrections（part 为 caption，insert_after 写前一段原文）；交付时告诉用户。"),
     "TITLE_TOO_LONG": ("论文题目超过 24 字。", "保留原意精简题目：job.json 的 info.title_zh 和原稿题目段（corrections 里 part 为 title）一起改，交付时告诉用户原题和新题；用户明确要保留原题，就把原话写进 keep_as_is。"),
     "ABSTRACT_LENGTH": ("中文摘要不在 150～300 字之间。", "少了按正文已有内容补写，多了精简（保留目的、方法、结论），写进 job.json 的 corrections（part 为 abstract），交付时告诉用户；用户明确要保留原文，就把原话写进 keep_as_is。"),
     "PART_ORDER": ("各部分顺序和版式不一致：多半是某一段的角色标错了（摘要或目录里的段落标成了正文/标题，或反过来），也可能是 format.parts 写错。", "看“位置”里那一段：已有 Word 就改 mapping.json 里这一段的 role；content.json 就检查 blocks 的顺序和 type。角色都对时，删掉 format.parts 用默认顺序，或按用户要求核对它的写法。"),
