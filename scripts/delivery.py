@@ -228,7 +228,7 @@ def compare_originals(root, state, result):
                        "\"footer_page_numbers\": true 后重新 run。",
         })
     mapping = read_json(root / "mapping.json") if (root / "mapping.json").is_file() else {}
-    toc_line = re.compile(r"^\s*目\s*录\s*$|\d+\s*$")
+    toc_line = re.compile(r"^\s*(?:目\s*录|插图目录|图目录|表目录|附图目录|附表目录|图表目录|插图清单|图表清单|附表清单)\s*$|\d+\s*$")
     old_toc = {r["id"] for r in mapping.get("paragraphs", []) if r.get("role") == "old_toc" and toc_line.search(r.get("text", ""))}
     # Cover values from job.json also appear on the abstract page and in the header.
     generated = list(require(root / "intake.json")["metadata"].values()) if (root / "intake.json").is_file() else []

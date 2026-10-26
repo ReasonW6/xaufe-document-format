@@ -372,7 +372,7 @@ def _default_role_format(role):
         return FONT_H if role == "toc1" else FONT_CN, 14, False
     if role == "caption":  # 图题、表题：五号黑体（2026-10-26 用户规则）
         return FONT_H, 10.5, False
-    if role in ("header", "table_note", "table_unit"):  # 页眉、表注、表格单位：小五宋体
+    if role in ("header", "table_note", "table_unit", "code"):  # 页眉、表注、表格单位、代码：小五
         return FONT_CN, 9, False
     return FONT_CN, 10.5, False
 
@@ -383,8 +383,11 @@ def role_format(role):
     return patch.get("cn", cn), patch.get("size", size), patch.get("bold", bold)
 
 
+FONT_CODE = "Courier New"  # code: a monospace Latin font (Liberation Mono stands in on LibreOffice)
+
+
 def role_latin(role):
-    return SPEC.get("style_overrides", {}).get(ROLES.get(role, ""), {}).get("latin", FONT_EN)
+    return SPEC.get("style_overrides", {}).get(ROLES.get(role, ""), {}).get("latin", FONT_CODE if role == "code" else FONT_EN)
 
 
 def style_paragraph(p, role, *, preserve_num=False, style_name=None):

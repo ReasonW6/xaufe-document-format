@@ -469,6 +469,20 @@ class FormatTests(unittest.TestCase):
         doc.save(out)
         self.assertIn("EQUATION_NUMBER", {e["code"] for e in check(out)["errors"]})
 
+    def test_list_of_figures_field_and_reversed_toc_sizes_are_caught(self):
+        out = self.make()
+        doc = Document(out)
+        p = doc.add_paragraph()
+        run = p.add_run()
+        instr = OxmlElement("w:instrText")
+        instr.text = ' TOC \\h \\z \\c "图" '
+        run._r.append(instr)
+        doc.styles["TOC 3"].font.size = Pt(16)
+        doc.save(out)
+        r = check(out)
+        self.assertIn("FIGURE_LIST", {e["code"] for e in r["errors"]})
+        self.assertIn("TOC_HIERARCHY", {w["code"] for w in r["warnings"]})
+
     def test_uncited_and_out_of_order_objects_are_told(self):
         data = deepcopy(self.data)
         data["blocks"] = [{"type": "heading", "level": 1, "text": "一、图表"},

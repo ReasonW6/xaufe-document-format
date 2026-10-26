@@ -559,7 +559,10 @@ def audit(docx, pdf, adopted=False):
                         body_sizes.update(round(c[3] * 2) / 2 for c in line["chars"])
             if not cover and placed:
                 column = [l for l in lines if l["bbox"][3] > top and l["bbox"][1] < bottom]
-                found, pitch = _placement_issues(index, column, placed, left, right)
+                # Placement and size are judged on the text column only: a header line reaching just past
+                # the top margin (Word sets the header lower than LibreOffice) is not the title it repeats.
+                inside = [l for l in column if top < (l["bbox"][1] + l["bbox"][3]) / 2 < bottom]
+                found, pitch = _placement_issues(index, inside, placed, left, right)
                 errors += found[:10]
                 pitches += [(index, *x) for x in pitch]
                 for line in column:

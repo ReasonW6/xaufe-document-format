@@ -286,6 +286,25 @@ def equation_check(doc, reverse, err, warn):
             warn("OBSOLETE_UNIT", f"{label}: 公式“{text[:15]}”里有已废弃的单位或词头，按 GB 3100～3102—93 改用法定单位（如 m、cm、L、N、J、nm）。")
 
 
+def toc_extras_check(doc, err, warn):
+    """Word's automatic TOC of the headings only: no list of figures or tables, and the deeper
+    TOC levels never set larger than the level above them."""
+    instructions = " ".join(doc.element.body.xpath(".//w:instrText/text()") + doc.element.body.xpath(".//w:fldSimple/@w:instr"))
+    if re.search(r"\bTOC\b[^\\]*(\\[a-z][^\\]*)*\\c\b", instructions, re.I) or any(
+            re.sub(r"\s+", "", p.text) in ("图目录", "表目录", "插图目录", "插图清单", "图表目录") for p in doc.paragraphs):
+        err("FIGURE_LIST", "文档里有图目录或表目录；学校要求目录只用 Word 自动生成的标题目录，不另加图表目录。")
+    sizes = []
+    for level in range(1, 5):
+        name = f"TOC {level}"
+        if name in [s.name for s in doc.styles]:
+            got = doc.styles[name].element.xpath("./w:rPr/w:sz/@w:val")
+            sizes.append((level, int(got[0]) / 2 if got else None))
+    for (a, size_a), (b, size_b) in zip(sizes, sizes[1:]):
+        if size_a and size_b and size_b > size_a:
+            warn("TOC_HIERARCHY", f"目录第 {b} 级（{size_b:g} 磅）比第 {a} 级（{size_a:g} 磅）还大，层级看起来是反的。")
+            break
+
+
 def object_citation_check(doc, reverse, warn):
     """先文后图（表）、图（表）不跨节、用图（表）交待, and numbering in order (图1, 图2 …).  Warnings:
     the wording is the author's, so it is told, not rewritten."""
@@ -829,6 +848,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
     audit_toc(doc, spec, err)
     table_count = tables_check(doc, E.WIDTH, err)
     object_spacing_check(doc, err)
+    toc_extras_check(doc, err, warn)
     equation_check(doc, reverse, err, warn)
     object_citation_check(doc, reverse, warn)
     if mode == "document":

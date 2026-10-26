@@ -136,6 +136,8 @@ HINTS = {
     "TABLE_UNIT_WORD": ("表格单位里写了“单位”二字。", "表格单位段（role table_unit，或 content.json 表格的 unit）脚本会自动去掉“单位：”；仍出现说明这段没标成 table_unit。"),
     "EQUATION_NUMBER": ("公式行末的编号缺了或不按顺序。", "公式段（role equation）脚本会自动按全文顺序编号；仍出现说明这一段没标成 equation，或公式写在了正文段里：改 mapping.json 的 role 或 content.json 的 type。"),
     "EQUATION_LAYOUT": ("公式行的排法不对（制表位、虚线、加粗或字号）。", "脚本会给公式段设好居中和右对齐制表位；加粗或改字号是原稿里公式自带的，告诉用户在原稿里去掉，或在 Word 公式编辑器里改。"),
+    "FIGURE_LIST": ("文档里有图目录或表目录。", "已有 Word 里旧的图目录/表目录（及其条目）在 mapping.json 里设为 old_toc 就会删掉；只保留模板自动生成的标题目录。"),
+    "TOC_HIERARCHY": ("目录下一级的字号比上一级还大。", "用户只改了上几级目录字号时，下几级跟着改成一样（job.json 的 format.styles.toc3 / toc4 的 size），并告诉用户。"),
     "OBJECT_SPACING": ("图或表和上下文之间没有空一行。", "脚本会在图、表组（含图题、表题、单位、表注）前后各加一个空行；仍出现说明这一份是手工处理过的，或图表题的 role 标错了：看 mapping.json。"),
     "TABLE_PADDING": ("表格单元格左右没有留白。", "已有 Word 和 content.json 的表格脚本都会设好留白，仍出现说明这一份是手工处理过的，重新 run。"),
     "TABLE_RULES": ("表格不是三线表（顶线、底线 1.5 磅，表头下 0.25 磅，没有其他线）。", "已有 Word 的表格脚本会自动改成三线表，仍出现说明这一份是手工处理过的，重新 run；content.json 的表格不用写边框。"),

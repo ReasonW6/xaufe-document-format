@@ -389,6 +389,18 @@ class Originals(base.CLI):
         self.assertEqual(code, 0, out + err)
         self.assertIn("表题按规定挪到了表格上方", out)
 
+    def test_old_list_of_figures_is_dropped(self):
+        doc = self.paper_doc(ABSTRACT)
+        at = doc.paragraphs[4]._p
+        for text in ("插图目录", "图1 合成图\t3", "图2 另一张合成图\t5"):
+            at.addprevious(doc.add_paragraph(text)._p)
+        work, code, inspected, out = self.run_docx(doc, "图目录.docx")
+        self.assertEqual(code, 0, out)
+        roles = [r["role"] for r in json.loads((work / "mapping.json").read_text(encoding="utf-8"))["paragraphs"]
+                 if r["text"].startswith(("插图目录", "图1 合成图", "图2 另一张"))]
+        self.assertEqual(roles, ["old_toc"] * 3)
+        self.assertNotIn("插图目录", [p.text for p in Document(work / "final.docx").paragraphs])
+
 
 # The inherited CLI tests already run in test_xaufe_cli.
 for _name in [n for n in vars(base.CLI) if n.startswith("test_")]:

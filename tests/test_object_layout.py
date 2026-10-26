@@ -151,15 +151,14 @@ class LongCoverLayout(Fixture):
             dict(ind.attrib), {qn("w:left"): "2508", qn("w:right"): "0", qn("w:hanging"): "1800"}
         )
 
-    def test_red_long_cover_keeps_original_indents(self):
+    def test_red_long_cover_continuation_aligns_to_title(self):
         out, state = self.make("B", "校园自习空间预约与服务质量分析系统设计与排版测试")
         self.assertPass(check(out, intake_path=state))
-        d = Document(out)
-        baseline = Document(E.ROOT / E.SPEC["master_file"])
-        self.assertEqual(
-            dict(d.paragraphs[5]._p.pPr.find(qn("w:ind")).attrib),
-            dict(baseline.paragraphs[5]._p.pPr.find(qn("w:ind")).attrib),
-        )
+        p = Document(out).paragraphs[5]._p.pPr
+        ind = dict(p.find(qn("w:ind")).attrib)
+        self.assertEqual(ind[qn("w:right")], "0")
+        self.assertGreater(int(ind[qn("w:hanging")]), 0)
+        self.assertEqual(p.find(qn("w:jc")).get(qn("w:val")), "left")
 
     def test_short_green_cover_keeps_original_indents(self):
         out, state = self.make("A", "合成短题目")

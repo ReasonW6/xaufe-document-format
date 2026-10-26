@@ -704,6 +704,7 @@ H3 = re.compile(r"^\d+\s*[.．、]\s*\S")
 NUM2 = re.compile(r"^\d+\.\d+(?!\.\d)\s*\S")
 NUM3 = re.compile(r"^\d+\.\d+\.\d+\s*\S")
 COVER_WORDS = ("学号", "学生姓名", "指导教师", "班级", "完成日期", "学  号", "学　　号")
+FIGURE_LISTS = ("图目录", "表目录", "插图目录", "插图清单", "附图目录", "附表目录", "图表目录", "图表清单", "附表清单")
 COVER_FIELDS = ("学号", "姓名", "指导教师", "班级", "专业", "学院", "完成日期", "提交日期", "课程名称", "任课教师")
 
 
@@ -771,6 +772,12 @@ def guess_roles(blocks):
             role = "spacer"
         elif plain in ("目录", "目錄"):
             role, area = "toc_title", "toc"
+        elif plain in FIGURE_LISTS:  # the school's TOC has no list of figures or tables: it is dropped
+            role, area = "old_toc", "figure_list"
+        elif area == "figure_list" and re.search(r"\d+\s*$", text) and re.match(r"^\s*(图|表|Figure|Table)", text):
+            role = "old_toc"
+        elif style.startswith("table of figures"):
+            role = "old_toc"
         elif style.startswith("toc") or (area == "toc" and re.search(r"\d+\s*$", text) and not seen_heading):
             role = "preserve"
         elif plain in ("摘要", "内容摘要", "中文摘要"):
@@ -1083,6 +1090,11 @@ def _build(root, level):
         if rows.get("old_cover") and rows.get("replace_cover_before"):
             applied.append({"part": "cover", "before": "；".join(rows["old_cover"]), "after": "",
                             "why": "旧封面整页换成了模板封面，上面模板没有的文字、图片和声明都去掉了"})
+        lists = [r["text"] for r in rows.get("paragraphs", []) if r.get("role") == "old_toc"
+                 and re.sub(r"\s+", "", r.get("text", "")) in FIGURE_LISTS]
+        if lists:
+            applied.append({"part": "text", "before": "、".join(lists), "after": "",
+                            "why": "学校要求目录只用标题目录，原稿的图表目录连同条目删去了"})
         added = rows.get("add") or {}
         for key in ("title_en", "abstract_en", "keywords_en"):
             if added.get(key):
@@ -1281,7 +1293,9 @@ def cmd_run(args):
         print("\n排版完成，但没有做实际分页和页面预览（原因见下）。")
         print("需要在最终回复里告诉用户：" + result["user_notice"])
     else:
-        print(f"\n排版完成，共 {len(result['pages'])} 页。请逐页打开下面的图片查看：")
+        used = D._renderer_name(root)
+        shown = dict(D.RENDERER_NAMES, word="Word").get(used.lower(), used) or "未知软件"
+        print(f"\n排版完成，共 {len(result['pages'])} 页（分页和页图用 {shown} 生成）。请逐页打开下面的图片查看：")
         for page in result["pages"]:
             print(f"  第{page['page']}页：{page['path']}")
     if result["warnings"]:

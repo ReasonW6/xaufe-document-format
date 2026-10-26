@@ -157,7 +157,7 @@
       "line_rule": "exact"
     },
     "XAUFE Reference": {
-      "align": "both",
+      "align": "left",
       "line": 400,
       "line_rule": "exact"
     },
@@ -190,7 +190,11 @@
       "align": "left"
     },
     "XAUFE Code": {
-      "align": "left"
+      "align": "left",
+      "latin": "Courier New",
+      "size": 9,
+      "left": 420,
+      "hanging": 420
     },
     "XAUFE Spacer": {
       "size": 10.5,

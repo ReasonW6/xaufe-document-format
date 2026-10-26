@@ -305,7 +305,7 @@
     "reference": {
       "pPr": {
         "jc": {
-          "val": "both"
+          "val": "left"
         },
         "ind": {
           "left": "0",
@@ -504,9 +504,9 @@
           "val": "left"
         },
         "ind": {
-          "left": "0",
+          "left": "420",
           "right": "0",
-          "firstLine": "0"
+          "hanging": "420"
         },
         "spacing": {
           "before": "0",
@@ -541,9 +541,9 @@
       },
       "font": {
         "eastAsia": "宋体",
-        "ascii": "Times New Roman",
-        "hAnsi": "Times New Roman",
-        "size_half_points": 21,
+        "ascii": "Courier New",
+        "hAnsi": "Courier New",
+        "size_half_points": 18,
         "bold_required": false
       }
     },

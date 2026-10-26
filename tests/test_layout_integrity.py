@@ -279,11 +279,12 @@ class ParagraphRepairs(Fixture):
         self.assertEqual(ind["left"], "420")
         self.assertNotIn("leftChars", ind)
 
-    def test_reference_both_alignment(self):
+    def test_reference_left_alignment(self):
+        # Left, not justified: a long URL would otherwise stretch the line before it (seen in Word).
         for template in ("A", "B"):
             out, _ = self.build(template, paper=True)
             p = next(p for p in Document(out).paragraphs if p.style.name == "XAUFE Reference")
-            self.assertEqual(paragraph_properties(p, "jc")["val"], "both")
+            self.assertEqual(paragraph_properties(p, "jc")["val"], "left")
 
     def test_keyword_hanging_indents(self):
         out, _ = self.build(paper=True)
