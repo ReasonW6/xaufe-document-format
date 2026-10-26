@@ -883,10 +883,11 @@ class CLI(unittest.TestCase):
             self.assertEqual(code, 0, err)
         return work
 
-    def test_writing_mode_blocks_unchecked_refs_unsourced_numbers_and_numbering_gaps(self):
+    def test_writing_mode_blocks_unchecked_refs_unsourced_numbers_and_uncited_tables(self):
         content = json.loads(json.dumps(CONTENT))
         content["blocks"] += [
             {"type": "paragraph", "text": "调查显示，女生月均消费为 710 元。"},
+            {"type": "table", "caption": "表1 合成表", "header": ["编号"], "rows": [["1"]]},
             {"type": "heading", "level": 1, "text": "三、结论"},
         ]
         work = self.written(content)
@@ -894,7 +895,8 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
         self.assertIn("参考文献还没有核对", out)
         self.assertIn("710 元", out)
-        self.assertIn("标题编号不连续", out)
+        self.assertIn("“表1”前面同一章的正文没有引用它", out)
+        self.assertIn("“表1”后面同一章的正文没有交待它", out)
         self.assertFalse((work / "draft.docx").exists())
 
     def test_writing_mode_passes_and_finish_prints_checklist(self):

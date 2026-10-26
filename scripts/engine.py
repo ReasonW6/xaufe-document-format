@@ -246,6 +246,105 @@ def install_styles(doc):
         if options.get("left") == "$toc_indent":
             options["left"] = SPEC["toc"]["indents_twips"][int(name[-1]) - 1]
         configure_style(doc, name, **options)
+    equation_tabs(doc.styles[ROLES["equation"]].element.get_or_add_pPr())
+
+
+def equation_tabs(ppr):
+    """An equation line: the formula centred on a centre tab, its number "（n）" on a right tab at the
+    right margin, no dot leader between them (the school's rule)."""
+    for old in ppr.findall(qn("w:tabs")):
+        ppr.remove(old)
+    tabs = OxmlElement("w:tabs")
+    for val, pos in (("center", WIDTH // 2), ("right", WIDTH)):
+        tab = OxmlElement("w:tab")
+        tab.set(qn("w:val"), val)
+        tab.set(qn("w:leader"), "none")
+        tab.set(qn("w:pos"), str(pos))
+        tabs.append(tab)
+    # Schema order: tabs comes after numPr/pBdr/shd and before suppressAutoHyphens/spacing/ind/jc.
+    anchor = next((ppr.find(qn(t)) for t in ("w:suppressAutoHyphens", "w:kinsoku", "w:wordWrap", "w:overflowPunct",
+                                             "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN", "w:bidi",
+                                             "w:adjustRightInd", "w:snapToGrid", "w:spacing", "w:ind",
+                                             "w:contextualSpacing", "w:mirrorIndents", "w:suppressOverlap", "w:jc",
+                                             "w:textDirection", "w:textAlignment", "w:textboxTightWrap",
+                                             "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr",
+                                             "w:pPrChange") if ppr.find(qn(t)) is not None), None)
+    if anchor is not None:
+        anchor.addprevious(tabs)
+    else:
+        ppr.append(tabs)
+
+
+EQUATION_NUMBER = re.compile(r"\s*[（(]\s*\d+(?:\s*[-－.．]\s*\d+)?\s*[)）]\s*$")
+
+
+def number_equations(doc):
+    """Every display equation: TAB formula TAB （n）, numbered in order through the paper.  A number
+    the original typed is replaced (the order may have changed); a display-math block (oMathPara)
+    becomes inline math so the tabs can place it.  Returns one correction summarising the numbers."""
+    n = 0
+    changed = []
+    style = ROLES["equation"]
+    for p in doc.paragraphs:
+        if p.style is None or p.style.name != style:
+            continue
+        el = p._p
+        if not "".join(el.xpath(".//w:t/text()|.//m:t/text()")).strip():
+            continue
+        n += 1
+        if not el.xpath(".//m:oMath|.//w:drawing|.//w:object|.//w:fldChar|.//w:hyperlink") and el.xpath("./w:r"):
+            # A formula typed as text: variables italic, function names / e / d upright.
+            rpr = el.find(f"./{qn('w:r')}/{qn('w:rPr')}")
+            text = "".join(el.xpath("./w:r/w:t/text()"))
+            for run in el.xpath("./w:r"):
+                el.remove(run)
+            for piece, italic in equation_runs(text):
+                run = p.add_run(piece)
+                if rpr is not None:
+                    run._r.insert(0, deepcopy(rpr))
+                run.italic = italic or None
+        for para in el.xpath("./m:oMathPara"):
+            for math in para.xpath("./m:oMath"):
+                para.addprevious(math)
+            el.remove(para)
+        for run in el.xpath("./w:r[w:tab]"):  # earlier tabs: the template sets its own
+            for tab in run.findall(qn("w:tab")):
+                run.remove(tab)
+            if not run.xpath("./w:t|./w:br|./w:drawing|./w:object"):
+                el.remove(run)
+        texts = el.xpath("./w:r/w:t")
+        old = None
+        if texts:
+            tail = "".join(t.text or "" for t in texts)
+            m = EQUATION_NUMBER.search(tail)
+            if m and (el.xpath("./m:oMath") or len(tail) > len(m.group(0))):
+                old = m.group(0).strip()
+                cut = len(m.group(0))
+                for t in reversed(texts):  # remove the number from the end, run by run
+                    take = min(cut, len(t.text or ""))
+                    t.text = (t.text or "")[: len(t.text or "") - take]
+                    cut -= take
+                    if not cut:
+                        break
+        first = OxmlElement("w:r")
+        first.append(OxmlElement("w:tab"))
+        ppr = el.find(qn("w:pPr"))
+        if ppr is not None:
+            ppr.addnext(first)
+        else:
+            el.insert(0, first)
+        last = OxmlElement("w:r")
+        last.append(OxmlElement("w:tab"))
+        t = OxmlElement("w:t")
+        t.text = f"（{n}）"
+        last.append(t)
+        el.append(last)
+        if old != f"（{n}）":
+            changed.append(old)
+    if not changed:
+        return []
+    return [("equation", "", f"（1）～（{n}）" if n > 1 else "（1）",
+             f"公式按全文顺序编号（共 {n} 个），编号放在行末，和公式之间不加虚线")]
 
 
 def _default_role_format(role):
@@ -634,12 +733,64 @@ def number_plain_sections(doc, has_cover):
             page.set(qn("w:start"), "1")
 
 
+def object_groups(body):
+    """Top-level figure and table groups as (first, last) elements: a figure with its caption below;
+    a table with its caption and unit line above and its notes below."""
+    style = lambda el: (el.xpath("./w:pPr/w:pStyle/@w:val") or [None])[0] if el is not None and el.tag == qn("w:p") else None
+    sid = lambda role: ROLES[role].replace(" ", "")
+    items = list(body)
+    groups, i = [], 0
+    while i < len(items):
+        el = items[i]
+        if style(el) == sid("figure") and el.xpath(".//w:drawing|.//w:pict"):
+            last = i + 1 if i + 1 < len(items) and style(items[i + 1]) == sid("caption") else i
+            groups.append((items[i], items[last]))
+            i = last + 1
+            continue
+        if el.tag == qn("w:tbl") or (style(el) in (sid("caption"), sid("table_unit")) and heads_table(el)) \
+                or (style(el) == sid("caption") and i + 1 < len(items) and style(items[i + 1]) == sid("table_unit")
+                    and heads_table(items[i + 1])):
+            first = i
+            while items[i].tag != qn("w:tbl"):
+                i += 1
+            while i + 1 < len(items) and style(items[i + 1]) == sid("table_note"):
+                i += 1
+            groups.append((items[first], items[i]))
+        i += 1
+    return groups
+
+
+def _blank_line(el):
+    return el is not None and el.tag == qn("w:p") and not "".join(el.xpath(".//w:t/text()")).strip() \
+        and not el.xpath(".//w:drawing|.//w:pict|.//m:oMath|.//w:br[@w:type='page']")
+
+
+def space_objects(doc):
+    """One blank line above and below every figure and table group (the school's rule), unless
+    one is there already or the group starts or ends a section."""
+    body = doc.element.body
+    for first, last in object_groups(body):
+        before, after = first.getprevious(), last.getnext()
+        if before is not None and not _blank_line(before) and not before.xpath("./w:pPr/w:sectPr"):
+            first.addprevious(_spacer_el(doc))
+        if after is not None and after.tag != qn("w:sectPr") and not _blank_line(after) \
+                and not (last.tag == qn("w:p") and last.xpath("./w:pPr/w:sectPr")):
+            last.addnext(_spacer_el(doc))
+
+
+def _spacer_el(doc):
+    p = OxmlElement("w:p")
+    Paragraph(p, doc._body).style = ROLES["spacer"]
+    return p
+
+
 def finalize(doc, out, meta, has_cover, mode, state=None):
     if state and "include_cover" in state and state["include_cover"] != bool(has_cover):
         fail(
             "文档是否含封面与本次明确范围不同。无封面新稿设置cover=false，已有稿按明确范围处理并更新has_cover；不能只少填信息却保留空封面。"
         )
     set_page(doc)
+    space_objects(doc)
     headers_footers(doc, meta, has_cover)
     front = {ROLES["toc_title"], ROLES["abstract_label_zh"], ROLES["abstract_label_en"]}
     if mode == "paper" or any(p.style is not None and p.style.name in front for p in doc.paragraphs):
@@ -744,7 +895,34 @@ def bookmark(p, name, bid):
     p._p.append(b)
 
 
+# Upright in a formula (GB 3102.11): function names, the constant e and the differential d.
+MATH_UPRIGHT = {"sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
+                "log", "lg", "ln", "exp", "lim", "max", "min", "sup", "inf", "det", "dim", "mod", "e"}
+
+
+def equation_runs(text):
+    """A formula typed as text, split into (text, italic): Latin letters are variables (italic),
+    except function names, e and a differential d ("dx"); digits and signs stay upright."""
+    pieces = []
+    for m in re.finditer(r"[A-Za-z]+|[^A-Za-z]+", text):
+        word = m.group(0)
+        if not word[0].isalpha():
+            pieces.append((word, False))
+        elif word in MATH_UPRIGHT:
+            pieces.append((word, False))
+        elif word.startswith("d") and len(word) == 2 and (text[m.end():m.end() + 1] in ("/", "", " ")
+                                                         or (m.start() > 0 and text[m.start() - 1] in "/∫) ")):
+            pieces += [("d", False), (word[1], True)]  # dy/dx: d upright, the variable italic
+        else:
+            pieces.append((word, True))
+    return pieces
+
+
 def add_text(p, b):
+    if b.get("type") == "equation" and "runs" not in b:
+        for text, italic in equation_runs(b.get("text", "")):
+            p.add_run(text).italic = italic or None
+        return
     if "runs" in b:
         for item in b["runs"]:
             r = p.add_run(item["text"])
@@ -1177,6 +1355,7 @@ def build(input_path, output, force=False, intake_path=None, cover_min_level=0):
             numbered = re.match(r"^\s*(?:[\[［]\d+[\]］]|\d+\s*[.．、](?!\d)|[(（]\d+[)）])", text)
             prefix = "" if numbered else f"[{i}] "
             doc.add_paragraph(prefix + text, ROLES["reference"])
+    renumbered += number_equations(doc)
     finalize(doc, out, meta, has_cover, mode, state)
     return {
         "output": str(out),
@@ -2076,6 +2255,7 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         structure_paper(doc, has_cover, m.get("metadata", {}), m.get("add", {}))
     elif m.get("add"):
         fail("mapping.json 的 add 只能和 mode=paper 一起用。")
+    renumbered += number_equations(doc)
     finalize(doc, out, m.get("metadata", {}), has_cover, m.get("mode", "document"), state)
     return {
         "output": str(out),

@@ -1,7 +1,7 @@
 """Offline regression tests. No network; no external renderer needed for these unit tests."""
 
 from __future__ import annotations
-import hashlib, json, sys, tempfile, unittest
+import hashlib, json, re, sys, tempfile, unittest
 from pathlib import Path
 from copy import deepcopy
 from unittest.mock import patch
@@ -379,7 +379,9 @@ class FormatTests(unittest.TestCase):
         before = engine.content_signature(Document(src))
         out = self.d / "restyled.docx"
         engine.restyle(src, mp, out, intake_path=self.session)
-        self.assertEqual(before, engine.content_signature(Document(out)))
+        after = engine.content_signature(Document(out))
+        after["text"] = re.sub(r"（\d+）", "", after["text"])  # the template numbers each equation
+        self.assertEqual(before, after)
         self.assertTrue(check(out)["passed"])
 
     def test_stale_map_stops(self):
@@ -426,7 +428,54 @@ class FormatTests(unittest.TestCase):
         engine.install_styles(d)
         e = d.styles["XAUFE Figure"].element.pPr.find(qn("w:spacing"))
         self.assertEqual(e.get(qn("w:lineRule")), "auto")
-        self.assertGreaterEqual(int(e.get(qn("w:before"))), 120)
+        self.assertEqual(int(e.get(qn("w:before"))), 0)  # the blank line above the figure is the gap
+
+    def test_figure_and_table_groups_get_a_blank_line_each_side(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、图表"},
+                          {"type": "paragraph", "text": "合成数据见表1。"},
+                          {"type": "table", "caption": "表1 合成表", "unit": "单位：元", "note": "注：合成数据。",
+                           "header": ["编号", "金额"], "rows": [["1", "30"]]},
+                          {"type": "paragraph", "text": "由表1可见，金额不变。"}]
+        out = self.make(data)
+        texts = [p.text for p in Document(out).paragraphs]
+        at = texts.index("表1 合成表")
+        self.assertEqual(texts[at - 1], "")
+        self.assertEqual(texts[at + 1], "元")
+        self.assertEqual(texts[texts.index("合成数据。") + 1], "")
+        r = check(out)
+        self.assertNotIn("OBJECT_SPACING", {e["code"] for e in r["errors"]})
+        self.assertFalse({"OBJECT_NOT_CITED", "OBJECT_NOT_DISCUSSED"} & {w["code"] for w in r["warnings"]})
+        doc = Document(out)
+        blank = next(p for p in doc.paragraphs if p.text == "表1 合成表")._p.getprevious()
+        blank.getparent().remove(blank)
+        doc.save(out)
+        self.assertIn("OBJECT_SPACING", {e["code"] for e in check(out)["errors"]})
+
+    def test_equations_are_numbered_in_order_at_the_right_margin(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、公式"},
+                          {"type": "paragraph", "text": "质能关系如下："},
+                          {"type": "equation", "text": "E=mc2 (3)"},
+                          {"type": "equation", "text": "F=ma"}]
+        out = self.make(data)
+        eqs = [p for p in Document(out).paragraphs if p.style.name == "XAUFE Equation"]
+        self.assertEqual([p.text for p in eqs], ["\tE=mc2\t（1）", "\tF=ma\t（2）"])
+        tabs = Document(out).styles["XAUFE Equation"].element.xpath("./w:pPr/w:tabs/w:tab")
+        self.assertEqual({(t.get(qn("w:val")), t.get(qn("w:leader"))) for t in tabs}, {("center", "none"), ("right", "none")})
+        self.assertFalse({"EQUATION_NUMBER", "EQUATION_LAYOUT"} & {e["code"] for e in check(out)["errors"]})
+        doc = Document(out)
+        doc.paragraphs[[p.text for p in doc.paragraphs].index("\tF=ma\t（2）")].runs[-1].text = "（5）"
+        doc.save(out)
+        self.assertIn("EQUATION_NUMBER", {e["code"] for e in check(out)["errors"]})
+
+    def test_uncited_and_out_of_order_objects_are_told(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、图表"},
+                          {"type": "paragraph", "text": "这里没有提到任何表。"},
+                          {"type": "table", "caption": "表2 合成表", "header": ["编号"], "rows": [["1"]]}]
+        codes = {w["code"] for w in check(self.make(data))["warnings"]}
+        self.assertTrue({"OBJECT_NOT_CITED", "OBJECT_NOT_DISCUSSED", "OBJECT_ORDER"} <= codes)
 
     def test_wrong_header_size_rejected(self):
         def mutate(d):
@@ -468,7 +517,7 @@ class FormatTests(unittest.TestCase):
         out = self.d / "covered.docx"
         engine.restyle(src, mp, out, intake_path=self.session)
         d = Document(out)
-        self.assertTrue(engine.content_signature(d)["text"].endswith(before["text"]))
+        self.assertTrue(re.sub(r"（\d+）", "", engine.content_signature(d)["text"]).endswith(before["text"]))
         self.assertTrue(check(out)["passed"])
 
 

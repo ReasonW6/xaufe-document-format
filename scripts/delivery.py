@@ -447,7 +447,8 @@ def _prepare(root, s, docx, intake_path, unavailable_note=None, office="auto"):
 TELL_USER = {"RENDERER_DIFFERENCE", "ORIGINAL_PAGE_NUMBERS_DROPPED", "ORIGINAL_HEADER_FOOTER_REPLACED", "ORIGINAL_HIGHLIGHT_REMOVED", "HEADING_NUMBERING", "MARGIN_TOO_SMALL",
              "STYLE_HARD_TO_READ", "FONT_MARKS", "RENDERER_FALLBACK", "REF_CITATION_MISMATCH", "REF_SUPPORT_UNCONFIRMED",
              "CAPTION_POSITION", "PAPER_STRUCTURE_SKIPPED", "TEXT_CORRECTED",
-             "PART_LEFT_EMPTY", "TITLE_TOO_LONG", "ABSTRACT_LENGTH"}
+             "PART_LEFT_EMPTY", "TITLE_TOO_LONG", "ABSTRACT_LENGTH", "OBJECT_NOT_CITED", "OBJECT_NOT_DISCUSSED",
+             "OBJECT_ORDER", "OBSOLETE_UNIT"}
 
 
 def _user_line(w):
@@ -471,6 +472,8 @@ def _user_line(w):
         return f"标题“{first}”的编号和模板的写法（一级“一、”、二级“（一）”、三级“1.”）不一样，按原稿保留了。"
     if code in ("PART_LEFT_EMPTY", "TITLE_TOO_LONG", "ABSTRACT_LENGTH"):
         return message.split("用户说过保持原样")[0] + "按你的意思保留了原样。"
+    if code in ("OBJECT_NOT_CITED", "OBJECT_NOT_DISCUSSED", "OBJECT_ORDER", "OBSOLETE_UNIT"):
+        return message + "这是行文上的事，我没有替你改字，建议补上。"
     if code == "TEXT_CORRECTED":
         return message.split("。要在回复里")[0] + "。不同意哪一处告诉我，我改回去。"
     if code == "PAPER_STRUCTURE_SKIPPED":

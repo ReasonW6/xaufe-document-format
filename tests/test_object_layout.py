@@ -18,9 +18,9 @@ class CaptionFlow(Fixture):
                 t.cell(1, 0).text = "001"
                 out, result, _, _ = self.restyle(d, template, roles={"p0": "h1", "p1": "caption"})
                 self.assertPass(result)
-                self.assertEqual(
-                    paragraph_properties(out.paragraphs[1], "keepNext").get("val"), "1"
-                )
+                caption = next(p for p in out.paragraphs if p.text == "表1 合成数据")
+                self.assertEqual(paragraph_properties(caption, "keepNext").get("val"), "1")
+                self.assertEqual(caption._p.getprevious().xpath("string(.)"), "")  # a blank line above the table group
 
     def test_standalone_caption_does_not_bind_unrelated_prose(self):
         d = Document()

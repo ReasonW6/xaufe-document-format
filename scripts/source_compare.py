@@ -61,6 +61,16 @@ def _text(element):
     return "".join(element.xpath(".//w:t/text()|.//m:t/text()"))
 
 
+# An equation's number "（3）" at the end of its line: the template numbers equations itself, in order.
+EQUATION_NUMBER = re.compile(r"\s*[（(]\s*\d+(?:\s*[-－.．]\s*\d+)?\s*[)）]\s*$")
+
+
+def _equation_text(element):
+    """An equation paragraph's text without its number (the original's own numbering is layout)."""
+    text = _text(element)
+    return EQUATION_NUMBER.sub("", text) if element.xpath(".//m:oMath") else text
+
+
 def _cells(table):
     return ["".join(_text(p) for p in cell.xpath("./w:p")) for cell in table.xpath(".//w:tc")]
 
@@ -84,7 +94,7 @@ def fragments(path):
         for index, el in enumerate(doc.element.body):
             if el.tag == qn("w:p"):
                 if _text(el).strip() and not set(el.xpath("./w:pPr/w:pStyle/@w:val")) & toc:
-                    result.append((f"p{pno}", (labels.get(el) or "") + _text(el), index))
+                    result.append((f"p{pno}", (labels.get(el) or "") + _equation_text(el), index))
                 pno += 1
             elif el.tag == qn("w:tbl"):
                 result += [(f"t{tno}", text, index) for text in _cells(el) if text.strip()]
@@ -141,6 +151,8 @@ def fragments(path):
             stripped = md_visible(re.sub(r"^[-*+]\s+", "", stripped))
         elif lines and not continues(lines[-1], stripped, longest):
             flush()  # .txt: each line is a paragraph unless it continues a hard-wrapped one
+        if "=" in stripped and EQUATION_NUMBER.search(stripped):  # a formula line's own number is layout
+            stripped = EQUATION_NUMBER.sub("", stripped)
         if not lines:
             start = index
         lines.append(stripped)
@@ -241,7 +253,8 @@ def output_paragraphs(docx):
         if el.tag == qn("w:p") and _text(el).strip():
             style = el.xpath("./w:pPr/w:pStyle/@w:val")
             name = doc.styles.get_by_id(style[0], 1).name if style else "Normal"
-            result.append((f"成品第 {number + 1} 段", roles.get(name), (labels.get(el) or "") + _text(el)))
+            text = EQUATION_NUMBER.sub("", _text(el)) if roles.get(name) == "equation" else _text(el)
+            result.append((f"成品第 {number + 1} 段", roles.get(name), (labels.get(el) or "") + text))
         elif el.tag == qn("w:tbl"):
             result += [(f"成品第 {number + 1} 块（表格）", "table_text", text) for text in _cells(el) if text.strip()]
     return result

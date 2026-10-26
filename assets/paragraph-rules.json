@@ -175,16 +175,16 @@
       "keep": true,
       "line": 240,
       "line_rule": "auto",
-      "before": 160,
-      "after": 80
+      "before": 0,
+      "after": 0
     },
     "XAUFE Equation": {
-      "align": "center",
+      "align": "left",
       "keep": false,
       "line": 240,
       "line_rule": "auto",
-      "before": 0,
-      "after": 0
+      "before": 120,
+      "after": 120
     },
     "XAUFE Table Text": {
       "align": "left"

@@ -338,23 +338,27 @@ def _writing_problems(root, content):
     problems += _citation_problems(content)
     if references and result_path.is_file():
         problems += _unbacked_figures(content, {_ref_key(r["text"]): r for r in _read(result_path, "refs-result.json").get("results", [])})
-    counters = {1: 0, 2: 0, 3: 0}
-    for i, block in enumerate(content.get("blocks", [])):
-        level = block.get("level")
-        if block.get("type") != "heading" or block.get("preface") or level not in HEADING_NUMBER:
+    # Heading numbers are put right by the layout step itself (heading_numbers); what writing must
+    # get right is the prose around figures and tables: cited before, used after, same chapter.
+    blocks = content.get("blocks", [])
+    chapter, chapters = 0, []
+    for block in blocks:
+        chapter += block.get("type") == "heading" and block.get("level") == 1
+        chapters.append(chapter)
+    prose = [(i, block.get("text") or "".join(r.get("text", "") for r in block.get("runs") or []))
+             for i, block in enumerate(blocks) if block.get("type") == "paragraph"]
+    for i, block in enumerate(blocks):
+        m = re.match(r"^\s*(图|表)\s*(\d+(?:[-－.．]\d+)?)", str(block.get("caption") or "")) \
+            if block.get("type") in ("table", "image") else None
+        if not m:
             continue
-        match = HEADING_NUMBER[level].match(block.get("text", "").strip())
-        if not match:
-            continue
-        number = _cn_number(match.group(1))
-        if number != counters[level] + 1:
-            problems.append(_problem(f"标题编号不连续：“{block['text'][:20]}”前面一个同级标题是第 {counters[level]} 个"
-                                     "（改这个标题的编号，或补上缺的那一节）",
-                                     f"mapping.json 里 id 为 {block['_id']} 的段落" if "_id" in block
-                                     else f"content.json 的 blocks[{i}]"))
-        counters[level] = number
-        for deeper in range(level + 1, 4):
-            counters[deeper] = 0
+        kind, number = m.group(1), m.group(2)
+        mention = re.compile(rf"{kind}\s*{re.escape(number)}(?![\d\-－.．]\d)")
+        edit = f"mapping.json 里 id 为 {block['_id']} 的段落" if "_id" in block else f"content.json 的 blocks[{i}]"
+        if not any(j < i and chapters[j] == chapters[i] and mention.search(t) for j, t in prose):
+            problems.append(_problem(f"“{kind}{number}”前面同一章的正文没有引用它：先文后{kind}，在它前面写上“见{kind}{number}”之类的话。", edit))
+        if not any(j > i and chapters[j] == chapters[i] and mention.search(t) for j, t in prose):
+            problems.append(_problem(f"“{kind}{number}”后面同一章的正文没有交待它：写一句“由{kind}{number}可见……”说明它说明了什么。", edit))
     return problems
 
 

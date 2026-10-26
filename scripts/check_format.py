@@ -205,6 +205,121 @@ def _before_table(p):
     return nxt is not None and nxt.tag == qn("w:tbl")
 
 
+OBJECT_NUMBER = re.compile(r"^\s*(图|表)\s*(\d+(?:\s*[-－.．]\s*\d+)?)")
+
+
+def object_spacing_check(doc, err):
+    """One blank line above and below each figure and table group (caption, unit and notes included)."""
+    style = lambda el: (el.xpath("./w:pPr/w:pStyle/@w:val") or [None])[0] if el is not None and el.tag == qn("w:p") else None
+    blank = lambda el: el is not None and el.tag == qn("w:p") and not "".join(el.xpath(".//w:t/text()")).strip() \
+        and not el.xpath(".//w:drawing|.//w:pict|.//m:oMath")
+    items = list(doc.element.body)
+    i = 0
+    while i < len(items):
+        el = items[i]
+        figure = style(el) == "XAUFEFigure" and el.xpath(".//w:drawing|.//w:pict")
+        start = i
+        if figure:
+            end = i + 1 if i + 1 < len(items) and style(items[i + 1]) == "XAUFECaption" else i
+        elif el.tag == qn("w:tbl"):
+            while start > 0 and style(items[start - 1]) in ("XAUFECaption", "XAUFETableUnit"):
+                start -= 1
+            end = i
+            while end + 1 < len(items) and style(items[end + 1]) == "XAUFETableNote":
+                end += 1
+        else:
+            i += 1
+            continue
+        what = "图片" if figure else "表格"
+        name = "".join(items[end if figure else start].xpath(".//w:t/text()")).strip()[:12] or what
+        above = items[start - 1] if start > 0 else None
+        below = items[end + 1] if end + 1 < len(items) else None
+        if above is not None and not blank(above) and not above.xpath("./w:pPr/w:sectPr"):
+            err("OBJECT_SPACING", f"{what}“{name}”和上文之间没有空一行（学校规定图、表与上下文各空一行）。")
+        if below is not None and below.tag != qn("w:sectPr") and not blank(below) \
+                and not items[end].xpath("./w:pPr/w:sectPr"):
+            err("OBJECT_SPACING", f"{what}“{name}”和下文之间没有空一行（学校规定图、表与上下文各空一行）。")
+        i = end + 1
+
+
+def equation_check(doc, reverse, err, warn):
+    """Display equations: numbered （1）（2）… in order at the right margin on a right tab without a
+    leader, the formula on a centre tab, no bold and no size other than the body's."""
+    style_tabs = None
+    n = 0
+    for i, p in enumerate(doc.paragraphs):
+        if reverse.get(p.style.name) != "equation":
+            continue
+        text = "".join(p._p.xpath(".//w:t/text()|.//m:t/text()")).strip()
+        if not text:
+            continue
+        n += 1
+        label = f"p{i}"
+        m = re.search(r"（(\d+)）$", text)
+        if not m:
+            err("EQUATION_NUMBER", f"{label}: 公式“{text[:15]}”行末没有编号（应为“（{n}）”，按全文顺序编号）。")
+        elif int(m.group(1)) != n:
+            err("EQUATION_NUMBER", f"{label}: 公式编号是“（{m.group(1)}）”，按全文顺序应为“（{n}）”。")
+        tabs = p._p.xpath("./w:pPr/w:tabs/w:tab")
+        if not tabs:
+            if style_tabs is None:
+                style_tabs = p.style.element.xpath("./w:pPr/w:tabs/w:tab")
+            tabs = style_tabs
+        kinds = {t.get(qn("w:val")) for t in tabs}
+        if not {"center", "right"} <= kinds:
+            err("EQUATION_LAYOUT", f"{label}: 公式行要有居中制表位放公式、右对齐制表位把编号放在行末。")
+        elif any(t.get(qn("w:leader"), "none") != "none" for t in tabs):
+            err("EQUATION_LAYOUT", f"{label}: 公式和编号之间不能加虚线（制表位前导符要设为无）。")
+        if p._p.xpath(".//w:rPr/w:b[not(@w:val='0' or @w:val='false')]|.//m:sty[@m:val='b' or @m:val='bi']"):
+            err("EQUATION_LAYOUT", f"{label}: 公式里有加粗，学校规定不得任意加黑公式中的符号和数字。")
+        sizes = {int(v) for v in p._p.xpath(".//w:rPr/w:sz/@w:val")}
+        if sizes - {21}:
+            err("EQUATION_LAYOUT", f"{label}: 公式里有 {max(sizes - {21}) / 2:g} 磅的字，要和正文一样大（五号）。")
+        upright = {"sin", "cos", "tan", "cot", "log", "lg", "ln", "exp", "lim", "max", "min", "det", "e", "d"}
+        if not p._p.xpath(".//m:oMath"):
+            for run in p.runs:
+                words = [w for w in re.findall(r"[A-Za-z]+", run.text) if w not in upright]
+                if words and not run.italic:
+                    warn("EQUATION_ITALIC", f"{label}: 公式“{text[:15]}”里的变量“{words[0]}”是正体；学校要求变量用斜体（函数名、e、d 用正体）。")
+                    break
+        if re.search(r"(?<![A-Za-z])(公尺|公分|公升|达因|尔格|卡路里|毫微米|微微|ppm)(?![A-Za-z])", text):
+            warn("OBSOLETE_UNIT", f"{label}: 公式“{text[:15]}”里有已废弃的单位或词头，按 GB 3100～3102—93 改用法定单位（如 m、cm、L、N、J、nm）。")
+
+
+def object_citation_check(doc, reverse, warn):
+    """先文后图（表）、图（表）不跨节、用图（表）交待, and numbering in order (图1, 图2 …).  Warnings:
+    the wording is the author's, so it is told, not rewritten."""
+    paragraphs = doc.paragraphs
+    roles = [reverse.get(p.style.name) for p in paragraphs]
+    chapter, chapters = 0, []
+    for role in roles:
+        chapter += role == "h1"
+        chapters.append(chapter)
+    body = [(i, p.text) for i, (p, role) in enumerate(zip(paragraphs, roles)) if role == "body"]
+    seen = {"图": [], "表": []}
+    for i, (p, role) in enumerate(zip(paragraphs, roles)):
+        m = OBJECT_NUMBER.match(p.text) if role == "caption" else None
+        if not m:
+            continue
+        kind, number = m.group(1), re.sub(r"\s+", "", m.group(2))
+        seen[kind].append(number)
+        first = i - 1 if kind == "图" and i > 0 and roles[i - 1] == "figure" else i
+        mention = re.compile(rf"{kind}\s*{re.escape(number)}(?![\d\-－.．]\d)")
+        name = p.text.strip()[:15]
+        before = [j for j, text in body if j < first and mention.search(text)]
+        if not before:
+            warn("OBJECT_NOT_CITED", f"{name}：正文在它前面没有提到“{kind}{number}”（学校要求先文后{kind}，如“见{kind}{number}”）。")
+        elif all(chapters[j] != chapters[i] for j in before):
+            warn("OBJECT_NOT_CITED", f"{name}：提到“{kind}{number}”的文字和{kind}不在同一章（学校要求{kind}不跨节）。")
+        if not any(j > i and chapters[j] == chapters[i] and mention.search(text) for j, text in body):
+            warn("OBJECT_NOT_DISCUSSED", f"{name}：{kind}后面的正文没有再提到“{kind}{number}”（学校要求有用{kind}交待，如“由{kind}{number}可见”）。")
+    for kind, numbers in seen.items():
+        simple = [int(n) for n in numbers if n.isdigit()]
+        if len(simple) == len(numbers) and simple != list(range(1, len(simple) + 1)):
+            warn("OBJECT_ORDER", f"{kind}的编号是 " + "、".join(f"{kind}{n}" for n in numbers)
+                 + f"，学校要求按出现顺序从{kind}1 起连续编号。")
+
+
 def role_check(p, role, label, visible, err):
     """Catch a paragraph whose role (from mapping.json or content.json) does not fit its content:
     the formatting would then be "correct" for the wrong role and pass unnoticed."""
@@ -713,6 +828,9 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
 
     audit_toc(doc, spec, err)
     table_count = tables_check(doc, E.WIDTH, err)
+    object_spacing_check(doc, err)
+    equation_check(doc, reverse, err, warn)
+    object_citation_check(doc, reverse, warn)
     if mode == "document":
         roles = [reverse.get(p.style.name) for p in doc.paragraphs]
         if any(r in ("toc_title", "abstract_label_zh", "abstract_label_en") for r in roles):
