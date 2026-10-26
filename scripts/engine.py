@@ -1124,6 +1124,7 @@ def build(input_path, output, force=False, intake_path=None, cover_min_level=0):
         for e in list(doc.element.body):
             if e.tag != qn("w:sectPr"):
                 doc.element.body.remove(e)
+    renumbered = renumber_blocks(data["blocks"], state)
     entries = []
     for b in data["blocks"]:
         if b["type"] == "heading":
@@ -1167,8 +1168,23 @@ def build(input_path, output, force=False, intake_path=None, cover_min_level=0):
         "template": SPEC["id"],
         "mode": mode,
         "toc_needs_refresh": mode == "paper",
+        "auto_corrections": renumbered,
         "message": "排版初稿已生成，尚未交付。",
     }
+
+
+def _page_break(p):
+    """"before" when a new page starts before this paragraph's text, "after" when it starts after
+    some of it, None without a page break."""
+    if p.xpath('./w:pPr/w:pageBreakBefore[not(@w:val="0" or @w:val="false")]'):
+        return "before"
+    seen = ""
+    for node in p.iter(qn("w:t"), qn("w:br")):
+        if node.tag == qn("w:t"):
+            seen += node.text or ""
+        elif node.get(qn("w:type")) == "page":
+            return "after" if seen.strip() else "before"
+    return None
 
 
 def inventory(input_path):
@@ -1192,6 +1208,8 @@ def inventory(input_path):
                     "images": len(el.xpath(".//w:drawing")),
                     "equations": len(el.xpath(".//m:oMath")),
                     "section_break": bool(el.xpath("./w:pPr/w:sectPr")),
+                    # A new page starts before this paragraph ("before") or after it ("after").
+                    "page_break": _page_break(el),
                     "has_fields": bool(el.xpath(".//w:instrText|.//w:fldSimple")),
                     "numbered": el in labels,  # an auto number or bullet Word shows before the text
                     "list_label": labels.get(el) or "",
@@ -1494,7 +1512,9 @@ def structure_paper(doc, has_cover, meta, additions):
         current = target
         parts[current].append(el)
     if not parts["abstract_zh"]:
-        fail("mode=paper 需要中文摘要；原稿没有摘要时把 mapping.json 的 mode 改成 document。")
+        fail("mode=paper 需要中文摘要，原稿没有：按要求根据正文起草 150～300 字的摘要和 3～5 个关键词，写进 job.json 的 "
+             "corrections（part 为 abstract / keywords，只写 after 和 why），交付时告诉用户是补的；"
+             "用户明确说不要摘要，才把 mapping.json 的 mode 改成 document。")
     if not any(_role_of(doc, el) in BODY_START for el in parts["body"]):
         fail("mode=paper 需要正文标题（如“一、引言”）；没有时把 mode 改成 document。")
     first_body = next(el for el in parts["body"] if _role_of(doc, el) not in ("spacer",))
@@ -1554,7 +1574,8 @@ def structure_paper(doc, has_cover, meta, additions):
             body.remove(el)
         parts["abstract_en"] = added
     if SPEC["english_abstract"] and not parts["abstract_en"]:
-        fail("所选版式需要英文摘要，原稿没有。问用户：要你翻译补上（写进 mapping.json 的 add），还是不要英文摘要（job.json 的 format 写 \"english_abstract\": false）。")
+        fail("所选版式需要英文摘要，原稿没有：把中文题目、摘要、关键词译成英文写进 mapping.json 的 add（title_en、abstract_en、"
+             "keywords_en），交付时会告诉用户是补的；用户明确不要英文摘要，就在 job.json 的 format 写 \"english_abstract\": false。")
     entries, bid = [], 900000
     for el in parts["body"]:
         role = _role_of(doc, el)
@@ -1690,6 +1711,71 @@ def apply_corrections(doc, corrections, roles, ids, default=None):
     return done
 
 
+RENUMBER_WHY = "标题序号按模板改为一级“一、”、二级“（一）”、三级“1.”，并按顺序重新编号"
+
+
+def _numbering_own(state):
+    return (state.get("format_request") or {}).get("heading_numbering") == "own"
+
+
+def renumber_paragraphs(doc, roles, ids, state):
+    """Restyle: number h1-h4 the template's way (see heading_numbers).  Returns the changes as
+    corrections ("heading", before, after, why) for the user notice and the source comparison."""
+    import heading_numbers as HN
+
+    if _numbering_own(state):
+        return []
+    paragraphs = list(doc.paragraphs)
+    heads = [i for i, role in enumerate(roles) if role in HN.LEVELS]
+    try:
+        changes = HN.renumber([(roles[i], paragraphs[i].text) for i in heads])
+    except ValueError as exc:
+        fail(f"{exc}。（用户确认原稿就按自己的方式编号，就在 job.json 的 format 写 \"heading_numbering\": \"own\"。）")
+    done = []
+    for k, before, after in changes:
+        i = heads[k]
+        try:
+            _set_text(paragraphs[i], after)
+        except ValueError as exc:
+            fail(f"原稿 {ids[i]} 的标题“{before[:15]}”{exc}，没法改序号：请用户在原稿里把这个标题改成纯文字。")
+        done.append(("heading", before, after, RENUMBER_WHY))
+    return done
+
+
+LABELS = {"abstract_label_zh": "内 容 摘 要", "abstract_label_en": "Abstract", "reference_title": "参 考 文 献"}
+
+
+def relabel_paragraphs(doc, roles):
+    """The template's own wording for the abstract and reference titles ("摘要" -> "内 容 摘 要").
+    Only a change beyond spacing is reported to the user."""
+    done = []
+    for p, role in zip(list(doc.paragraphs), roles):
+        want = LABELS.get(role)
+        if not want or p.text == want or p._p.xpath(".//w:drawing|.//m:oMath|.//w:fldChar"):
+            continue
+        before = p.text
+        _set_text(p, want)
+        if re.sub(r"\s+", "", before).lower() != re.sub(r"\s+", "", want).lower():
+            done.append(("heading", before, want, "按模板的写法统一"))
+    return done
+
+
+def renumber_blocks(blocks, state):
+    """content.json: the same numbering for heading blocks (a preface heading is never numbered)."""
+    import heading_numbers as HN
+
+    if _numbering_own(state):
+        return []
+    heads = [b for b in blocks if b.get("type") == "heading" and not b.get("preface") and 1 <= b.get("level", 0) <= 4]
+    try:
+        changes = HN.renumber([(f"h{b['level']}", b["text"]) for b in heads])
+    except ValueError as exc:
+        fail(f"{exc}（content.json 的 level）。用户确认原稿就按自己的方式编号，就在 job.json 的 format 写 \"heading_numbering\": \"own\"。")
+    for k, before, after in changes:
+        heads[k]["text"] = after
+    return [("heading", before, after, RENUMBER_WHY) for _, before, after in changes]
+
+
 def _delete_marked(doc, roles, mapping):
     """Remove paragraphs the user agreed to delete (role "delete") and the old TOC the
     template replaces (role "old_toc").  Returns the mapping id of each paragraph left (messages
@@ -1780,6 +1866,8 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         if roles.get(ids[i], default) in INDENTED_ROLES and strip_typed_indent(p):
             indent_changes.append(f"{ids[i]}“{p.text.strip()[:15]}”")
     frozen = freeze_list_labels(doc, roles, default, ids)
+    renumbered = renumber_paragraphs(doc, [roles.get(x, default) for x in ids], ids, state)
+    renumbered += relabel_paragraphs(doc, [roles.get(x, default) for x in ids])
     for i, p in enumerate(doc.paragraphs):
         role = roles.get(ids[i], default)
         wanted = m["metadata"].get(role, "") if role in ("title_zh", "title_en") else None
@@ -1909,5 +1997,6 @@ def restyle(input_path, map_path, output, force=False, intake_path=None, cover_m
         "blank_page_breaks_removed": break_changes,
         "list_labels_frozen": list(frozen.values()),
         "corrections_applied": corrected,
+        "auto_corrections": renumbered,
         "message": "重排初稿已生成；内容保全检查通过。",
     }

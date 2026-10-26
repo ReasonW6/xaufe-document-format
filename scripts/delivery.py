@@ -167,6 +167,8 @@ def correction_line(c):
         what = f"{part}“{short(before)}”改为“{short(after)}”"
     elif after:
         what = f"补了{part}“{short(after)}”"
+    elif c.get("part") == "cover":
+        what = f"旧封面（“{short(before)}”）"
     else:
         what = f"删去{part}“{short(before)}”"
     return what + (f"（{c['why']}）" if c.get("why") else "")

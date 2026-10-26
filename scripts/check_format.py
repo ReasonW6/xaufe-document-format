@@ -792,7 +792,9 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
                     found = [(i, q) for i, q in paragraphs[starts[0] + 1 : starts[0] + 4] if q.text.strip()] if starts else []
                 else:
                     found = [(i, q) for i, q in paragraphs if re.match(prefix[role], q.text, re.I)]
-                candidates += [f"p{i}“{q.text.strip()[:15]}”（现在是 {reverse.get(q.style.name) or q.style.name}）" for i, q in found[:2]]
+                generated = {"toc_title", "toc1", "toc2", "toc3", "toc4", "abstract_spacer", "spacer"}
+                candidates += [f"p{i}“{q.text.strip()[:15]}”（现在是 {reverse.get(q.style.name) or q.style.name}）"
+                               for i, q in found[:2] if reverse.get(q.style.name) not in generated]
             labels = {"abstract_zh": "中文摘要", "keywords_zh": "中文关键词", "reference": "参考文献条目",
                       "abstract_en": "英文摘要", "keywords_en": "英文关键词"}
             (warn if keep else err)(

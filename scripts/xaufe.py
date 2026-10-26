@@ -700,6 +700,7 @@ H3 = re.compile(r"^\d+\s*[.．、]\s*\S")
 NUM2 = re.compile(r"^\d+\.\d+(?!\.\d)\s*\S")
 NUM3 = re.compile(r"^\d+\.\d+\.\d+\s*\S")
 COVER_WORDS = ("学号", "学生姓名", "指导教师", "班级", "完成日期", "学  号", "学　　号")
+COVER_FIELDS = ("学号", "姓名", "指导教师", "班级", "专业", "学院", "完成日期", "提交日期", "课程名称", "任课教师")
 
 
 def _plain(text):
@@ -739,6 +740,13 @@ def guess_roles(blocks):
             before = "".join(x["text"] for x in blocks if x["block_index"] <= b["block_index"])
             if any(word in before for word in COVER_WORDS):
                 cover_end = b["block_index"] + 1
+            break
+        if b["kind"] == "paragraph" and b.get("page_break"):
+            # A cover ended by a page break: at least two cover fields ("学号" "指导教师" …) on that first page.
+            end = b["block_index"] + (b["page_break"] == "after")
+            before = _plain("".join(x["text"] for x in blocks if x["block_index"] < end))
+            if sum(word in before for word in COVER_FIELDS) >= 2:
+                cover_end = end
             break
     roles, area, seen_heading = {}, None, False
     for b in paragraphs:
@@ -867,9 +875,9 @@ def cmd_inspect(args):
         for b in inv["blocks"]:
             if b["kind"] == "paragraph" and roles.get(b["id"]) in ("toc_title", "toc1", "toc2", "toc3", "toc4"):
                 roles[b["id"]] = "old_toc"
+    # The school's paper structure is the default: parts the original lacks are completed, not skipped.
     paper = rebuild or (
         not own_output
-        and "abstract_zh" in values
         and bool(values & {"h1", "h2", "h3", "preface"})
         and not any(b.get("section_break") for b in inv["blocks"][(cover_end or 0) :] if b["kind"] == "paragraph")
     )
@@ -892,6 +900,10 @@ def cmd_inspect(args):
             if b["kind"] == "paragraph"
         ],
     }
+    old_cover = [b["text"].strip() for b in inv["blocks"] if b["kind"] == "paragraph" and cover_end is not None
+                 and b["block_index"] < cover_end and b["text"].strip()]
+    if old_cover and wants_cover:
+        mapping["old_cover"] = old_cover
     _write(root / "mapping.json", mapping)
     # mapping.json shows the first 60 characters; failures are located against the whole paragraph.
     _write(root / "paragraph-text.json", {b["id"]: (b.get("list_label") or "") + b["text"] for b in inv["blocks"] if b["kind"] == "paragraph"})
@@ -906,7 +918,12 @@ def cmd_inspect(args):
     print(f"已生成 {root / 'mapping.json'}，共 {len(roles)} 段。自动判断结果：")
     print("  " + "，".join(f"{k} {v} 段" for k, v in sorted(counts.items())))
     if cover_end is not None and wants_cover:
-        print(f"  检测到原稿开头有旧封面（到第 {cover_end} 个块为止），会换成所选模板的封面。")
+        print(f"  检测到原稿开头有旧封面（到第 {cover_end} 个块为止），会整页换成所选模板的封面：旧封面上的文字、图片、"
+              "声明之类模板封面没有的内容都会去掉（交付时告诉用户）。")
+        found = [line for line in old_cover if re.search(r"[:：]\s*\S", line)]
+        if found:
+            print("  旧封面上写着：" + "；".join(found[:8]) + "。job.json 的 info 里还没有的项，可以从这里取"
+                  "（和用户确认过再写；看不清的不要猜）。")
     elif cover_end is not None:
         print("  注意：原稿开头有封面，但用户不要封面。先和用户确认；脚本不会自动删除封面。")
     elif wants_cover:
@@ -927,14 +944,21 @@ def cmd_inspect(args):
                       "用户想去掉就请用户在原稿里删掉段首这几个字，再从 new 重新排。")
         from customization import profile_for
 
+        missing = [name for role, name in (("abstract_zh", "中文摘要"), ("keywords_zh", "关键词"), ("reference", "参考文献"))
+                   if role not in values]
+        if missing:
+            print(f"  原稿缺{'、'.join(missing)}：只排版也要补全。摘要（150～300 字）和关键词根据正文起草；参考文献只补"
+                  "联网查到并用 refs 核实通过的真实文献，核实不了的不补。都写进 job.json 的 corrections（只写 after 和 why，"
+                  "见 references/job.md），交付时会逐条告诉用户是补的。")
         if profile_for(state)["english_abstract"] and "abstract_en" not in values:
             print(
-                "  注意：所选版式需要英文摘要，原稿没有。先问用户：要不要你把中文摘要翻译成英文补上"
-                "（写进 mapping.json 的 add，见 references/content.md），还是这次不要英文摘要"
-                "（job.json 的 format 写 \"english_abstract\": false）。"
+                "  原稿没有英文摘要，所选版式需要：把中文题目、摘要、关键词译成英文写进 mapping.json 的 add"
+                "（见 references/content.md），交付时会告诉用户是补的；用户明确不要英文摘要，才在 job.json 的 format 写 "
+                "\"english_abstract\": false。"
             )
     elif not own_output:
-        print("  原稿没有摘要或标题，按普通文档排（mode=document），不加目录。")
+        print("  原稿没有章节标题，按普通文档排（mode=document），不加目录和摘要页。论文缺章节标题没法自动补："
+              "在回复里告诉用户，用户给出章节划分后再按论文结构排。")
     print("→ 打开 mapping.json，逐段核对 role（尤其是标题级别和正文），改错的项；然后运行 run。")
     print("  可用 role 见 references/content.md 的“已有 Word”一节。")
     return 0
@@ -1033,6 +1057,15 @@ def _build(root, level):
             print(f"去掉了 {len(shown)} 个只会在 Word 里多出空白页的分页符（文字没动）：" + "、".join(shown[:5])
                   + ("等" if len(shown) > 5 else ""))
         applied = [dict(zip(("part", "before", "after", "why"), c)) for c in result.get("corrections_applied", [])]
+        rows = _read(mapping, "mapping.json")
+        if rows.get("old_cover") and rows.get("replace_cover_before"):
+            applied.append({"part": "cover", "before": "；".join(rows["old_cover"]), "after": "",
+                            "why": "旧封面整页换成了模板封面，上面模板没有的文字、图片和声明都去掉了"})
+        added = rows.get("add") or {}
+        for key in ("title_en", "abstract_en", "keywords_en"):
+            if added.get(key):
+                text = "; ".join(map(str, added[key])) if isinstance(added[key], list) else str(added[key])
+                applied.append({"part": key, "before": "", "after": text, "why": "原稿没有英文摘要，按版式要求译自中文补上"})
     else:
         raise ValueError("还没有内容：新写文档请写 content.json；已有 Word 请先运行 inspect。")
     applied += [dict(zip(("part", "before", "after", "why"), c)) for c in result.get("auto_corrections", [])]

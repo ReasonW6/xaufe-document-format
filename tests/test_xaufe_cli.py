@@ -812,14 +812,14 @@ class CLI(unittest.TestCase):
         self.assertEqual(len(doc.sections), 4)
         toc = [p.text for p in doc.paragraphs if p.style.name.startswith("TOC ")]
         self.assertTrue(any("一、引言" in t for t in toc))
-        self.assertTrue(any("参考文献" in t for t in toc))
+        self.assertTrue(any("参考文献" in t.replace(" ", "") for t in toc))
         text = "\n".join(p.text for p in doc.paragraphs)
         for original in ("这是正文。", "正文内容很长，这一段不是标题。", "[1] 合成作者"):
             self.assertIn(original, text)
 
     def test_existing_paper_a_needs_english_abstract_decision(self):
         work, inspect_out, code, out, err = self.paper_run("A")
-        self.assertIn("先问用户", inspect_out)
+        self.assertIn("译成英文", inspect_out)
         self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
         self.assertIn("english_abstract", out)
 

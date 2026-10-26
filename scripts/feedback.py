@@ -527,7 +527,7 @@ _MESSAGE_HINTS = (
      "删掉 format.parts 用默认顺序；用户要的顺序脚本不支持时，在 content.json 用 mode=document 自己安排并告诉用户。"),
     (r"先后顺序和所选版式不同", "这一段的 role 可能标错了（比如正文段标成了摘要或关键词），或者原稿本来就是这个顺序。",
      "role 标错就改 mapping.json 里这一段的 role；原稿顺序本来如此，就把 mapping.json 的 mode 改成 document，或先问用户。"),
-    (r"英文摘要", "原稿有没有英文摘要和本次版式设置不一致。", "版式要英文摘要、原稿没有：问用户要你翻译补上（已有 Word 写进 mapping.json 的 add，文本写进 content.json 的 abstract_en/keywords_en/metadata.title_en），还是这次不要（job.json 的 format 写 \"english_abstract\": false）。原稿有、版式不要：保留就写 \"english_abstract\": true，用户同意删除才把那些段落设为 delete。"),
+    (r"英文摘要", "原稿有没有英文摘要和本次版式设置不一致。", "版式要英文摘要、原稿没有：把中文题目、摘要、关键词译成英文补上（已有 Word 写进 mapping.json 的 add，文本写进 content.json 的 abstract_en/keywords_en/metadata.title_en），交付时告诉用户是补的；用户明确不要，才在 job.json 的 format 写 \"english_abstract\": false。原稿有、版式不要：保留就写 \"english_abstract\": true，用户同意删除才把那些段落设为 delete。"),
     (r"role 是 preserve", "preserve 只用于开头的旧封面，正文里的段落用了它就保持原稿样式，模板检查不认。",
      "把这一段的 role 改成它实际的角色（正文 body、标题 h1/h2/h3 等），旧目录用 old_toc，然后重新 run。"),
     (r"自动编号.*认不出", "这一段的自动编号用了脚本不认识的编号格式，没法转成同样的文字。",

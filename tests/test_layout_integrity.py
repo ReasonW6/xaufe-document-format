@@ -62,8 +62,10 @@ class Fixture(unittest.TestCase):
         I.resolve(p, {"metadata": data})
         return p
 
-    def build(self, template="A", paper=False, cover=False, blocks=None, extras=None):
+    def build(self, template="A", paper=False, cover=False, blocks=None, extras=None, request=None):
         state = self.state(template)
+        if request:
+            I.customize(state, request, "测试模拟用户要求")
         data = {
             "mode": "paper" if paper else "document",
             "cover": cover,
@@ -453,8 +455,16 @@ class ParagraphRepairs(Fixture):
         r, _, _ = self.mutate(change, cover=True)
         self.assertCode(r, "COVER_EFFECTIVE_FONT")
 
-    def test_unnumbered_heading_is_warning_not_content_rewrite(self):
+    def test_unnumbered_heading_gets_the_template_number(self):
         out, state = self.build(blocks=[{"type": "heading", "level": 1, "text": "系统设计"}])
+        r = check(out, intake_path=state)
+        self.assertPass(r)
+        self.assertNotIn("HEADING_NUMBERING", [w["code"] for w in r["warnings"]])
+        self.assertEqual(Document(out).paragraphs[0].text, "一、系统设计")
+
+    def test_unnumbered_heading_kept_when_the_user_owns_the_numbering(self):
+        out, state = self.build(blocks=[{"type": "heading", "level": 1, "text": "系统设计"}],
+                                request={"heading_numbering": "own"})
         r = check(out, intake_path=state)
         self.assertPass(r)
         self.assertIn("HEADING_NUMBERING", [w["code"] for w in r["warnings"]])

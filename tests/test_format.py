@@ -171,10 +171,23 @@ class FormatTests(unittest.TestCase):
         r = check(p)
         self.assertCode(r, "CAPTION_DETACHED")
 
+    def make_own(self, data, name="own.docx"):
+        """Built with the user's own heading numbering kept, so the checker sees the levels as set."""
+        src = self.d / (name + ".json")
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        session = self.session_for(data.get("metadata", {}), name=name + ".intake.json")
+        intake.customize(session, {"heading_numbering": "own"}, "用户确认原稿就是这样编号")
+        out = self.d / name
+        engine.build(src, out, intake_path=session)
+        return out
+
     def test_same_numbering_at_two_heading_levels_rejected(self):
         data = deepcopy(self.data)
         data["blocks"].append({"type": "heading", "level": 2, "text": "二、错设成二级的标题"})
-        r = check(self.make(data))
+        with self.assertRaises(ValueError) as caught:  # renumbering would hide the wrong level, so it refuses
+            self.make(data)
+        self.assertIn("“二、错设成二级的标题”设成了 h2，但它的编号是模板一级标题的写法", str(caught.exception))
+        r = check(self.make_own(data))
         self.assertCode(r, "HEADING_LEVEL")
         self.assertIn("二、错设成二级的标题", " ".join(e["message"] for e in r["errors"]))
 
@@ -183,8 +196,29 @@ class FormatTests(unittest.TestCase):
         data["blocks"] = [{"type": "heading", "level": 1, "text": "一、测试标题"},
                           {"type": "paragraph", "text": "保留原文。"},
                           {"type": "heading", "level": 1, "text": "（二）错设成一级的标题"}]
-        r = check(self.make(data))
+        with self.assertRaises(ValueError) as caught:
+            self.make(data)
+        self.assertIn("应为 h2", str(caught.exception))
+        r = check(self.make_own(data))
         self.assertIn("另一种编号", " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL"))
+
+    def test_other_numbering_schemes_are_renumbered_the_template_way(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "1 绪论"},
+                          {"type": "heading", "level": 2, "text": "1.1 研究背景"},
+                          {"type": "heading", "level": 3, "text": "1.1.1 问题来源"},
+                          {"type": "paragraph", "text": "保留原文。"},
+                          {"type": "heading", "level": 1, "text": "研究方法"},
+                          {"type": "heading", "level": 2, "text": "2.1 数据"},
+                          {"type": "paragraph", "text": "保留原文。"},
+                          {"type": "heading", "level": 1, "text": "致谢"}]
+        src = self.d / "renumber.json"
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        result = engine.build(src, self.d / "renumber.docx", intake_path=self.session_for(data.get("metadata", {}), name="r.intake.json"))
+        heads = [p.text for p in Document(self.d / "renumber.docx").paragraphs if p.style.name.startswith("Heading")]
+        self.assertEqual(heads[:6], ["一、绪论", "（一）研究背景", "1.问题来源", "二、研究方法", "（一）数据", "致谢"])
+        self.assertEqual(len(result["auto_corrections"]), 5)
+        self.assertNotIn("HEADING_LEVEL", {e["code"] for e in check(self.d / "renumber.docx")["errors"]})
 
     def test_swapped_heading_levels_rejected_unless_user_owns_the_numbering(self):
         data = deepcopy(self.data)
@@ -192,10 +226,10 @@ class FormatTests(unittest.TestCase):
                           {"type": "paragraph", "text": "保留原文。"},
                           {"type": "heading", "level": 1, "text": "（一）本该是二级的标题"},
                           {"type": "paragraph", "text": "保留原文。"}]
-        r = check(self.make(data))
-        found = " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL")
-        self.assertIn("本该是一级", found)
-        self.assertIn("本该是二级", found)
+        with self.assertRaises(ValueError) as caught:
+            self.make(data)
+        self.assertIn("本该是一级", str(caught.exception))
+        self.assertIn("本该是二级", str(caught.exception))
         src = self.d / "own.json"
         src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         session = self.session_for(data.get("metadata", {}), name="own.intake.json")

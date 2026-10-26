@@ -222,7 +222,7 @@ class Originals(base.CLI):
                                           "why": "原摘要 12 字，学校要求 150～300 字"}])
         code, out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, 0, out + err)
-        self.assertIn("按版式要求改了 1 处文字", out)
+        self.assertIn("原摘要 12 字", out)
         shown = [p.text for p in Document(work / "final.docx").paragraphs]
         self.assertIn(ABSTRACT, shown)
         self.assertNotIn("本文比较了几种排序算法。", shown)
@@ -281,6 +281,76 @@ class Originals(base.CLI):
         self.assertNotEqual(code, 0)
         self.assertIn("[TITLE_TOO_LONG]", out)
         self.assertIn("有 28 字", out)
+
+    def test_off_template_heading_numbers_are_corrected_and_told(self):
+        doc = self.paper_doc(ABSTRACT)
+        body = doc.paragraphs[4]._p
+        for text, level in (("1 绪论", 1), ("1.1 研究背景", 2)):
+            h = doc.add_heading(text, level)
+            body.addprevious(h._p)
+        source = self.d / "十进制标题.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        heads = [p.text for p in Document(work / "final.docx").paragraphs if p.style.name.startswith("Heading")]
+        self.assertEqual(heads[:3], ["一、绪论", "（一）研究背景", "二、引言"])
+        import delivery as D
+        told = " ".join(D.load(work)[1].get("tell_user", []))
+        self.assertIn("“1 绪论”改为“一、绪论”", told)
+
+    def test_missing_abstract_and_keywords_are_drafted_into_the_paper(self):
+        doc = Document()
+        doc.add_paragraph("排序算法比较")
+        doc.add_heading("一、引言", 1)
+        doc.add_paragraph("合成正文。")
+        doc.add_paragraph("参考文献")
+        doc.add_paragraph("[1] 合成作者. 合成文献[M]. 北京: 合成出版社, 2020.")
+        source = self.d / "缺摘要.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        code, inspected, _ = self.call("inspect", "--work", work, "--docx", source)
+        self.assertIn("原稿缺中文摘要、关键词：只排版也要补全", inspected)
+        self.assertEqual(json.loads((work / "mapping.json").read_text(encoding="utf-8"))["mode"], "paper")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertNotEqual(code, 0)
+        self.assertIn("只排版也要补", out)
+        self.assertNotIn("目\u3000录", out)
+        self.with_job(work, corrections=[
+            {"part": "abstract", "after": ABSTRACT, "why": "原稿没有摘要，根据正文起草"},
+            {"part": "keywords", "after": "关键词：排序；算法", "why": "原稿没有关键词，根据正文提取"}])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        shown = [p.text for p in Document(work / "final.docx").paragraphs if p.text.strip()]
+        self.assertLess(shown.index("内 容 摘 要"), shown.index(ABSTRACT))
+        self.assertLess(shown.index(ABSTRACT), shown.index("关键词：排序；算法"))
+        self.assertIn("补了摘要", out)
+
+    def test_old_cover_ending_in_a_page_break_is_replaced_and_told(self):
+        from docx.enum.text import WD_BREAK
+
+        doc = Document()
+        for text in ("合成大学", "学年论文", "题目：排序算法比较", "学生姓名：合成同学", "学号：20230001",
+                     "指导教师：合成老师", "诚信承诺：本文为本人独立完成。"):
+            doc.add_paragraph(text)
+        doc.paragraphs[-1].add_run().add_break(WD_BREAK.PAGE)
+        body = self.paper_doc(ABSTRACT)
+        for p in body.paragraphs:
+            doc.element.body.append(__import__("copy").deepcopy(p._p))
+        doc.element.body.append(doc.element.body.find(qn("w:sectPr")))
+        source = self.d / "旧封面.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        code, inspected, err = self.call("inspect", "--work", work, "--docx", source)
+        self.assertIn("检测到原稿开头有旧封面", inspected)
+        self.assertIn("学号：20230001", inspected)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        text = "\n".join(p.text for p in Document(work / "final.docx").paragraphs)
+        self.assertNotIn("诚信承诺", text)
+        import delivery as D
+        self.assertIn("旧封面", " ".join(D.load(work)[1].get("tell_user", [])))
 
 
 # The inherited CLI tests already run in test_xaufe_cli.
