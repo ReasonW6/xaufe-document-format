@@ -266,8 +266,8 @@
         "spacing": {
           "before": "400",
           "after": "400",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "1"
@@ -305,7 +305,7 @@
     "reference": {
       "pPr": {
         "jc": {
-          "val": "both"
+          "val": "left"
         },
         "ind": {
           "left": "0",
@@ -315,8 +315,8 @@
         "spacing": {
           "before": "0",
           "after": "0",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "0"
@@ -393,7 +393,7 @@
         }
       },
       "font": {
-        "eastAsia": "宋体",
+        "eastAsia": "黑体",
         "ascii": "Times New Roman",
         "hAnsi": "Times New Roman",
         "size_half_points": 21,
@@ -411,8 +411,8 @@
           "firstLine": "0"
         },
         "spacing": {
-          "before": "160",
-          "after": "80",
+          "before": "0",
+          "after": "0",
           "line": "240",
           "lineRule": "auto"
         },
@@ -452,7 +452,7 @@
     "equation": {
       "pPr": {
         "jc": {
-          "val": "center"
+          "val": "left"
         },
         "ind": {
           "left": "0",
@@ -460,8 +460,8 @@
           "firstLine": "0"
         },
         "spacing": {
-          "before": "0",
-          "after": "0",
+          "before": "120",
+          "after": "120",
           "line": "240",
           "lineRule": "auto"
         },
@@ -504,9 +504,9 @@
           "val": "left"
         },
         "ind": {
-          "left": "0",
+          "left": "420",
           "right": "0",
-          "firstLine": "0"
+          "hanging": "420"
         },
         "spacing": {
           "before": "0",
@@ -541,9 +541,9 @@
       },
       "font": {
         "eastAsia": "宋体",
-        "ascii": "Times New Roman",
-        "hAnsi": "Times New Roman",
-        "size_half_points": 21,
+        "ascii": "Courier New",
+        "hAnsi": "Courier New",
+        "size_half_points": 18,
         "bold_required": false
       }
     },
@@ -707,8 +707,8 @@
         "spacing": {
           "before": "0",
           "after": "0",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "0"
@@ -757,8 +757,8 @@
         "spacing": {
           "before": "0",
           "after": "0",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "0"
@@ -807,8 +807,8 @@
         "spacing": {
           "before": "0",
           "after": "0",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "0"
@@ -856,8 +856,8 @@
         "spacing": {
           "before": "0",
           "after": "0",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "0"
@@ -905,8 +905,8 @@
         "spacing": {
           "before": "0",
           "after": "0",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "0"
@@ -954,8 +954,8 @@
         "spacing": {
           "before": "0",
           "after": "0",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "1"
@@ -1003,8 +1003,8 @@
         "spacing": {
           "before": "0",
           "after": "0",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "1"
@@ -1052,8 +1052,8 @@
         "spacing": {
           "before": "0",
           "after": "0",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "1"
@@ -1101,8 +1101,8 @@
         "spacing": {
           "before": "0",
           "after": "0",
-          "line": "360",
-          "lineRule": "auto"
+          "line": "400",
+          "lineRule": "exact"
         },
         "keepNext": {
           "val": "1"
@@ -1430,6 +1430,104 @@
         "size_half_points": 28,
         "bold_required": false
       }
+    },
+    "table_note": {
+      "pPr": {
+        "jc": {
+          "val": "left"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "0"
+        },
+        "keepLines": {
+          "val": "0"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 18,
+        "bold_required": false
+      }
+    },
+    "table_unit": {
+      "pPr": {
+        "jc": {
+          "val": "right"
+        },
+        "ind": {
+          "left": "0",
+          "right": "0",
+          "firstLine": "0"
+        },
+        "spacing": {
+          "before": "0",
+          "after": "0",
+          "line": "400",
+          "lineRule": "exact"
+        },
+        "keepNext": {
+          "val": "1"
+        },
+        "keepLines": {
+          "val": "1"
+        },
+        "widowControl": {
+          "val": "1"
+        },
+        "pageBreakBefore": {
+          "val": "0"
+        },
+        "snapToGrid": {
+          "val": "0"
+        },
+        "kinsoku": {
+          "val": "1"
+        },
+        "overflowPunct": {
+          "val": "0"
+        },
+        "outlineLvl": {
+          "val": "9"
+        }
+      },
+      "font": {
+        "eastAsia": "宋体",
+        "ascii": "Times New Roman",
+        "hAnsi": "Times New Roman",
+        "size_half_points": 18,
+        "bold_required": false
+      }
     }
   },
   "overrides": {
@@ -1441,5 +1539,47 @@
       }
     },
     "B": {}
+  },
+  "pages": {
+    "_source": "两版模板文件的页面设置（与 references/format-spec.md 的“页面”一节一致）；B 版按用户要求加页眉或页码而没给距离时，用 A 版的页眉页脚距离。单位 twip，1 厘米 = 567。手工维护，不从 assets/*/layout.json 复制。 2026-10-26 用户要求 A、B 统一：上下 2.54 厘米、左 3 厘米、右 2.2 厘米。",
+    "A": {
+      "width": 11906,
+      "height": 16838,
+      "top": 1440,
+      "bottom": 1440,
+      "left": 1701,
+      "right": 1247,
+      "header": 851,
+      "footer": 992,
+      "gutter": 0
+    },
+    "B": {
+      "width": 11906,
+      "height": 16838,
+      "top": 1440,
+      "bottom": 1440,
+      "left": 1701,
+      "right": 1247,
+      "header": 0,
+      "footer": 0,
+      "gutter": 0
+    },
+    "added_header_or_page_numbers_distance": {
+      "header": 851,
+      "footer": 992
+    },
+    "narrowed_margin": {
+      "_source": "用户把上/下页边距改小、没给页眉/页脚距离时：距离 + 一行（300 twip）放不下就缩成 页边距 - 300，最小 280（约 0.5 厘米，多数打印机能印到）。",
+      "line_room": 300,
+      "minimum_distance": 280
+    }
+  },
+  "lengths": {
+    "purpose": "学校要求：论文题目 24 字以内，中文摘要 150～300 字；按 Word“字数统计”的算法数（汉字和中文标点每个算 1，英文单词和数字每个算 1）。",
+    "title_zh_max": 24,
+    "abstract_zh": [
+      150,
+      300
+    ]
   }
 }

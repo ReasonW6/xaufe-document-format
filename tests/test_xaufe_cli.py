@@ -9,12 +9,16 @@ import contextlib, hashlib, io, json, sys, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import xaufe as X
 import delivery as D
 import intake as I
+from run_acceptance import original_text
+from fixtures import ABSTRACT
 
 JOB_B = {
     "task": "format",
@@ -31,7 +35,7 @@ JOB_B = {
 CONTENT = {
     "mode": "paper",
     "metadata": {"title_zh": "排序算法比较"},
-    "abstract_zh": "这是合成摘要。",
+    "abstract_zh": ABSTRACT,
     "keywords_zh": ["排序", "算法"],
     "references": ["合成作者. 合成文献[M]. 北京: 合成出版社, 2020."],
     "blocks": [
@@ -60,6 +64,18 @@ class CLI(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.d = Path(self.tmp.name)
+        # Synthetic renders below write no PDF; the rendered-page audit has its own tests
+        # (tests/test_render_audit.py) and runs for real in tests/run_acceptance.py.
+        audit = patch("delivery.audit_rendered", return_value={"passed": True, "errors": [], "warnings": [], "pages": 1, "fonts": {}})
+        audit.start()
+        self.addCleanup(audit.stop)
+        # The automatic check of an original's references goes online; its own tests mock it.
+        offline = patch.dict("os.environ", {"XAUFE_SKIP_REF_CHECK": "1"})
+        offline.start()
+        self.addCleanup(offline.stop)
+        temp = patch("tempfile.gettempdir", return_value=str(self.d))  # every workspace lives in the test folder
+        temp.start()
+        self.addCleanup(temp.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -72,6 +88,9 @@ class CLI(unittest.TestCase):
 
     def new(self, job=None, content=None, sources=()):
         extra = []
+        if content is not None and not sources and (job or {}).get("task", "format") == "format":
+            sources = [self.d / f"原稿-{len(list(self.d.glob('原稿-*')))}.txt"]
+            sources[0].write_text(original_text(content), encoding="utf-8")
         for s in sources:
             extra += ["--source", s]
         with patch("tempfile.gettempdir", return_value=str(self.d)):
@@ -191,8 +210,33 @@ class CLI(unittest.TestCase):
         code, out, err = self.call("finish", "--work", work)
         self.assertEqual(code, 0, err)
         self.assertIn("必须在给用户的回复里说明", out)
+        self.assertIn("1 条参考文献按原文保留", out)  # format only, refs never checked: say so
+
         self.assertFalse(work.exists())
         self.assertEqual([p.name for p in (self.d / "out").iterdir()], ["成品.docx"])
+
+    def test_format_only_checks_the_originals_references_once_and_reports(self):
+        import refcheck as R
+
+        verdict = [{"text": CONTENT["references"][0], "status": R.PENDING, "notes": ["合成：找不到这本书"],
+                    "year": 2020, "per_year": None}]
+        with patch.dict("os.environ", {"XAUFE_SKIP_REF_CHECK": ""}):
+            work = self.new(JOB_B, CONTENT)
+            offline = self.new(JOB_B, CONTENT)
+            with patch("refcheck._online", return_value=True), patch("refcheck.check_all", return_value=verdict) as checked:
+                code, out, err = self.call("run", "--work", work, "--office", "none")
+                self.assertEqual(code, 0, out + err)
+                self.call("run", "--work", work, "--office", "none")
+            self.assertEqual(checked.call_count, 1)  # once per job, not every run
+            self.assertIn("原文参考文献已自动核对", out)
+            self.fill_review(work, vision=False)
+            code, out, err = self.call("finish", "--work", work)
+            self.assertEqual(code, 0, err)
+            self.assertIn("原文参考文献的核对结果", out)
+            with patch("refcheck._online", return_value=False):
+                code, out, err = self.call("run", "--work", offline, "--office", "none")
+            self.assertIn("连不上文献核对服务", out)
+            self.assertIn("这次连不上文献核对服务，没有核对", X._original_reference_report(offline))
 
     def test_rendered_run_lists_pages_and_needs_every_page(self):
         # No table of contents here: real TOC paging is covered by run_acceptance.py.
@@ -235,12 +279,121 @@ class CLI(unittest.TestCase):
         self.assertEqual(levels, [0, 1])
         self.assertIn("自动收紧封面空白", out)
 
+    def test_cover_overflow_with_substituted_fonts_blames_the_fonts(self):
+        from cover_date_audit import CoverOverflow
+
+        work = self.new(JOB_B, CONTENT)
+
+        def prepare(*args, **kwargs):
+            exc = CoverOverflow("合成：学号挤到第二页")
+            exc.missing_fonts, exc.rendered_fonts = ["宋体", "黑体"], ["hiraginosansgb"]
+            raise exc
+
+        with patch("delivery.prepare", side_effect=prepare):
+            code, out, err = self.call("run", "--work", work)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("COVER_FONTS_MISSING", out)
+        self.assertIn("渲染时没有宋体、黑体", out)
+        self.assertIn("run --office none", out)
+        self.assertNotIn("同意缩小封面字号", out)
+        issues = json.loads((work / "issues.json").read_text(encoding="utf-8"))
+        self.assertEqual(issues["issues"][0]["code"], "COVER_FONTS_MISSING")
+
+    def test_cover_too_long_is_a_counted_located_issue(self):
+        from cover_date_audit import CoverOverflow
+
+        work = self.new(JOB_B, CONTENT)
+        with patch("delivery.prepare", side_effect=CoverOverflow("合成：学号挤到第二页")):
+            code, out, err = self.call("run", "--work", work)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("COVER_TOO_LONG", out)
+        self.assertIn("format.cover_fonts", out)
+
     def test_both_content_and_mapping_is_refused(self):
         work = self.new(JOB_B, CONTENT)
         (work / "mapping.json").write_text("{}", encoding="utf-8")
-        code, _, err = self.call("run", "--work", work, "--office", "none")
-        self.assertEqual(code, 2)
-        self.assertIn("只能保留一个", err)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)  # a refused input is a counted, reported round
+        self.assertIn("只能保留一个", out)
+        self.assertTrue((work / "attempts.json").is_file())
+
+    def test_content_mistakes_name_the_block_field_and_allowed_keys(self):
+        for block, words in (({"type": "para", "text": "合成"}, ["blocks[", "type='para' 不认识", "paragraph"]),
+                             ({"type": "image", "path": "a.png", "width": 8}, ["多了不认识的字段 width", "width_cm"]),
+                             ({"type": "table", "header": ["甲", "乙"], "rows": [["1"]]}, ["rows[0] 有 1 格"])):
+            content = json.loads(json.dumps(CONTENT))
+            content["blocks"].append(block)
+            work = self.new(JOB_B, content)
+            code, out, err = self.call("run", "--work", work, "--office", "none")
+            self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+            for word in words:
+                self.assertIn(word, out)
+
+    def test_all_broken_blocks_are_reported_in_one_run(self):
+        content = json.loads(json.dumps(CONTENT))
+        content["blocks"] += [{"type": "table", "header": ["甲", "乙"], "rows": [["1"]]},
+                              {"type": "paragrah", "text": "合成"}, {"type": "image", "path": "a.png", "width": 8}]
+        work = self.new(JOB_B, content)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        for where in ("content.json 的 blocks[4]", "content.json 的 blocks[5]", "content.json 的 blocks[6]"):
+            self.assertIn("要改的输入：" + where, out)
+
+    def test_absurd_margins_and_spacing_name_the_setting(self):
+        work = self.new({**JOB_B, "format": {"page_twips": {"left": 8000, "right": 8000}}}, CONTENT)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("format.page_twips", out)
+        self.assertIn("8000+8000", out)
+        work = self.new({**JOB_B, "format": {"styles": {"h1": {"before": 40000}}}}, CONTENT)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("format.styles.h1.before=40000", out)
+
+    def test_style_problem_points_at_job_json_not_the_text(self):
+        work = self.new({**JOB_B, "format": {"styles": {"body": {"line": 200, "line_rule": "exact"}}}}, CONTENT)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("LINE_TOO_TIGHT", out)
+        self.assertIn("要改的输入：job.json 的 format.styles.body（line=200、line_rule=exact）", out)
+
+    def test_logo_wider_than_narrowed_column_names_the_job_change(self):
+        work = self.new({**JOB_B, "format": {"page_twips": {"left": 3600, "right": 3600}}}, CONTENT)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("format.logo_width_cm", out)
+        self.assertIn("format.page_twips.left=3600", out)
+
+    def test_text_original_is_imported_word_for_word(self):
+        source = self.d / "原稿.md"
+        source.write_text("\n".join([
+            "# 排序算法比较", "", "## 摘要", "", "本文比较了几种排序算法，", "说明各自的适用场合。" + ABSTRACT, "",
+            "关键词：排序；算法", "", "一、引言", "", "排序是常用操作，详见[课程网站](https://example.org/sort)。", "",
+            "（一）背景", "", "表1 三种算法", "", "| 算法 | 复杂度 |", "|---|---|", "| 冒泡 | O(n²) |",
+            "| 快速 | O(n log n) |", "", "```", "print('hello')", "```", "", "## 参考文献", "",
+            "[1] 合成作者. 合成文献[M]. 北京: 合成出版社, 2020.",
+        ]), encoding="utf-8")
+        work = self.new(JOB_B, sources=[source])
+        code, out, err = self.call("inspect", "--work", work, "--text", source)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("mode=paper", out)
+        content = json.loads((work / "content.json").read_text(encoding="utf-8"))
+        self.assertEqual(content["metadata"], {"title_zh": "排序算法比较"})
+        self.assertEqual(content["abstract_zh"], "本文比较了几种排序算法，说明各自的适用场合。" + ABSTRACT)
+        self.assertEqual(content["keywords_zh"], ["排序", "算法"])
+        self.assertEqual(content["references"], ["[1] 合成作者. 合成文献[M]. 北京: 合成出版社, 2020."])
+        self.assertEqual([b["type"] for b in content["blocks"]], ["heading", "paragraph", "heading", "table", "code"])
+        self.assertEqual(content["blocks"][1]["runs"][1], {"text": "课程网站", "link": "https://example.org/sort"})
+        self.assertEqual(content["blocks"][3]["caption"], "表1 三种算法")
+        self.assertEqual(content["blocks"][3]["rows"], [["冒泡", "O(n²)"], ["快速", "O(n log n)"]])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        code, out, err = self.call("inspect", "--work", work, "--text", source)
+        self.assertNotEqual(code, 0)
+        self.assertIn("已经有 content.json", out + err)
+        from text_import import _pieces  # a .txt often leaves blank lines between table rows
+        self.assertEqual(_pieces("| 甲 | 乙 |\n\n| 1 | 2 |"), [("table", [["甲", "乙"], ["1", "2"]])])
+        self.assertEqual(len(_pieces("| 甲 | 乙 |\n\n| 1 | 2 |", markdown=True)), 2)
 
     # ------------------------------------------------------------ existing Word
     def sample_docx(self):
@@ -248,7 +401,7 @@ class CLI(unittest.TestCase):
         for text in [
             "排序算法比较",
             "摘要",
-            "本文比较了几种排序算法。",
+            ABSTRACT,
             "关键词：排序   算法",
             "一、引言",
             "这是正文。",
@@ -285,7 +438,73 @@ class CLI(unittest.TestCase):
         self.assertIn("加上所选模板的封面", out)
         mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
         self.assertEqual(mapping["replace_cover_before"], 0)
-        self.assertIn(str(source), [x["path"] for x in D.load(work)[1]["source_documents"]])
+        # The workspace records resolved paths (macOS temp dirs live behind /var -> /private/var).
+        self.assertIn(str(source.resolve()), [x["path"] for x in D.load(work)[1]["source_documents"]])
+
+    def test_typed_indent_in_an_existing_word_is_removed_not_blocked(self):
+        doc = Document()
+        doc.add_paragraph("\u3000\u3000用全角空格顶出来缩进的第一段合成正文。")
+        doc.add_paragraph("\t用 Tab 顶出来缩进的第二段合成正文。")
+        doc.add_paragraph("    用半角空格顶出来的第三段，Times New Roman 中间的空格要留着。")
+        source = self.d / "空格缩进.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("去掉了 3 段段首", out)
+        texts = [p.text for p in Document(work / "final.docx").paragraphs if "合成正文" in p.text or "第三段" in p.text]
+        self.assertEqual(texts, ["用全角空格顶出来缩进的第一段合成正文。", "用 Tab 顶出来缩进的第二段合成正文。",
+                                 "用半角空格顶出来的第三段，Times New Roman 中间的空格要留着。"])
+
+    def test_page_breaks_that_only_make_an_empty_page_in_word(self):
+        # Existing Word: two page breaks in one paragraph (LibreOffice folds them, Word shows a blank page).
+        from docx.enum.text import WD_BREAK
+
+        doc = Document()
+        doc.add_paragraph("第一段合成正文，后面跟着两个分页符。")
+        p = doc.add_paragraph("第二段合成正文。")
+        p.add_run().add_break(WD_BREAK.PAGE)
+        p.add_run().add_break(WD_BREAK.PAGE)
+        doc.add_paragraph("第三段合成正文。")
+        source = self.d / "两个分页符.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("去掉了 1 个只会在 Word 里多出空白页的分页符", out)
+        breaks = [len(q._p.xpath('.//w:br[@w:type="page"]')) for q in Document(work / "final.docx").paragraphs
+                  if "第二段" in q.text]
+        self.assertEqual(breaks, [1])
+        # A new document: two page_break blocks in a row are the agent's own input, so they are pointed at.
+        content = json.loads(json.dumps(CONTENT))
+        content["blocks"][1:1] = [{"type": "paragraph", "text": "分页之前的合成正文。"},
+                                  {"type": "page_break"}, {"type": "page_break"}]
+        work = self.new(JOB_B, content)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("WORD_BLANK_PAGE", out)
+        self.assertIn("又是一个分页符", out)
+        self.assertIn("要改的输入：content.json 的 blocks[2]、blocks[3]（page_break）", out)
+
+    def test_highlight_in_the_original_is_removed_and_the_user_is_told(self):
+        from docx.enum.text import WD_COLOR_INDEX
+
+        doc = Document()
+        p = doc.add_paragraph("第一段合成正文，")
+        p.add_run("这里待补数据").font.highlight_color = WD_COLOR_INDEX.YELLOW
+        p.add_run("。")
+        source = self.d / "高亮.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", source)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("ORIGINAL_HIGHLIGHT_REMOVED", out)
+        final = Document(work / "final.docx")
+        self.assertFalse(final.element.body.xpath(".//w:highlight"))
+        self.assertIn("“这里待补数据”", " ".join(D.load(work)[1]["tell_user"]))
 
     def test_mapping_delete_role_removes_only_marked_paragraph(self):
         work = self.new(JOB_B)
@@ -294,13 +513,271 @@ class CLI(unittest.TestCase):
         mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
         mapping["paragraphs"][9]["role"] = "delete"
         (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        # Format only: deleting original text needs the user's word, recorded in job.json.
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("SOURCE_MISSING", out)
+        self.assertIn("英文摘要待删除", out)
+        self.assertIn(f"要改的输入：mapping.json 里 id 为 {mapping['paragraphs'][9]['id']} 的段落（当前 role：delete）", out)
+        # A snippet does not approve a whole paragraph: the approved text must contain the change.
+        job = {**JOB_B, "approved_changes": [{"text": "英文摘要待删除", "why": "用户说不要英文摘要"}]}
+        (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        job = {**JOB_B, "approved_changes": [{"text": "英文摘要待删除的合成段落", "why": "用户说不要英文摘要"}]}
+        (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
         code, out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, 0, err)
         self.assertIn("删除了 1 段", out)
         text = "\n".join(p.text for p in Document(work / "final.docx").paragraphs)
         self.assertNotIn("英文摘要待删除", text)
         self.assertIn("正文内容很长", text)
-        self.assertIn("SOURCE_DIFFERENCES", out)
+
+    def test_format_only_blocks_rewritten_or_added_text_and_needs_an_original(self):
+        content = json.loads(json.dumps(CONTENT))
+        work = self.new(JOB_B, content)
+        content["blocks"][1]["text"] = "这是改写过的合成正文。"
+        (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("SOURCE_CHANGED", out)
+        self.assertIn("实际：这是改写过的合成正文。；应为：这是合成正文。", out)
+        self.assertIn("要改的输入：content.json 的 blocks[1]（paragraph）", out)
+        content["blocks"].pop(3)  # drop "这是合成正文第二段。": it goes back after the heading before it
+        content["blocks"][1]["text"] = "这是合成正文。"
+        (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertIn("SOURCE_MISSING", out)
+        self.assertIn("要改的输入：补在 content.json 的 blocks[2]（heading） 的后面", out)
+        bare = self.new(JOB_B, CONTENT, sources=[])
+        D.load(bare)  # a workspace without a registered original
+        state = D.load(bare)[1]
+        state["source_documents"] = []
+        D.write_json(bare / D.MARKER, state)
+        code, out, err = self.call("run", "--work", bare, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("SOURCE_REQUIRED", out)
+
+    def test_wrong_role_is_refused_not_silently_formatted(self):
+        work = self.new(JOB_B)
+        source = self.sample_docx()
+        self.call("inspect", "--work", work, "--docx", source)
+        mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
+        row = next(r for r in mapping["paragraphs"] if r["role"] == "body" and len(r["text"]) > 4)
+        row["role"] = "spacer"
+        (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("ROLE_MISMATCH", out)
+        self.assertIn(row["id"], out)
+
+    def test_plain_existing_word_numbers_the_body_from_one_after_the_cover(self):
+        from docx.oxml.ns import qn
+
+        doc = Document()
+        for i in range(3):
+            doc.add_paragraph(f"第{i + 1}段合成正文，没有摘要和标题。")
+        source = self.d / "普通文档.docx"
+        doc.save(source)
+        work = self.new({**JOB_B, "format": {"footer_page_numbers": True}})
+        code, out, err = self.call("inspect", "--work", work, "--docx", source)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads((work / "mapping.json").read_text(encoding="utf-8"))["mode"], "document")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        page = Document(work / "final.docx").sections[1]._sectPr.find(qn("w:pgNumType"))
+        self.assertEqual((page.get(qn("w:fmt")), page.get(qn("w:start"))), ("decimal", "1"))
+
+    def test_gbk_job_and_original_still_guard_the_text(self):
+        content = {"mode": "document", "metadata": {"title_zh": "排序算法比较"},
+                   "blocks": [{"type": "paragraph", "text": "本段用于格式校准，不提供结论。"}]}
+        source = self.d / "原稿-gbk.txt"
+        source.write_bytes("本段用于格式校准，不提供结论。".encode("gbk"))
+        work = self.new(JOB_B, content, sources=[source])
+        (work / "job.json").write_bytes(json.dumps(JOB_B, ensure_ascii=False).encode("gbk"))
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        content["blocks"][0]["text"] = "本段用来格式校准，不提供结论。"
+        (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("SOURCE_CHANGED", out)
+
+    def test_heading_marked_as_body_is_refused(self):
+        work = self.new(JOB_B)
+        self.call("inspect", "--work", work, "--docx", self.sample_docx())
+        mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
+        row = next(r for r in mapping["paragraphs"] if r["text"] == "（一）背景")
+        row["role"] = "body"
+        (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("ROLE_MISMATCH", out)
+        self.assertIn("像是标题", out)
+
+    def test_reference_entry_marked_as_body_is_refused(self):
+        def body_reference(mapping):
+            next(r for r in mapping["paragraphs"] if r["text"].startswith("[1]"))["role"] = "body"
+
+        work, _, code, out, err = self.paper_run("B", edit=body_reference)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("参考文献条目应为 reference", out)
+
+    def test_body_paragraph_marked_as_reference_is_refused(self):
+        def body_as_reference(mapping):
+            next(r for r in mapping["paragraphs"] if r["text"] == "这是正文。")["role"] = "reference"
+
+        work, _, code, out, err = self.paper_run("B", edit=body_as_reference)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("在参考文献标题前面", out)
+
+    def test_body_paragraph_marked_as_abstract_is_refused(self):
+        def body_as_abstract(mapping):
+            next(r for r in mapping["paragraphs"] if r["text"] == "正文内容很长，这一段不是标题。")["role"] = "abstract_zh"
+
+        work, _, code, out, err = self.paper_run("B", edit=body_as_abstract)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("“正文内容很长，这一段不是标题。”（role=abstract_zh）", out)
+        self.assertIn("role 可能标错了", out)
+
+    def test_document_title_must_match_the_cover_title(self):
+        def title(mapping):
+            next(r for r in mapping["paragraphs"] if r["text"] == "排序算法比较")["role"] = "title_zh"
+
+        info = dict(JOB_B["info"], title_zh="另一个题目")
+        work = self.new({"template": "B", "info": info})
+        code, out, err = self.call("inspect", "--work", work, "--docx", self.sample_docx())
+        mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
+        mapping["paragraphs"][9]["role"] = "body"
+        title(mapping)
+        (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("info.title_zh“另一个题目”不一致", out)
+        self.assertIn("问用户哪个对", out)
+
+    def test_dropped_original_footer_is_reported(self):
+        source = self.sample_docx()
+        doc = Document(source)
+        doc.sections[0].footer.paragraphs[0].text = "第 1 页"
+        page = OxmlElement("w:fldSimple")
+        page.set(qn("w:instr"), " PAGE ")
+        doc.sections[0].footer.paragraphs[0]._p.append(page)
+        doc.sections[0].header.paragraphs[0].text = "合成学院课程作业"
+        doc.save(source)
+        work = self.new(JOB_B)
+        code, out, err = self.call("inspect", "--work", work, "--docx", source)
+        mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
+        mapping["paragraphs"][9]["role"] = "body"
+        (work / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("ORIGINAL_HEADER_FOOTER_REPLACED", out)
+        self.assertIn("合成学院课程作业", out)
+        self.assertIn("ORIGINAL_PAGE_NUMBERS_DROPPED", out)
+        self.assertIn("footer_page_numbers", out)
+        self.fill_review(work, vision=False)
+        code, out, err = self.call("finish", "--work", work)
+        self.assertEqual(code, 0, out + err)
+        told = out.split("必须在给用户的回复里说明：")[1]
+        self.assertIn("原稿页脚有页码", told)
+        self.assertIn("合成学院课程作业", told)
+
+    def test_original_decorations_are_cleared_or_reported(self):
+        from docx.enum.text import WD_COLOR_INDEX
+
+        doc = Document()
+        doc.add_paragraph("排序算法比较")
+        p = doc.add_paragraph()
+        p.add_run("普通文字，")
+        p.add_run("高亮文字，").font.highlight_color = WD_COLOR_INDEX.YELLOW
+        p.add_run("删掉的说法，").font.strike = True
+        p.add_run("abc").font.all_caps = True
+        source = self.d / "装饰.docx"
+        doc.save(source)
+        work = self.new(JOB_B)
+        code, out, err = self.call("inspect", "--work", work, "--docx", source)
+        self.assertEqual(code, 0, err)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        final = Document(work / "final.docx")
+        self.assertFalse(final.element.body.xpath(".//w:highlight"))
+        self.assertIn("FONT_MARKS", out)
+        self.assertIn("删除线", out)
+        self.assertIn("全部大写", out)
+
+    def test_layout_failure_names_the_changed_job_setting_first(self):
+        import feedback as F
+
+        work = self.new({**JOB_B, "format": {"page_twips": {"top": 0}}})
+        issues = F.from_render({"errors": [{"code": "TEXT_AT_PAPER_EDGE", "message": "贴边", "page": 3, "where": "目录"}]}, work)
+        self.assertIn("format.page_twips.top=0", issues[0]["cause"])
+        self.assertNotIn("edit", issues[0]["where"])  # the TOC title is the template's own text
+
+    def test_short_or_repeated_text_gets_no_wrong_pointer(self):
+        import feedback as F
+
+        content = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": [
+            {"type": "paragraph", "text": "目录中的页定位说明。"}, {"type": "paragraph", "text": "正文第二段，独一无二的句子。"},
+            {"type": "paragraph", "text": "正文第二段，独一无二的句子。"}]}
+        work = self.new(JOB_B, content)
+        self.assertIsNone(F._input_hint(work, "目录"))
+        self.assertIsNone(F._input_hint(work, "正"))
+        self.assertEqual(F._input_hint(work, "目录中的页定位"), "content.json 的 blocks[0]（paragraph）")
+        self.assertIn("以下之一", F._input_hint(work, "独一无二的句子"))
+
+    def test_tiny_margins_are_flagged_for_the_review(self):
+        document = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": CONTENT["blocks"]}
+        work = self.new({**JOB_B, "format": {"page_twips": {"left": 200}}}, document)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("MARGIN_TOO_SMALL", out)
+
+    def test_self_defeating_styles_are_flagged_for_the_review(self):
+        document = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": CONTENT["blocks"]}
+        job = {**JOB_B, "format": {"styles": {"body": {"color": "FFFFFF"}, "h1": {"size": 1}}}}
+        work = self.new(job, document)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("STYLE_HARD_TO_READ", out)
+        self.assertIn("FFFFFF", out)
+
+    def test_format_only_keeps_links_and_figures_of_the_original(self):
+        source = self.d / "带链接.md"
+        source.write_text("# 一、引言\n\n详见[学校官网](https://www.example.edu.cn/a)。", encoding="utf-8")
+        content = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": [
+            {"type": "heading", "level": 1, "text": "一、引言"},
+            {"type": "paragraph", "runs": [{"text": "详见"}, {"text": "学校官网", "link": "https://www.example.edu.cn/a"}, {"text": "。"}]}]}
+        work = self.new(JOB_B, content, sources=[source])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        content["blocks"][1] = {"type": "paragraph", "text": "详见学校官网。"}
+        (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("SOURCE_OBJECTS", out)
+        self.assertIn("https://www.example.edu.cn/a", out)
+
+    def test_unreachable_reference_service_needs_the_users_consent(self):
+        entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"],
+                 "quote": "pandas is a library for data cleaning and analysis"}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "pandas 常用于数据清洗[1]。"})
+        work = self.new({**JOB_B, "task": "write"}, content)
+        (work / "refs.json").write_text(json.dumps([entry], ensure_ascii=False), encoding="utf-8")
+        import refcheck as R
+
+        with patch("refcheck.fetch", side_effect=R.Offline("no route", down=True)):
+            self.call("refs", "--work", work)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("accept_unverified_refs", out)
+        job = {**JOB_B, "task": "write", "accept_unverified_refs": True}
+        (work / "job.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, err)
 
     def paper_run(self, template, add=None, edit=None):
         info = dict(JOB_B["info"])
@@ -335,16 +812,16 @@ class CLI(unittest.TestCase):
         self.assertEqual(len(doc.sections), 4)
         toc = [p.text for p in doc.paragraphs if p.style.name.startswith("TOC ")]
         self.assertTrue(any("一、引言" in t for t in toc))
-        self.assertTrue(any("参考文献" in t for t in toc))
+        self.assertTrue(any("参考文献" in t.replace(" ", "") for t in toc))
         text = "\n".join(p.text for p in doc.paragraphs)
         for original in ("这是正文。", "正文内容很长，这一段不是标题。", "[1] 合成作者"):
             self.assertIn(original, text)
 
     def test_existing_paper_a_needs_english_abstract_decision(self):
         work, inspect_out, code, out, err = self.paper_run("A")
-        self.assertIn("先问用户", inspect_out)
-        self.assertEqual(code, 2)
-        self.assertIn("english_abstract", err)
+        self.assertIn("译成英文", inspect_out)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("english_abstract", out)
 
     def test_existing_paper_a_with_translated_english_abstract(self):
         add = {"title_en": "Comparison of Sorting Algorithms", "abstract_en": "A synthetic English abstract.", "keywords_en": ["sorting", "algorithms"]}
@@ -358,7 +835,7 @@ class CLI(unittest.TestCase):
 
     def test_old_manual_toc_is_replaced_by_generated_one(self):
         doc = Document()
-        for text in ["排序算法比较", "摘要", "本文比较了几种排序算法。", "关键词：排序   算法", "目录",
+        for text in ["排序算法比较", "摘要", ABSTRACT, "关键词：排序   算法", "目录",
                      "一、引言……………1", "二、方法……………2", "一、引言", "这是正文。", "二、方法", "方法正文。", "参考文献",
                      "[1] 合成作者. 合成文献[M]. 2020."]:
             doc.add_paragraph(text)
@@ -368,7 +845,7 @@ class CLI(unittest.TestCase):
         code, out, err = self.call("inspect", "--work", work, "--docx", source)
         self.assertEqual(code, 0, err)
         roles = [r["role"] for r in json.loads((work / "mapping.json").read_text(encoding="utf-8"))["paragraphs"]]
-        self.assertEqual(roles[4:7], ["delete", "delete", "delete"])
+        self.assertEqual(roles[4:7], ["old_toc", "old_toc", "old_toc"])
         self.assertIn("旧目录", out)
         code, run_out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, 0, err)
@@ -378,7 +855,7 @@ class CLI(unittest.TestCase):
 
     def test_english_title_and_spaced_keyword_labels_are_kept(self):
         doc = Document()
-        for text in ["排序算法比较", "摘要", "本文比较了几种排序算法。", "关键词：排序 算法 ", "Comparison of Sorting Algorithms",
+        for text in ["排序算法比较", "摘要", ABSTRACT, "关键词：排序 算法 ", "Comparison of Sorting Algorithms",
                      "Abstract", "This paper compares sorting algorithms.", "Key words: sorting; algorithms",
                      "一、引言", "这是正文。", "参考文献", "[1] 合成作者. 合成文献[M]. 2020."]:
             doc.add_paragraph(text)
@@ -392,7 +869,7 @@ class CLI(unittest.TestCase):
         code, out, err = self.call("run", "--work", work, "--office", "none")
         self.assertEqual(code, 0, err)
         text = [p.text for p in Document(work / "final.docx").paragraphs]
-        self.assertIn("Key words: sorting; algorithms", text)
+        self.assertIn("Key words: sorting   algorithms", text)  # the label as typed, words spaced the template's way
         self.assertIn("关键词：排序   算法", text)
 
     # ------------------------------------------------------------ writing mode
@@ -400,54 +877,251 @@ class CLI(unittest.TestCase):
         work = self.new({**JOB_B, "task": "write"}, content)
         if refs is not None:
             (work / "refs.json").write_text(json.dumps(refs, ensure_ascii=False), encoding="utf-8")
-            book = {"title": "Python for Data Analysis", "publish_date": "2017"}
+            book = {"title": "Python for Data Analysis", "publish_date": "2017", "by_statement": "Wes McKinney"}
             with patch("refcheck.fetch", return_value=book):
                 code, out, err = self.call("refs", "--work", work)
             self.assertEqual(code, 0, err)
         return work
 
-    def test_writing_mode_blocks_unchecked_refs_unsourced_numbers_and_numbering_gaps(self):
+    def test_writing_mode_blocks_unchecked_refs_unsourced_numbers_and_uncited_tables(self):
         content = json.loads(json.dumps(CONTENT))
         content["blocks"] += [
             {"type": "paragraph", "text": "调查显示，女生月均消费为 710 元。"},
+            {"type": "table", "caption": "表1 合成表", "header": ["编号"], "rows": [["1"]]},
             {"type": "heading", "level": 1, "text": "三、结论"},
         ]
         work = self.written(content)
         code, out, err = self.call("run", "--work", work, "--office", "none")
-        self.assertEqual(code, 2)
-        self.assertIn("参考文献还没有核对", err)
-        self.assertIn("710 元", err)
-        self.assertIn("标题编号不连续", err)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("参考文献还没有核对", out)
+        self.assertIn("710 元", out)
+        self.assertIn("“表1”前面同一章的正文没有引用它", out)
+        self.assertIn("“表1”后面同一章的正文没有交待它", out)
         self.assertFalse((work / "draft.docx").exists())
 
     def test_writing_mode_passes_and_finish_prints_checklist(self):
         entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
-                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017,
-                 "supports": "pandas 适合做数据清洗", "relevance": "高"}
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"],
+                 "supports": "pandas 适合做数据清洗", "relevance": "高",
+                 "quote": "pandas is a library for data cleaning and analysis"}
         content = json.loads(json.dumps(CONTENT))
         content["references"] = [entry["text"]]
         content["blocks"].append({"type": "paragraph", "runs": [
             {"text": "pandas 的使用者超过 100 万人"}, {"text": "[1]", "superscript": True}, {"text": "。"}]})
+        content["blocks"].append({"type": "paragraph", "text": "pandas 也适合做数据清洗[1]。"})
+        work = self.written(content, [entry])
+        # A figure must be in the excerpt of the reference it cites.
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("数字 100 在它引用的文献 [1] 的 quote", out)
+        entry["quote"] = "pandas is a library for data cleaning and analysis with over 100 contributors"
         work = self.written(content, [entry])
         code, out, err = self.call("run", "--work", work, "--office", "none")
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 0, out + err)
         self.fill_review(work, vision=False)
         code, out, err = self.call("finish", "--work", work)
         self.assertEqual(code, 0, err)
         self.assertIn("参考文献核实清单", out)
         self.assertIn("| [1] |", out)
-        self.assertIn("已核对", out)
+        self.assertIn("已验证", out)
         self.assertIn("pandas 适合做数据清洗", out)
+        self.assertIn("观点支撑", out)
+        self.assertIn("取不到原文，未能对照", out)
+        self.assertIn("pandas 的使用者超过 100 万人", out)
+        self.assertIn("pandas 也适合做数据清洗", out)  # every citing sentence is listed
         self.assertIn("少 5 篇", out)
+        self.assertIn("少于默认的 5000 字", out)
+
+    def test_writing_mode_requires_a_quote_and_flags_unconfirmed_support(self):
+        entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"]}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "pandas 常用于数据清洗[1]。"})
+        work = self.written(content, [entry])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("没有写 quote", out)
+        self.assertIn("refs.json", out)
+        work = self.written(content, [dict(entry, quote="pandas is a library for data cleaning and analysis")])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("REF_SUPPORT_UNCONFIRMED", out)
+        self.assertIn("引用句“pandas 常用于数据清洗[1]。”", out)
+        self.assertIn("摘录“pandas is a library for data", out)
+        self.assertNotIn("REF_CITATION_MISMATCH", out)
+        review = json.loads((work / "review.json").read_text(encoding="utf-8"))
+        self.assertIn("REF_SUPPORT_UNCONFIRMED", review["warnings"])
+
+    def test_writing_on_a_word_draft_gets_the_same_reference_gate(self):
+        doc = Document()
+        doc.add_paragraph("一、引言")
+        doc.add_paragraph("这是写作模式下的合成正文[1]。")
+        doc.add_paragraph("参考文献")
+        doc.add_paragraph("[1] 张三. 合成文献题目[J]. 合成期刊, 2020, 1(1): 1-2.")
+        source = self.d / "草稿.docx"
+        doc.save(source)
+        work = self.new({**JOB_B, "task": "write"})
+        code, out, err = self.call("inspect", "--work", work, "--docx", source)
+        self.assertEqual(code, 0, err)
+        mapping = json.loads((work / "mapping.json").read_text(encoding="utf-8"))
+        ref = next(r for r in mapping["paragraphs"] if r["text"].startswith("[1]"))
+        self.assertEqual(ref["role"], "reference")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertIn("参考文献还没有核对", out)
+
+    def test_citation_number_on_an_unrelated_sentence_is_flagged(self):
+        entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"],
+                 "quote": "pandas is a library for data cleaning and analysis", "supports": "pandas 适合做数据清洗"}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "卷积神经网络在图像识别上效果显著[1]。"})
+        work = self.written(content, [entry])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("REF_CITATION_MISMATCH", out)
+        self.assertIn("卷积神经网络在图像识别上效果显著", out)
+        review = json.loads((work / "review.json").read_text(encoding="utf-8"))
+        self.assertIn("REF_CITATION_MISMATCH", review["warnings"])
+
+    def test_unverifiable_reference_needs_the_users_consent(self):
+        import refcheck as R
+
+        entry = {"text": "某作者. 某题目[J]. 某刊, 2020, 1(1): 1-2.", "title": "某题目", "authors": ["某作者"], "year": 2020,
+                 "url": "https://example.org/a", "quote": "某题目的原文里的一整句话。"}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "有研究讨论了这个问题[1]。"})
+        work = self.new({**JOB_B, "task": "write"}, content)
+        (work / "refs.json").write_text(json.dumps([entry], ensure_ascii=False), encoding="utf-8")
+        blocked = R.Offline("HTTP 403")
+        blocked.code = 403
+        with patch("refcheck.fetch", return_value=None), patch("refcheck.fetch_page", side_effect=blocked):
+            self.call("refs", "--work", work)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        self.assertIn("无法验证", out)
+        self.assertIn("accept_unverified_refs", out)
+
+    def test_figures_from_the_users_material_need_no_reference(self):
+        material = self.d / "调查数据.txt"
+        material.write_text("问卷共回收 312 份，女生月均消费 710 元。", encoding="utf-8")
+        content = json.loads(json.dumps(CONTENT))
+        content["blocks"].append({"type": "paragraph", "text": "本次调查共回收问卷 312 份，女生月均消费为 710 元。"})
+        work = self.new({**JOB_B, "task": "write"}, content, sources=[material])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertNotIn("具体数字", out)
+        content["blocks"][-1]["text"] = "本次调查共回收问卷 312 份，男生月均消费为 820 元。"
+        (work / "content.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertIn("820 元", out)
+        self.assertIn("blocks[", out)
+
+    def test_user_provided_reference_needs_a_source(self):
+        entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"],
+                 "from_user": True}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "pandas 常用于数据清洗[1]。"})
+        work = self.written(content, [entry])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("user_said", out)
+        result = json.loads((work / "refs-result.json").read_text(encoding="utf-8"))["results"][0]
+        self.assertEqual((result["status"], result["checked"]), ("用户提供", "已验证"))
+        (work / "refs.json").write_text(json.dumps([{**entry, "user_said": "用户：参考文献用这本 pandas 的书"}],
+                                                   ensure_ascii=False), encoding="utf-8")
+        with patch("refcheck.fetch", return_value={"title": "Python for Data Analysis", "publish_date": "2017",
+                                                   "by_statement": "Wes McKinney"}):
+            self.call("refs", "--work", work)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertNotIn("user_said", out + err)
+
+    def test_writing_mode_checks_citation_numbers_against_references(self):
+        entry = {"text": "MCKINNEY W. Python for Data Analysis[M]. Sebastopol: O'Reilly Media, 2017.",
+                 "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"]}
+        content = json.loads(json.dumps(CONTENT))
+        content["references"] = [entry["text"]]
+        content["blocks"].append({"type": "paragraph", "text": "这里引用了不存在的第三条[3]。"})
+        work = self.written(content, [entry])
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("正文引用了 [3]，但参考文献只有 1 条", out)
+        self.assertIn("第 1 条在正文里没有被引用", out)
+
+    def test_citation_order_follows_first_citation(self):
+        content = {"blocks": [{"type": "paragraph", "text": "先引第二条[2]，再引第一条[1]，范围[1-2]。"}], "references": ["甲", "乙"]}
+        problems = X._citation_problems(content)
+        self.assertTrue(any("第一次引用的顺序" in p for p in problems), problems)
+        self.assertEqual(X._cited_numbers("见[1,3]和[4–6]"), [1, 3, 4, 5, 6])
+        ok = {"blocks": [{"type": "paragraph", "text": "引[1]，又引[2]。"}], "references": ["甲", "乙"]}
+        self.assertEqual(X._citation_problems(ok), [])
+
+    def test_each_sentence_with_a_figure_needs_its_own_citation(self):
+        content = {"blocks": [{"type": "paragraph", "text": "市场规模增长了30%[1]。另有调查称用户超过5万人。"}], "references": []}
+        problems = X._writing_problems(self.d, content)
+        flagged = [p for p in problems if "具体数字" in p]
+        self.assertEqual(len(flagged), 1, problems)
+        self.assertIn("用户超过5万人", flagged[0])
+        cited = {"blocks": [{"type": "paragraph", "runs": [{"text": "用户超过5万人"}, {"text": "[1]", "superscript": True},
+                                                            {"text": "。"}]}], "references": []}
+        self.assertFalse([p for p in X._writing_problems(self.d, cited) if "具体数字" in p])
+
+    def test_failed_acceptance_prints_located_fixable_issues_and_counts_rounds(self):
+        import feedback as F
+
+        document = {"mode": "document", "metadata": {"title_zh": "排序算法比较"}, "blocks": CONTENT["blocks"]}
+        work = self.new(JOB_B, document)
+        failing = {"passed": False, "pages": 3, "warnings": [], "fonts": {}, "errors": [
+            {"code": "BLANK_PAGE", "severity": "error", "page": 3, "message": "这一页正文区什么都没有（多余的空白页）。",
+             "where": "紧跟在“这是合成正文第二段。”之后"}]}
+        with patch("delivery.render", side_effect=fake_render), patch("office_discovery.discover", return_value={}), \
+                patch("delivery.audit_rendered", return_value=failing):
+            for round_ in range(F.MAX_STALLED + 1):
+                code, out, err = self.call("run", "--work", work)
+                self.assertEqual(code, X.EXIT_NOT_ACCEPTED, err)
+        for word in ("第3页", "content.json 的 blocks", "可能原因", "怎么改", "停止自动重试"):
+            self.assertIn(word, out)
+        # After the stop another run is refused until the user asks for one; their words are kept.
+        code, out, err = self.call("run", "--work", work)
+        self.assertEqual(code, X.EXIT_ASK_USER, out + err)
+        self.assertIn("--user-says-retry", out)
+        with patch("delivery.render", side_effect=fake_render), patch("office_discovery.discover", return_value={}), \
+                patch("delivery.audit_rendered", return_value=failing):
+            code, out, err = self.call("run", "--work", work, "--user-says-retry", "再试一次吧")
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED, out + err)
+        self.assertNotIn("停止自动重试", out)
+        self.assertEqual(json.loads((work / "attempts.json").read_text(encoding="utf-8"))["user_retries"], ["再试一次吧"])
+        issues = json.loads((work / "issues.json").read_text(encoding="utf-8"))
+        self.assertEqual(issues["issues"][0]["code"], "BLANK_PAGE")
+        self.assertFalse((work / "review.json").exists())
+
+    def test_examples_run_as_documented_in_readme(self):
+        import shutil
+
+        for template in ("A", "B"):
+            code, out, err = self.call("new", "--out", self.d / f"example-{template}.docx",
+                                       "--source", ROOT / "examples" / template / "原稿.txt")
+            self.assertEqual(code, 0, err)
+            work = Path(out.split("WORK = ")[1].splitlines()[0].strip())
+            for name in ("job.json", "content.json"):
+                shutil.copy2(ROOT / "examples" / template / name, work / name)
+            shutil.copy2(ROOT / "examples/layout-test.png", work / "layout-test.png")
+            code, out, err = self.call("run", "--work", work, "--office", "none")
+            self.assertEqual(code, 0, out + err)
+            self.call("cancel", "--work", work)
 
     def test_writing_mode_rejects_reference_not_in_refs_json(self):
-        entry = {"text": "合成作者. 合成书[M]. 2017.", "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017}
+        entry = {"text": "合成作者. 合成书[M]. 2017.", "isbn": "9781491957660", "title": "Python for Data Analysis", "year": 2017, "authors": ["McKinney W"]}
         content = json.loads(json.dumps(CONTENT))
         content["references"] = ["编造作者. 编造的书[M]. 2020."]
         work = self.written(content, [entry])
         code, out, err = self.call("run", "--work", work, "--office", "none")
-        self.assertEqual(code, 2)
-        self.assertIn("参考文献第 1 条不在 refs 核对可用的条目里", err)
+        self.assertEqual(code, X.EXIT_NOT_ACCEPTED)
+        self.assertIn("参考文献第 1 条不在 refs 核对可用的条目里", out)
 
     def test_existing_paper_keyword_spaces_normalized(self):
         work, _, code, out, err = self.paper_run("B")
@@ -470,6 +1144,28 @@ class CLI(unittest.TestCase):
         self.assertEqual(roles["（一）背景"], "h2")
         self.assertGreater(mapping["replace_cover_before"], 0)
         self.assertIn("旧封面", out)
+
+    def test_new_from_an_earlier_output_restores_its_settings(self):
+        job = dict(JOB_B, logo="green", format={"footer_page_numbers": True, "styles": {"body": {"cn": "仿宋"}}})
+        work = self.new(job, CONTENT)
+        code, out, err = self.call("run", "--work", work, "--office", "none")
+        self.assertEqual(code, 0, out + err)
+        previous = self.d / "上一版.docx"
+        previous.write_bytes((work / "final.docx").read_bytes())
+        with patch("tempfile.gettempdir", return_value=str(self.d)):
+            code, out, err = self.call("new", "--out", self.d / "out2" / "第二版.docx", "--source", previous)
+        self.assertEqual(code, 0, err)
+        self.assertIn("已按它记录的设置恢复", out)
+        work2 = Path(out.split("WORK = ")[1].splitlines()[0].strip())
+        seeded = json.loads((work2 / "job.json").read_text(encoding="utf-8"))
+        self.assertEqual(seeded["logo"], "green")
+        self.assertEqual(seeded["format"], {"footer_page_numbers": True, "styles": {"body": {"cn": "仿宋"}}})
+        for key, value in JOB_B["info"].items():
+            self.assertEqual(seeded["info"][key], value)
+        self.assertNotIn("blank", seeded)
+        code, out, err = self.call("check", "--work", work2)
+        self.assertEqual(code, 0, out + err)
+        self.assertNotIn("还缺", out)
 
     # ------------------------------------------------------------ instructions
     def test_skill_md_keeps_the_core_rules(self):

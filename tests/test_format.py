@@ -1,7 +1,7 @@
 """Offline regression tests. No network; no external renderer needed for these unit tests."""
 
 from __future__ import annotations
-import hashlib, json, sys, tempfile, unittest
+import hashlib, json, re, sys, tempfile, unittest
 from pathlib import Path
 from copy import deepcopy
 from unittest.mock import patch
@@ -132,6 +132,126 @@ class FormatTests(unittest.TestCase):
         self.assertCode(r, "FOOTER")
         self.assertCode(r, "FOOTER_FIELD")
 
+    def test_bold_heading_rejected(self):
+        def heading(d):
+            next(p for p in d.paragraphs if p.style.name == "Heading 1").runs[0].bold = True
+
+        self.assertCode(self.changed(heading), "FONT_BOLD")
+
+    def test_bold_words_in_body_allowed(self):
+        def word(d):
+            body = next(p for p in d.paragraphs if p.style.name == "XAUFE Body")
+            body.add_run("强调").bold = True
+
+        self.assertTrue(self.changed(word)["passed"])
+
+    def test_wholly_bold_body_paragraph_flagged(self):
+        def whole(d):
+            body = next(p for p in d.paragraphs if p.style.name == "XAUFE Body")
+            body.add_run("这是一整段都加粗的合成正文，用来检查整段加粗的提示。")
+            for r in body.runs:
+                r.bold = True
+
+        r = self.changed(whole)
+        self.assertIn("FONT_BOLD_PARAGRAPH", {w["code"] for w in r["warnings"]})
+
+    def test_caption_cut_off_from_its_table_by_a_blank_rejected(self):
+        data = deepcopy(self.data)
+        data["blocks"].append({"type": "table", "caption": "表1 测试表", "header": ["甲", "乙"], "rows": [["1", "2"]]})
+
+        def mutate(d):
+            caption = next(p for p in d.paragraphs if p.text == "表1 测试表")
+            caption._p.addnext(OxmlElement("w:p"))
+
+        p = self.make(data)
+        self.assertTrue(check(p)["passed"])
+        d = Document(p)
+        mutate(d)
+        d.save(p)
+        r = check(p)
+        self.assertCode(r, "CAPTION_DETACHED")
+
+    def make_own(self, data, name="own.docx"):
+        """Built with the user's own heading numbering kept, so the checker sees the levels as set."""
+        src = self.d / (name + ".json")
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        session = self.session_for(data.get("metadata", {}), name=name + ".intake.json")
+        intake.customize(session, {"heading_numbering": "own"}, "用户确认原稿就是这样编号")
+        out = self.d / name
+        engine.build(src, out, intake_path=session)
+        return out
+
+    def test_same_numbering_at_two_heading_levels_rejected(self):
+        data = deepcopy(self.data)
+        data["blocks"].append({"type": "heading", "level": 2, "text": "二、错设成二级的标题"})
+        with self.assertRaises(ValueError) as caught:  # renumbering would hide the wrong level, so it refuses
+            self.make(data)
+        self.assertIn("“二、错设成二级的标题”设成了 h2，但它的编号是模板一级标题的写法", str(caught.exception))
+        r = check(self.make_own(data))
+        self.assertCode(r, "HEADING_LEVEL")
+        self.assertIn("二、错设成二级的标题", " ".join(e["message"] for e in r["errors"]))
+
+    def test_heading_at_a_level_owned_by_another_numbering_rejected(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、测试标题"},
+                          {"type": "paragraph", "text": "保留原文。"},
+                          {"type": "heading", "level": 1, "text": "（二）错设成一级的标题"}]
+        with self.assertRaises(ValueError) as caught:
+            self.make(data)
+        self.assertIn("应为 h2", str(caught.exception))
+        r = check(self.make_own(data))
+        self.assertIn("另一种编号", " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL"))
+
+    def test_other_numbering_schemes_are_renumbered_the_template_way(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "1 绪论"},
+                          {"type": "heading", "level": 2, "text": "1.1 研究背景"},
+                          {"type": "heading", "level": 3, "text": "1.1.1 问题来源"},
+                          {"type": "paragraph", "text": "保留原文。"},
+                          {"type": "heading", "level": 1, "text": "研究方法"},
+                          {"type": "heading", "level": 2, "text": "2.1 数据"},
+                          {"type": "paragraph", "text": "保留原文。"},
+                          {"type": "heading", "level": 1, "text": "致谢"}]
+        src = self.d / "renumber.json"
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        result = engine.build(src, self.d / "renumber.docx", intake_path=self.session_for(data.get("metadata", {}), name="r.intake.json"))
+        heads = [p.text for p in Document(self.d / "renumber.docx").paragraphs if p.style.name.startswith("Heading")]
+        self.assertEqual(heads[:6], ["一、绪论", "（一）研究背景", "1.问题来源", "二、研究方法", "（一）数据", "致谢"])
+        self.assertEqual(len(result["auto_corrections"]), 5)
+        self.assertNotIn("HEADING_LEVEL", {e["code"] for e in check(self.d / "renumber.docx")["errors"]})
+
+    def test_swapped_heading_levels_rejected_unless_user_owns_the_numbering(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 2, "text": "一、本该是一级的标题"},
+                          {"type": "paragraph", "text": "保留原文。"},
+                          {"type": "heading", "level": 1, "text": "（一）本该是二级的标题"},
+                          {"type": "paragraph", "text": "保留原文。"}]
+        with self.assertRaises(ValueError) as caught:
+            self.make(data)
+        self.assertIn("本该是一级", str(caught.exception))
+        self.assertIn("本该是二级", str(caught.exception))
+        src = self.d / "own.json"
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        session = self.session_for(data.get("metadata", {}), name="own.intake.json")
+        intake.customize(session, {"heading_numbering": "own"}, "用户确认原稿就是这样编号")
+        out = self.d / "own.docx"
+        engine.build(src, out, intake_path=session)
+        self.assertNotIn("HEADING_LEVEL", {e["code"] for e in check(out)["errors"]})
+
+    def test_lost_heading_in_body_rejected_but_numbered_list_allowed(self):
+        data = deepcopy(self.data)
+        data["blocks"] += [{"type": "heading", "level": 3, "text": "1.三级标题"},
+                           {"type": "paragraph", "text": "2.数据来源"},
+                           {"type": "paragraph", "text": "这一段是正文，说明数据从哪里来。"}]
+        r = check(self.make(data))
+        self.assertIn("2.数据来源", " ".join(e["message"] for e in r["errors"] if e["code"] == "HEADING_LEVEL"))
+        listed = deepcopy(self.data)
+        listed["blocks"] += [{"type": "heading", "level": 3, "text": "1.三级标题"},
+                             {"type": "paragraph", "text": "2.准确性"}, {"type": "paragraph", "text": "3.完整性"},
+                             {"type": "paragraph", "text": "以上两点是要求。"}]
+        r = check(self.make(listed, name="list.docx"))
+        self.assertNotIn("HEADING_LEVEL", {e["code"] for e in r["errors"]})
+
     def test_wrong_body_size_rejected(self):
         def mutate(d):
             next(p for p in d.paragraphs if p.style.name == "XAUFE Body").runs[0].font.size = Pt(12)
@@ -185,6 +305,18 @@ class FormatTests(unittest.TestCase):
         p = self.make(data)
         self.assertTrue(check(p)["passed"])
         self.assertCode(check(p, final=True), "TOC_UNRESOLVED")
+
+    def test_abstract_tagged_as_body_named_as_abstract(self):
+        data = json.loads((ROOT / "examples/A/content.json").read_text())
+        data["blocks"] = [b for b in data["blocks"] if b["type"] != "image"]
+        p = self.make(data)
+        d = Document(p)
+        abstract = next(q for q in d.paragraphs if q.style.name == "XAUFE Abstract Chinese")
+        abstract.style = d.styles["XAUFE Body"]
+        d.save(p)
+        mismatches = [e["message"] for e in check(p)["errors"] if e["code"] in ("ROLE_MISMATCH", "PART_ORDER")]
+        self.assertTrue(mismatches)
+        self.assertTrue(all("abstract_zh" in m and "关键词之间" in m for m in mismatches), mismatches)
 
     def test_master_contains_no_filled_personal_fields(self):
         d = Document(ROOT / "assets/A/format-master.docx")
@@ -247,7 +379,9 @@ class FormatTests(unittest.TestCase):
         before = engine.content_signature(Document(src))
         out = self.d / "restyled.docx"
         engine.restyle(src, mp, out, intake_path=self.session)
-        self.assertEqual(before, engine.content_signature(Document(out)))
+        after = engine.content_signature(Document(out))
+        after["text"] = re.sub(r"（\d+）", "", after["text"])  # the template numbers each equation
+        self.assertEqual(before, after)
         self.assertTrue(check(out)["passed"])
 
     def test_stale_map_stops(self):
@@ -294,7 +428,78 @@ class FormatTests(unittest.TestCase):
         engine.install_styles(d)
         e = d.styles["XAUFE Figure"].element.pPr.find(qn("w:spacing"))
         self.assertEqual(e.get(qn("w:lineRule")), "auto")
-        self.assertGreaterEqual(int(e.get(qn("w:before"))), 120)
+        self.assertEqual(int(e.get(qn("w:before"))), 0)  # the blank line above the figure is the gap
+
+    def test_figure_and_table_groups_get_a_blank_line_each_side(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、图表"},
+                          {"type": "paragraph", "text": "合成数据见表1。"},
+                          {"type": "table", "caption": "表1 合成表", "unit": "单位：元", "note": "注：合成数据。",
+                           "header": ["编号", "金额"], "rows": [["1", "30"]]},
+                          {"type": "paragraph", "text": "由表1可见，金额不变。"}]
+        out = self.make(data)
+        texts = [p.text for p in Document(out).paragraphs]
+        at = texts.index("表1 合成表")
+        self.assertEqual(texts[at - 1], "")
+        self.assertEqual(texts[at + 1], "元")
+        self.assertEqual(texts[texts.index("合成数据。") + 1], "")
+        r = check(out)
+        self.assertNotIn("OBJECT_SPACING", {e["code"] for e in r["errors"]})
+        self.assertFalse({"OBJECT_NOT_CITED", "OBJECT_NOT_DISCUSSED"} & {w["code"] for w in r["warnings"]})
+        doc = Document(out)
+        blank = next(p for p in doc.paragraphs if p.text == "表1 合成表")._p.getprevious()
+        blank.getparent().remove(blank)
+        doc.save(out)
+        self.assertIn("OBJECT_SPACING", {e["code"] for e in check(out)["errors"]})
+
+    def test_equations_are_numbered_in_order_at_the_right_margin(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、公式"},
+                          {"type": "paragraph", "text": "质能关系如下："},
+                          {"type": "equation", "text": "E=mc2 (3)"},
+                          {"type": "equation", "text": "F=ma"}]
+        out = self.make(data)
+        eqs = [p for p in Document(out).paragraphs if p.style.name == "XAUFE Equation"]
+        self.assertEqual([p.text for p in eqs], ["\tE=mc2\t（1）", "\tF=ma\t（2）"])
+        tabs = Document(out).styles["XAUFE Equation"].element.xpath("./w:pPr/w:tabs/w:tab")
+        self.assertEqual({(t.get(qn("w:val")), t.get(qn("w:leader"))) for t in tabs}, {("center", "none"), ("right", "none")})
+        self.assertFalse({"EQUATION_NUMBER", "EQUATION_LAYOUT"} & {e["code"] for e in check(out)["errors"]})
+        doc = Document(out)
+        doc.paragraphs[[p.text for p in doc.paragraphs].index("\tF=ma\t（2）")].runs[-1].text = "（5）"
+        doc.save(out)
+        self.assertIn("EQUATION_NUMBER", {e["code"] for e in check(out)["errors"]})
+
+    def test_list_of_figures_field_and_reversed_toc_sizes_are_caught(self):
+        out = self.make()
+        doc = Document(out)
+        p = doc.add_paragraph()
+        run = p.add_run()
+        instr = OxmlElement("w:instrText")
+        instr.text = ' TOC \\h \\z \\c "图" '
+        run._r.append(instr)
+        doc.styles["TOC 3"].font.size = Pt(16)
+        doc.save(out)
+        r = check(out)
+        self.assertIn("FIGURE_LIST", {e["code"] for e in r["errors"]})
+        self.assertIn("TOC_HIERARCHY", {w["code"] for w in r["warnings"]})
+
+    def test_uncited_and_out_of_order_objects_are_told(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、图表"},
+                          {"type": "paragraph", "text": "这里没有提到任何表。"},
+                          {"type": "table", "caption": "表2 合成表", "header": ["编号"], "rows": [["1"]]}]
+        codes = {w["code"] for w in check(self.make(data))["warnings"]}
+        self.assertTrue({"OBJECT_NOT_CITED", "OBJECT_NOT_DISCUSSED", "OBJECT_ORDER"} <= codes)
+        self.assertNotIn("CAPTION_MISSING", codes)
+
+    def test_table_without_a_caption_is_told(self):
+        data = deepcopy(self.data)
+        data["blocks"] = [{"type": "heading", "level": 1, "text": "一、图表"},
+                          {"type": "paragraph", "text": "下面是一个没有表题的表。"},
+                          {"type": "table", "header": ["编号"], "rows": [["1"]]}]
+        hits = [w for w in check(self.make(data))["warnings"] if w["code"] == "CAPTION_MISSING"]
+        self.assertEqual(len(hits), 1)
+        self.assertIn("第 1 个表格（“编号", hits[0]["message"])
 
     def test_wrong_header_size_rejected(self):
         def mutate(d):
@@ -336,8 +541,28 @@ class FormatTests(unittest.TestCase):
         out = self.d / "covered.docx"
         engine.restyle(src, mp, out, intake_path=self.session)
         d = Document(out)
-        self.assertTrue(engine.content_signature(d)["text"].endswith(before["text"]))
+        self.assertTrue(re.sub(r"（\d+）", "", engine.content_signature(d)["text"]).endswith(before["text"]))
         self.assertTrue(check(out)["passed"])
+
+
+
+class ColumnWidths(unittest.TestCase):
+    def test_long_text_column_gets_the_room_and_total_is_exact(self):
+        import engine
+
+        rows = [["编号", "说明", "数值"]] + [[str(i), "一段较长的说明文字，需要更宽的列才不至于每行一个字。", "3.5"] for i in range(5)]
+        widths = engine.column_widths(rows, 8958)
+        self.assertEqual(sum(widths), 8958)
+        self.assertGreater(widths[1], 2 * max(widths[0], widths[2]))
+        self.assertTrue(all(w - 216 >= 210 for w in widths))
+
+    def test_explicit_ratios_and_short_tables(self):
+        import engine
+
+        self.assertEqual(engine.column_widths([["a", "b", "c"]], 9000, [1, 1, 2]), [2250, 2250, 4500])
+        even = engine.column_widths([["甲", "乙"], ["1", "2"]], 8958)
+        self.assertEqual(sum(even), 8958)
+        self.assertLessEqual(abs(even[0] - even[1]), 1)
 
 
 if __name__ == "__main__":

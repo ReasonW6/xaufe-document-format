@@ -26,7 +26,8 @@ class PortableBehavior(Fixture):
         self.assertEqual(doc.sections[-2]._sectPr.find(qn("w:pgNumType")).get(qn("w:start")), "1")
         self.assertIsNone(doc.sections[-1]._sectPr.find(qn("w:pgNumType")).get(qn("w:start")))
 
-    def test_abstracts_use_continuous_roman_numbers(self):
+    def test_front_matter_uses_continuous_roman_numbers(self):
+        # A: TOC, Chinese abstract, English abstract = I, II, III ...; body restarts at 1.
         out, _ = self.build(paper=True, cover=True)
         actual = [
             (
@@ -36,7 +37,7 @@ class PortableBehavior(Fixture):
             for s in Document(out).sections[1:]
         ]
         self.assertEqual(
-            actual, [("decimal", "1"), ("upperRoman", "1"), ("upperRoman", None), ("decimal", "1")]
+            actual, [("upperRoman", "1"), ("upperRoman", None), ("upperRoman", None), ("decimal", "1")]
         )
 
     def test_replacing_logo_drops_orphan_but_preserves_body_use(self):
@@ -99,11 +100,11 @@ class PortableBehavior(Fixture):
         state = self.path("json")
         self.assertEqual(I.start(state, "synthetic")["timezone"], "Asia/Shanghai")
 
-    def test_twenty_character_title_wraps_without_changing_words(self):
+    def test_long_title_wraps_without_changing_words(self):
         import cover_fit
         from customization import apply_cover, effective_profile
 
-        title = "城市公共交通票价结构对通勤方式选择的影响"
+        title = "城市公共交通票价结构对居民通勤方式选择的影响研究"  # 24 characters, the longest allowed
 
         def lines(spec):
             master = Document(E.ROOT / spec["master_file"])

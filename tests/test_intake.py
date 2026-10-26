@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import engine as E
 import intake as I
 from check_format import check
+from fixtures import ABSTRACT
 
 
 def candidate(v, source="user", **extra):
@@ -291,7 +292,7 @@ class ProfileTests(unittest.TestCase):
         if mode == "paper":
             data.update(
                 {
-                    "abstract_zh": "中文格式测试摘要。",
+                    "abstract_zh": ABSTRACT,
                     "keywords_zh": ["格式", "测试"],
                     "references": ["格式测试条目，不是真实参考文献。"],
                 }
@@ -432,15 +433,15 @@ class ProfileTests(unittest.TestCase):
         st = d.styles["XAUFE Abstract Chinese"]
         self.assertEqual(st.font.size.pt, 10.5)
 
-    def test_both_abstract_and_reference_have_one_point_five_spacing(self):
+    def test_abstract_and_reference_use_the_fixed_twenty_point_line(self):
         for id in ["A", "B"]:
             E.select_profile(id)
             d = Document()
             E.install_styles(d)
             for name in ["XAUFE Abstract Chinese", "XAUFE Abstract English", "XAUFE Reference"]:
                 e = d.styles[name].element.pPr.find(qn("w:spacing"))
-                self.assertEqual(e.get(qn("w:line")), "360")
-                self.assertEqual(e.get(qn("w:lineRule")), "auto")
+                self.assertEqual(e.get(qn("w:line")), "400")  # 2026-10-26: all text fixed 20 pt
+                self.assertEqual(e.get(qn("w:lineRule")), "exact")
             e = d.styles["XAUFE Body"].element.pPr.find(qn("w:spacing"))
             self.assertEqual(e.get(qn("w:line")), "400")
             self.assertEqual(e.get(qn("w:lineRule")), "exact")
@@ -461,7 +462,30 @@ class ProfileTests(unittest.TestCase):
             d.element.body.insert(15, p)
 
         r = self.mutate(change, mode="paper")
-        self.assertIn("PART_ORDER", [e["code"] for e in r["errors"]])
+        order = [e for e in r["errors"] if e["code"] == "PART_ORDER"]
+        self.assertTrue(order)
+        # The message names the paragraph, so the feedback can point at its mapping row.
+        import feedback as F
+
+        issue = F.explain(order)[0]
+        self.assertRegex(issue["where"]["location"], r"^成品第\d+段$")
+        self.assertIn("目录", order[0]["message"])
+        self.assertIn("role", issue["fix"])
+
+    def test_job_errors_name_the_json_path_and_the_nearest_key(self):
+        from customization import effective_profile
+
+        for request, words in (({"styles": {"h1": {"szie": 12}}}, ("format.styles.h1", "“size”")),
+                               ({"styles": {"h1": {"size": 200}}}, ("format.styles.h1.size",)),
+                               ({"stlyes": {}}, ("format 里", "“styles”")),
+                               ({"page_twips": {"left": -1}}, ("format.page_twips.left", "567"))):
+            with self.subTest(request=request), self.assertRaises(ValueError) as caught:
+                effective_profile("A", request)
+            for word in words:
+                self.assertIn(word, str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            I.from_job({"task": "format", "template": "A", "tempalte": "A"}, self.d / "x.json")
+        self.assertIn("“template”", str(caught.exception))
 
     def test_wrong_template_logo_rejected(self):
         def change(d):

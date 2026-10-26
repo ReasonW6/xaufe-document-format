@@ -1,7 +1,7 @@
 """Word/LibreOffice/WPS PDF exporters; source DOCX is never resaved or overwritten."""
 
 from __future__ import annotations
-import json, os, re, shutil, subprocess, tempfile
+import json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 from office_discovery import discover, usable_candidates, ps_run
 
@@ -40,12 +40,19 @@ def _lo(docx, pdf, candidate, tmp):
         str(docx),
     ]
     env = os.environ.copy()
-    # Do not change Windows user identity/profile; LO gets its own explicit profile.
+    # LO gets its own explicit profile above. HOME stays as it is: fonts the user
+    # installed for themselves (~/Library/Fonts on macOS, ~/.fonts or
+    # ~/.local/share/fonts on Linux, often where 宋体/黑体 live) are found through
+    # it, and hiding them made LibreOffice substitute fonts and misjudge the cover.
     if os.name != "nt":
-        env.update(
-            HOME=str(tmp), XDG_CONFIG_HOME=str(tmp / "config"), XDG_CACHE_HOME=str(tmp / "cache")
-        )
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
+        env.update(XDG_CACHE_HOME=str(tmp / "cache"))
+    if sys.platform == "darwin":
+        # --headless on macOS falls back to the "svp" backend, which only knows the
+        # fonts bundled with LibreOffice: every CJK line came out in a Latin font
+        # and the pages were wrong. The native backend still runs headless but
+        # sees the system and user fonts (measured on macOS CI runners).
+        env.setdefault("SAL_USE_VCLPLUGIN", "osx")
+    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=180, env=env)
     produced = od / (docx.stem + ".pdf")
     if not produced.is_file() or not produced.stat().st_size:
         raise RuntimeError("LibreOffice已找到但导出失败：" + proc.stdout + "\n" + proc.stderr)
@@ -74,7 +81,7 @@ def _word(docx, pdf, candidate, tmp):
     return proc.stdout.strip()
 
 
-def export_pdf(docx, pdf):
+def export_pdf(docx, pdf, fallback=True):
     docx = Path(docx).resolve()
     pdf = Path(pdf).resolve()
     if docx == pdf:
@@ -93,7 +100,7 @@ def export_pdf(docx, pdf):
     failures = []
     # A missing selected application must not hide another installed renderer.
     # Keep the selected engine first, then try remaining real candidates.
-    if report.get("candidates"):
+    if report.get("candidates") and fallback:
         preference = os.environ.get("XAUFE_RENDER_ENGINE")
         try:
             os.environ["XAUFE_RENDER_ENGINE"] = "auto"
@@ -118,7 +125,7 @@ def export_pdf(docx, pdf):
         )
     for candidate in candidates:
         try:
-            with tempfile.TemporaryDirectory(prefix="xaufe-office-") as td:
+            with tempfile.TemporaryDirectory(prefix="xaufe-office-", ignore_cleanup_errors=True) as td:
                 tmp = Path(td)
                 produced = tmp / "render.pdf"
                 if candidate["engine"] == "wps":
@@ -157,3 +164,30 @@ def export_pdf(docx, pdf):
         report,
         failures,
     )
+
+
+def second_opinion(docx, pdf, used):
+    """Render once more with another installed engine than ``used`` (Word first), for comparing
+    page breaks.  None when there is no other callable engine.  The first render's record stays."""
+    report = discover()
+    saved, before = os.environ.get("XAUFE_RENDER_ENGINE"), dict(LAST_BACKEND)
+    manual = os.environ.pop("XAUFE_WPS_MODE", None)
+    try:
+        os.environ["XAUFE_RENDER_ENGINE"] = "auto"
+        others = [c["engine"] for c in usable_candidates(report) if c["engine"] != str(used).lower()]
+        for engine in sorted(dict.fromkeys(others), key=lambda e: e != "word"):
+            os.environ["XAUFE_RENDER_ENGINE"] = engine
+            try:
+                return export_pdf(docx, pdf, fallback=False)
+            except (OfficeUnavailable, OSError, RuntimeError, ValueError):
+                continue
+        return None
+    finally:
+        if saved is None:
+            os.environ.pop("XAUFE_RENDER_ENGINE", None)
+        else:
+            os.environ["XAUFE_RENDER_ENGINE"] = saved
+        if manual is not None:
+            os.environ["XAUFE_WPS_MODE"] = manual
+        LAST_BACKEND.clear()
+        LAST_BACKEND.update(before)

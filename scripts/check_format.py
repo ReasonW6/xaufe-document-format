@@ -11,6 +11,7 @@ import engine as E
 from intake import require as require_intake, digest
 from audit_helpers import (
     contract,
+    page_contract,
     paragraph_check,
     run_check,
     tables_check,
@@ -69,6 +70,384 @@ def visible_part(part):
     )
 
 
+def line_check(p, label, err):
+    """A fixed line height below the font size prints lines on top of each other."""
+    try:
+        spacing = paragraph_properties(p, "spacing")
+        if spacing.get("lineRule") != "exact" or not str(spacing.get("line", "")).isdigit():
+            return
+        sizes = [
+            int(run_properties(p, r).get("sz") or 21)
+            for r in p._p.xpath(".//w:r")
+            if "".join(r.xpath("./w:t/text()")).strip()
+        ]
+    except ValueError:  # broken style chains are reported by paragraph_check
+        return
+    line = int(spacing["line"]) / 20
+    if sizes and line < max(sizes) / 2:
+        err(
+            "LINE_TOO_TIGHT",
+            f"{label}: 固定行距={line:g}磅，应为不小于字号{max(sizes) / 2:g}磅。",
+        )
+
+
+CAPTION = re.compile(r"^\s*(?:图|表|续表|Figure|Fig\.?|Table)\s*[\dA-Za-z一二三四五六七八九十]", re.I)
+ROLE_NAMES = {"spacer": "空行", "abstract_spacer": "空行", "figure": "图片段", "caption": "图表标题",
+              "h1": "一级标题", "h2": "二级标题", "h3": "三级标题", "h4": "四级标题", "preface": "序言标题", "body": "正文",
+              "equation": "公式段", "code": "代码段", "table_note": "表注", "table_unit": "表格单位"}
+
+
+HEADING_LIKE = re.compile(r"^(?:[一二三四五六七八九十]+、|[（(][一二三四五六七八九十]+[）)]|第[一二三四五六七八九十\d]+[章节])\s*\S")
+
+
+def _blank(el):
+    """An empty paragraph (at most a page or line break): it carries nothing to keep a caption with."""
+    return el.tag == qn("w:p") and not el.xpath(".//w:t[normalize-space()]|.//w:drawing|.//w:pict|.//m:oMath")
+
+
+def caption_check(p, label, err):
+    """A caption cut off from its table (below it) or figure (above it) by empty paragraphs:
+    keep-with-next then ties it to the blank, and the page can break right between them."""
+    for step, wanted, name in ((lambda e: e.getnext(), lambda e: e.tag == qn("w:tbl"), "表格"),
+                               (lambda e: e.getprevious(), lambda e: bool(e.xpath(".//w:drawing|.//w:pict")), "图片")):
+        el, skipped = step(p._p), 0
+        while el is not None and _blank(el):
+            el, skipped = step(el), skipped + 1
+        if skipped and el is not None and wanted(el):
+            err("CAPTION_DETACHED", f"{label}: 图表标题和它的{name}之间隔着 {skipped} 个空段落，分页时会被拆开。")
+            return
+
+
+def caption_position_check(p, label, text, err):
+    """A table caption belongs above its table and a figure caption below its figure (the generator
+    moves one on the wrong side, so one left there is an error)."""
+    def near(step):
+        el = step(p._p)
+        while el is not None and _blank(el):
+            el = step(el)
+        return el
+    before, after = near(lambda e: e.getprevious()), near(lambda e: e.getnext())
+    is_table = lambda e: e is not None and e.tag == qn("w:tbl")
+    is_figure = lambda e: e is not None and bool(e.xpath(".//w:drawing|.//w:pict"))
+    if text.startswith("表") and is_table(before) and not is_table(after):
+        err("CAPTION_POSITION", f"{label}: 表题“{text[:15]}”在表格下面；学校规定表题在表格上方。")
+    elif text.startswith("图") and is_figure(after) and not is_figure(before):
+        err("CAPTION_POSITION", f"{label}: 图题“{text[:15]}”在图片上面；学校规定图题在图片下方。")
+
+
+HEADING_STYLE_NUMBER = {
+    "h1": re.compile(r"^[一二三四五六七八九十百零〇]+、"),
+    "h2": re.compile(r"^[（(][一二三四五六七八九十百零〇]+[）)]"),
+    "h3": re.compile(r"^\d+[.．](?!\d)"),
+}
+
+
+def heading_levels_check(paragraphs, err, own=False):
+    """Heading levels that contradict the numbering.  A heading numbered the template's way for
+    another level ("（一）" set as h1) is blocked, unless the user approved numbering the document
+    its own way (format "heading_numbering": "own").  Even then it is blocked when the document
+    itself shows the intended level: the same numbering sits at another level elsewhere, the level
+    is already used by a different numbering, or a short unpunctuated body line carries a numbering
+    that the document uses for headings."""
+    name = {"h1": "一级", "h2": "二级", "h3": "三级"}
+    style_of = lambda text: next((r for r, rx in HEADING_STYLE_NUMBER.items() if rx.match(text)), None)
+    headings = [(label, role, text, style_of(text)) for label, role, text in paragraphs if role != "body"]
+    home = {style for _, role, _, style in headings if style == role}
+    for label, role, text, style in headings:
+        if not style or style == role:
+            continue
+        if style in home:
+            err("HEADING_LEVEL", f"{label}: 标题“{text[:20]}”按编号是{name[style]}标题（用同样编号的其他标题是 {style}），这里却设成了 {role}。")
+        elif role in home:
+            err("HEADING_LEVEL", f"{label}: 标题“{text[:20]}”的编号是{name[style]}的写法，但设成了 {role}，"
+                                 f"而文档里 {role} 用的是另一种编号。")
+        elif not own:
+            err("HEADING_LEVEL", f"{label}: 标题“{text[:20]}”用的是模板{name[style]}标题的编号，却设成了 {role}"
+                                 f"（模板：一级“一、”，二级“（一）”，三级“1.”）。")
+    # A list ("1.准确性" "2.完整性" …) runs on numbered lines; a lost heading is followed by plain text.
+    for before, (label, role, text), after in zip([(None, None, "")] + paragraphs, paragraphs, paragraphs[1:] + [(None, None, "")]):
+        style = style_of(text) if role == "body" else None
+        alone = after[1] == "body" and not style_of(after[2]) and not (before[1] == "body" and style_of(before[2]))
+        if style in home and alone and len(text) <= 30 and not re.search(r"[。；;：:，,！!？?]$", text):
+            err("HEADING_LEVEL", f"{label}: “{text[:20]}”像{name[style]}标题（编号和文档里的 {style} 标题一样，短且没有句末标点），却设成了正文。")
+
+
+def page_break_check(doc, err):
+    """Page breaks that leave an empty page in Word (see ``engine.blank_page_breaks``)."""
+    for index, what, _, text in E.blank_page_breaks(doc):
+        after = f"（前面最后的文字是“{text.strip()[-15:]}”）" if text.strip() else ""
+        err("WORD_BLANK_PAGE", f"p{index}: 分页符后面{what}，中间没有内容，Word 会在这里多出一页空白{after}。")
+
+
+def _neighbour_el(el, step):
+    el = step(el)
+    while el is not None and el.tag == qn("w:p") and not "".join(el.xpath(".//w:t/text()")).strip() \
+            and not el.xpath(".//w:drawing|.//m:oMath"):
+        el = step(el)
+    return el
+
+
+def _style_of(el):
+    ids = el.xpath("./w:pPr/w:pStyle/@w:val") if el is not None and el.tag == qn("w:p") else []
+    return ids[0] if ids else None
+
+
+def _after_table(p):
+    prev = _neighbour_el(p._p, lambda e: e.getprevious())
+    if prev is not None and prev.tag == qn("w:tbl"):
+        return True
+    note = p.part.document.styles[E.ROLES["table_note"]].style_id
+    return _style_of(prev) == note
+
+
+def _before_table(p):
+    nxt = _neighbour_el(p._p, lambda e: e.getnext())
+    return nxt is not None and nxt.tag == qn("w:tbl")
+
+
+OBJECT_NUMBER = re.compile(r"^\s*(图|表)\s*(\d+(?:\s*[-－.．]\s*\d+)?)")
+
+
+def object_spacing_check(doc, err):
+    """One blank line above and below each figure and table group (caption, unit and notes included)."""
+    style = lambda el: (el.xpath("./w:pPr/w:pStyle/@w:val") or [None])[0] if el is not None and el.tag == qn("w:p") else None
+    blank = lambda el: el is not None and el.tag == qn("w:p") and not "".join(el.xpath(".//w:t/text()")).strip() \
+        and not el.xpath(".//w:drawing|.//w:pict|.//m:oMath")
+    items = list(doc.element.body)
+    i = 0
+    while i < len(items):
+        el = items[i]
+        figure = style(el) == "XAUFEFigure" and el.xpath(".//w:drawing|.//w:pict")
+        start = i
+        if figure:
+            end = i + 1 if i + 1 < len(items) and style(items[i + 1]) == "XAUFECaption" else i
+        elif el.tag == qn("w:tbl"):
+            while start > 0 and style(items[start - 1]) in ("XAUFECaption", "XAUFETableUnit"):
+                start -= 1
+            end = i
+            while end + 1 < len(items) and style(items[end + 1]) == "XAUFETableNote":
+                end += 1
+        else:
+            i += 1
+            continue
+        what = "图片" if figure else "表格"
+        name = "".join(items[end if figure else start].xpath(".//w:t/text()")).strip()[:12] or what
+        above = items[start - 1] if start > 0 else None
+        below = items[end + 1] if end + 1 < len(items) else None
+        if above is not None and not blank(above) and not above.xpath("./w:pPr/w:sectPr"):
+            err("OBJECT_SPACING", f"{what}“{name}”和上文之间没有空一行（学校规定图、表与上下文各空一行）。")
+        if below is not None and below.tag != qn("w:sectPr") and not blank(below) \
+                and not items[end].xpath("./w:pPr/w:sectPr"):
+            err("OBJECT_SPACING", f"{what}“{name}”和下文之间没有空一行（学校规定图、表与上下文各空一行）。")
+        i = end + 1
+
+
+def equation_check(doc, reverse, err, warn):
+    """Display equations: numbered （1）（2）… in order at the right margin on a right tab without a
+    leader, the formula on a centre tab, no bold and no size other than the body's."""
+    style_tabs = None
+    n = 0
+    for i, p in enumerate(doc.paragraphs):
+        if reverse.get(p.style.name) != "equation":
+            continue
+        text = "".join(p._p.xpath(".//w:t/text()|.//m:t/text()")).strip()
+        if not text:
+            continue
+        n += 1
+        label = f"p{i}"
+        m = re.search(r"（(\d+)）$", text)
+        if not m:
+            err("EQUATION_NUMBER", f"{label}: 公式“{text[:15]}”行末没有编号（应为“（{n}）”，按全文顺序编号）。")
+        elif int(m.group(1)) != n:
+            err("EQUATION_NUMBER", f"{label}: 公式编号是“（{m.group(1)}）”，按全文顺序应为“（{n}）”。")
+        tabs = p._p.xpath("./w:pPr/w:tabs/w:tab")
+        if not tabs:
+            if style_tabs is None:
+                style_tabs = p.style.element.xpath("./w:pPr/w:tabs/w:tab")
+            tabs = style_tabs
+        kinds = {t.get(qn("w:val")) for t in tabs}
+        if not {"center", "right"} <= kinds:
+            err("EQUATION_LAYOUT", f"{label}: 公式行要有居中制表位放公式、右对齐制表位把编号放在行末。")
+        elif any(t.get(qn("w:leader"), "none") != "none" for t in tabs):
+            err("EQUATION_LAYOUT", f"{label}: 公式和编号之间不能加虚线（制表位前导符要设为无）。")
+        if p._p.xpath(".//w:rPr/w:b[not(@w:val='0' or @w:val='false')]|.//m:sty[@m:val='b' or @m:val='bi']"):
+            err("EQUATION_LAYOUT", f"{label}: 公式里有加粗，学校规定不得任意加黑公式中的符号和数字。")
+        sizes = {int(v) for v in p._p.xpath(".//w:rPr/w:sz/@w:val")}
+        if sizes - {21}:
+            err("EQUATION_LAYOUT", f"{label}: 公式里有 {max(sizes - {21}) / 2:g} 磅的字，要和正文一样大（五号）。")
+        upright = {"sin", "cos", "tan", "cot", "log", "lg", "ln", "exp", "lim", "max", "min", "det", "e", "d"}
+        if not p._p.xpath(".//m:oMath"):
+            for run in p.runs:
+                words = [w for w in re.findall(r"[A-Za-z]+", run.text) if w not in upright]
+                if words and not run.italic:
+                    warn("EQUATION_ITALIC", f"{label}: 公式“{text[:15]}”里的变量“{words[0]}”是正体；学校要求变量用斜体（函数名、e、d 用正体）。")
+                    break
+        if re.search(r"(?<![A-Za-z])(公尺|公分|公升|达因|尔格|卡路里|毫微米|微微|ppm)(?![A-Za-z])", text):
+            warn("OBSOLETE_UNIT", f"{label}: 公式“{text[:15]}”里有已废弃的单位或词头，按 GB 3100～3102—93 改用法定单位（如 m、cm、L、N、J、nm）。")
+
+
+def toc_extras_check(doc, err, warn):
+    """Word's automatic TOC of the headings only: no list of figures or tables, and the deeper
+    TOC levels never set larger than the level above them."""
+    instructions = " ".join(doc.element.body.xpath(".//w:instrText/text()") + doc.element.body.xpath(".//w:fldSimple/@w:instr"))
+    if re.search(r"\bTOC\b[^\\]*(\\[a-z][^\\]*)*\\c\b", instructions, re.I) or any(
+            re.sub(r"\s+", "", p.text) in ("图目录", "表目录", "插图目录", "插图清单", "图表目录") for p in doc.paragraphs):
+        err("FIGURE_LIST", "文档里有图目录或表目录；学校要求目录只用 Word 自动生成的标题目录，不另加图表目录。")
+    sizes = []
+    for level in range(1, 5):
+        name = f"TOC {level}"
+        if name in [s.name for s in doc.styles]:
+            got = doc.styles[name].element.xpath("./w:rPr/w:sz/@w:val")
+            sizes.append((level, int(got[0]) / 2 if got else None))
+    for (a, size_a), (b, size_b) in zip(sizes, sizes[1:]):
+        if size_a and size_b and size_b > size_a:
+            warn("TOC_HIERARCHY", f"目录第 {b} 级（{size_b:g} 磅）比第 {a} 级（{size_a:g} 磅）还大，层级看起来是反的。")
+            break
+
+
+def object_citation_check(doc, reverse, warn):
+    """先文后图（表）、图（表）不跨节、用图（表）交待, and numbering in order (图1, 图2 …).  Warnings:
+    the wording is the author's, so it is told, not rewritten."""
+    paragraphs = doc.paragraphs
+    roles = [reverse.get(p.style.name) for p in paragraphs]
+    chapter, chapters = 0, []
+    for role in roles:
+        chapter += role == "h1"
+        chapters.append(chapter)
+    body = [(i, p.text) for i, (p, role) in enumerate(zip(paragraphs, roles)) if role == "body"]
+    seen = {"图": [], "表": []}
+    for i, (p, role) in enumerate(zip(paragraphs, roles)):
+        m = OBJECT_NUMBER.match(p.text) if role == "caption" else None
+        if not m:
+            continue
+        kind, number = m.group(1), re.sub(r"\s+", "", m.group(2))
+        seen[kind].append(number)
+        first = i - 1 if kind == "图" and i > 0 and roles[i - 1] == "figure" else i
+        mention = re.compile(rf"{kind}\s*{re.escape(number)}(?![\d\-－.．]\d)")
+        name = p.text.strip()[:15]
+        before = [j for j, text in body if j < first and mention.search(text)]
+        if not before:
+            warn("OBJECT_NOT_CITED", f"{name}：正文在它前面没有提到“{kind}{number}”（学校要求先文后{kind}，如“见{kind}{number}”）。")
+        elif all(chapters[j] != chapters[i] for j in before):
+            warn("OBJECT_NOT_CITED", f"{name}：提到“{kind}{number}”的文字和{kind}不在同一章（学校要求{kind}不跨节）。")
+        if not any(j > i and chapters[j] == chapters[i] and mention.search(text) for j, text in body):
+            warn("OBJECT_NOT_DISCUSSED", f"{name}：{kind}后面的正文没有再提到“{kind}{number}”（学校要求有用{kind}交待，如“由{kind}{number}可见”）。")
+    for kind, numbers in seen.items():
+        simple = [int(n) for n in numbers if n.isdigit()]
+        if len(simple) == len(numbers) and simple != list(range(1, len(simple) + 1)):
+            warn("OBJECT_ORDER", f"{kind}的编号是 " + "、".join(f"{kind}{n}" for n in numbers)
+                 + f"，学校要求按出现顺序从{kind}1 起连续编号。")
+    # Every table has a caption above it and every figure one below (学校：表题在表上、图题在图下).
+    role_of = {p._p: role for p, role in zip(paragraphs, roles)}
+
+    def neighbour(el, step):
+        """The next element that is not a blank line or a table's unit line."""
+        while True:
+            el = el.getprevious() if step < 0 else el.getnext()
+            if el is None or el.tag != qn("w:p"):
+                return el
+            blank = not "".join(el.xpath(".//w:t/text()")).strip() and not el.xpath(".//w:drawing|.//w:pict")
+            if not blank and role_of.get(el) != "table_unit":
+                return el
+
+    for n, el in enumerate(doc.element.body.iterchildren(qn("w:tbl")), 1):
+        above = neighbour(el, -1)
+        if above is None or role_of.get(above) != "caption":
+            first = "".join(el.xpath("./w:tr[1]//w:t/text()")).strip()[:12]
+            warn("CAPTION_MISSING", f"第 {n} 个表格（“{first}”）上面没有表题（学校要求“表1 …”放在表上方）。")
+    for n, (p, role) in enumerate(((p, r) for p, r in zip(paragraphs, roles) if r == "figure"), 1):
+        below = neighbour(p._p, 1)
+        if below is None or role_of.get(below) != "caption":
+            warn("CAPTION_MISSING", f"第 {n} 张图片下面没有图题（学校要求“图1 …”放在图下方）。")
+
+
+def role_check(p, role, label, visible, err):
+    """Catch a paragraph whose role (from mapping.json or content.json) does not fit its content:
+    the formatting would then be "correct" for the wrong role and pass unnoticed."""
+    text = visible.strip()
+    problem = None
+    if role in ("spacer", "abstract_spacer") and text:
+        problem = "空行里有文字"
+    elif role == "figure" and text and not p._p.xpath(".//w:drawing|.//w:pict"):
+        problem = "图片段里没有图片，只有文字"
+    elif role == "caption" and text and not CAPTION.match(text):
+        problem = "图表标题应以“图1”“表2”“Figure 3”等开头"
+    elif role == "equation" and not p._p.xpath(".//m:oMath|.//w:object|.//w:drawing") \
+            and len(re.findall(r"[\u4e00-\u9fff]", text)) >= 8:
+        problem = "公式段里没有公式对象，是一句文字"
+    elif role == "code" and len(re.findall(r"[\u4e00-\u9fff]", text)) >= 15 and re.search(r"[。！？]$", text):
+        problem = "代码段里是中文句子，像是一段正文"
+    elif role == "table_note" and not _after_table(p):
+        problem = "表注要紧跟在表格（或上一条表注）下面"
+    elif role == "table_unit" and not _before_table(p):
+        problem = "表格单位要紧挨在它的表格上面"
+    elif role in ("h1", "h2", "h3", "h4", "preface") and (len(text) > 80 or re.search(r"[。；;]$", text)):
+        problem = "标题太长或以句号/分号结尾，像是一段正文"
+    elif role == "body" and len(text) <= 30 and HEADING_LIKE.match(text) and not re.search(r"[。；;，,：:]$", text):
+        problem = "它是“一、”“（一）”“第一章”这样开头的短行，像是标题（标成正文会从目录里漏掉）"
+    if problem:
+        err("ROLE_MISMATCH", f"{label}: 这一段标成了{ROLE_NAMES[role]}（{role}），但{problem}：“{text[:20]}”。")
+    if role == "table_note" and re.match(r"^\s*(附\s*注|注)\s*\d*\s*[:：]", text):
+        err("TABLE_NOTE_LABEL", f"{label}: 表注“{text[:15]}”以“注”开头；学校规定表注不写“注”“附注”，整表说明用“说明”。")
+    if role == "table_unit" and "单位" in re.sub(r"\s+", "", text):
+        err("TABLE_UNIT_WORD", f"{label}: 表格单位“{text[:15]}”里有“单位”二字；学校规定全表单位写在右上方，不写“单位”。")
+
+
+FRONT = {"title_zh", "title_en", "abstract_label_zh", "abstract_label_en", "abstract_zh", "abstract_en",
+         "keywords_zh", "keywords_en", "toc_title", "toc1", "toc2", "toc3", "toc4"}
+MAIN = {"preface", "h1", "h2", "h3", "h4", "body", "reference_title", "reference"}
+
+
+def numbering_check(doc, reverse, err):
+    """Front matter I, II, ... from I; body 1, 2, ... from 1 to the end (format-spec.md)."""
+    from docx.text.paragraph import Paragraph
+
+    roles, index, front, main = set(), 0, False, False
+    for el in doc.element.body:
+        if el.tag == qn("w:p"):
+            roles.add(reverse.get(Paragraph(el, doc._body).style.name))
+            sect = el.find(qn("w:pPr") + "/" + qn("w:sectPr"))
+        else:
+            sect = el if el.tag == qn("w:sectPr") else None
+        if sect is None:
+            continue
+        index += 1
+        page = sect.find(qn("w:pgNumType"))
+        fmt = (page.get(qn("w:fmt")) if page is not None else None) or "decimal"
+        start = page.get(qn("w:start")) if page is not None else None
+        if main or roles & MAIN:
+            want = ("decimal", None if main else "1")
+            what = "正文" if not main else "正文之后"
+            main = True
+        elif roles & FRONT:
+            want = ("upperRoman", None if front else "1")
+            what = "摘要/目录"
+            front = True
+        else:
+            roles = set()
+            continue
+        if (fmt, start) != want:
+            show = lambda f, s: ("罗马数字" if f == "upperRoman" else "阿拉伯数字" if f == "decimal" else f) + (
+                f"从{s}开始" if s else "接着上一节"
+            )
+            err("PAGE_NUMBERING", f"第{index}节（{what}）页码格式={show(fmt, start)}，应为{show(*want)}。")
+        roles = set()
+
+
+def plain_numbering_check(doc, has_cover, err):
+    """Without paper structure: arabic from 1 after the cover, then continuing (no restarts)."""
+    for i, section in enumerate(doc.sections):
+        if has_cover and i == 0:
+            continue
+        page = section._sectPr.find(qn("w:pgNumType"))
+        fmt = (page.get(qn("w:fmt")) if page is not None else None) or "decimal"
+        start = page.get(qn("w:start")) if page is not None else None
+        want = ("decimal", "1" if i == (1 if has_cover else 0) else None)
+        if (fmt, start) != want:
+            err("PAGE_NUMBERING", f"第{i + 1}节页码格式={fmt}{'从' + start + '开始' if start else '接着上一节'}，"
+                f"应为阿拉伯数字{'从1开始' if want[1] else '接着上一节'}（{'封面后的第一节' if want[1] else '正文中途不重新编号'}）。")
+
+
 def _check(path, final=False, intake_path=None, toc_report=None, validation_scope="full"):
     if validation_scope not in ("full", "static-only"):
         raise ValueError("未知验收范围。")
@@ -109,6 +488,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         err("UNSUPPORTED_STRUCTURE", reason)
     has_cover = vv.get("XAUFE_HAS_COVER") == "1"
     mode = vv.get("XAUFE_MODE", "unknown")
+    keep = _keep_as_is(intake_path)
     count = spec["cover"]["paragraph_count"]
     state = None
     if mode != "template":
@@ -137,6 +517,18 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             warn("INTAKE_NOT_RECHECKED", "本次静态检查未提供交互记录；最终检查必须提供。")
     if has_cover and mode != "template" and len(doc.sections) < 2:
         err("COVER_BREAK", "封面必须独立分节，与后续部分分开。")
+    for role, patch in (request.get("styles") or {}).items():
+        # Allowed but self-defeating: the user may not have meant it, so they are told before delivery.
+        color = str(patch.get("color") or "")
+        if len(color) == 6:
+            r, g, b = (int(color[i:i + 2], 16) for i in (0, 2, 4))
+            if 0.2126 * r + 0.7152 * g + 0.0722 * b > 230:
+                warn("STYLE_HARD_TO_READ", f"{ROLE_NAMES.get(role, role)}（{role}）的文字颜色是 {color}，在白纸上几乎看不见。"
+                     "确认是用户要的就在回复里提醒用户；不是就改 job.json 的 format.styles。")
+        if isinstance(patch.get("size"), (int, float)) and patch["size"] < 5:
+            warn("STYLE_HARD_TO_READ", f"{ROLE_NAMES.get(role, role)}（{role}）的字号只有 {patch['size']:g} 磅，打印出来几乎看不清。"
+                 "确认是用户要的就在回复里提醒用户；不是就改 job.json 的 format.styles。")
+    page_rule = page_contract(spec["id"], request)  # independent of assets/*/layout.json
     for i, s in enumerate(doc.sections):
         for attr, key in [
             ("page_width", "width"),
@@ -150,8 +542,11 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             ("gutter", "gutter"),
         ]:
             actual = getattr(s, attr)
-            if actual is None or actual.twips != spec["page_twips"][key]:
+            if actual is None or actual.twips != page_rule[key]:
                 err("PAGE", f"第{i+1}节 {attr} 与本次有效格式（默认值加用户覆盖）不一致。")
+            elif i == 0 and key in ("top", "bottom", "left", "right") and actual.twips < 284:
+                warn("MARGIN_TOO_SMALL", f"页边距 {key} 只有 {actual.twips / 567:.2f} 厘米：多数打印机印不到离纸边 0.5 厘米以内的地方，"
+                     "边上的文字可能被裁掉。是用户要求的就在回复里提醒用户；不是就删掉 job.json 的 page_twips 这一项。")
         for variant, f in [
             ("default", s.footer),
             ("first", s.first_page_footer),
@@ -253,7 +648,10 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             ):
                 err("LOGO_CROP", "校徽不得裁切。")
             if p._p.xpath("./w:pPr/w:jc/@w:val") != [spec["logo"]["alignment"]]:
-                err("LOGO_ALIGN", "校徽必须左对齐。")
+                names = {"left": "左对齐", "start": "左对齐", "center": "居中", "right": "右对齐", "end": "右对齐"}
+                want = spec["logo"]["alignment"]
+                err("LOGO_ALIGN", f"校徽应为{names.get(want, want)}（模板默认或用户要求），"
+                    f"现在是{names.get((p._p.xpath('./w:pPr/w:jc/@w:val') or ['left'])[0], '其他')}。")
             if not doc.paragraphs[spec["cover"]["title_paragraph"]].text.startswith(
                 spec["cover"]["title_label"]
             ):
@@ -369,7 +767,7 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
                 ("even", sec.even_page_header),
             ]:
                 allp.extend((f"header{si}/{variant}/p{pi}", p) for pi, p in enumerate(h.paragraphs))
-    checked = 0
+    checked, headings = 0, []
     for label, p in allp:
         if has_cover and label.startswith("p") and int(label[1:]) < count:
             continue
@@ -402,11 +800,20 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             rule = deepcopy(rule)
             rule["pPr"]["jc"]["val"] = "right" if label.endswith("/p1") else "left"
         paragraph_check(p, role, label, rule, err, warn)
-        run_check(p, role, label, expected[role], err)
+        run_check(p, role, label, expected[role], err, warn)
+        line_check(p, label, err)
+        role_check(p, role, label, visible, err)
+        if role == "caption" and label.startswith("p"):
+            caption_check(p, label, err)
+            caption_position_check(p, label, visible.strip(), err)
+        if (role in HEADING_STYLE_NUMBER or role == "body") and label.startswith("p"):
+            headings.append((label, role, visible.strip()))
         if p._p.xpath(".//wp:inline") and role != "figure":
             maxh = max((int(x.get("cy", "0")) for x in p._p.xpath(".//wp:extent")), default=0)
             if maxh > 254000 and paragraph_properties(p, "spacing").get("lineRule") == "exact":
                 err("OBJECT_HEIGHT", "大图片不能放在固定20磅的普通段落里。")
+    heading_levels_check(headings, err, own=request.get("heading_numbering") == "own")
+    page_break_check(doc, err)
     with ZipFile(path) as z:
         for name in z.namelist():
             if name.startswith("word/fonts/"):
@@ -462,6 +869,28 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
 
     audit_toc(doc, spec, err)
     table_count = tables_check(doc, E.WIDTH, err)
+    object_spacing_check(doc, err)
+    toc_extras_check(doc, err, warn)
+    equation_check(doc, reverse, err, warn)
+    object_citation_check(doc, reverse, warn)
+    if mode == "document":
+        roles = [reverse.get(p.style.name) for p in doc.paragraphs]
+        if any(r in ("toc_title", "abstract_label_zh", "abstract_label_en") for r in roles):
+            numbering_check(doc, reverse, err)  # an earlier output of this skill, revised
+            # Its parts must still come in this template's order (A puts the TOC first, B after the abstract).
+            order = [r for part in spec["parts"] for r in {"toc": ["toc_title"], "abstract_zh": ["abstract_label_zh"],
+                                                            "abstract_en": ["abstract_label_en"]}.get(part, [])]
+            seen = [r for r in order if r in roles]
+            for a, b in zip(seen, seen[1:]):
+                if roles.index(b) < roles.index(a):
+                    err("PART_ORDER", f"p{roles.index(b)}: “{doc.paragraphs[roles.index(b)].text.strip()[:10]}”排在了"
+                        f"“{doc.paragraphs[roles.index(a)].text.strip()[:10]}”（p{roles.index(a)}）前面，和所选版式的前置部分顺序不一致。")
+                    break
+        else:
+            plain_numbering_check(doc, has_cover, err)
+            if {"abstract_zh", "keywords_zh"} & set(roles) and {"h1", "h2", "preface"} & set(roles):
+                warn("PAPER_STRUCTURE_SKIPPED", "原稿有摘要和章节标题，但这次按普通文档排：没有生成目录，摘要没有单独成页，"
+                     "也没有摘要标题。这是模板完整论文结构的一部分；不是用户要求的就把 mapping.json 的 mode 改回 paper。")
     if mode == "paper":
         front = []
         for part in spec["parts"]:
@@ -471,26 +900,66 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
                 "abstract_en": ["title_en", "abstract_label_en"],
             }.get(part, [])
         roles = [reverse.get(p.style.name) for p in doc.paragraphs]
-        pos = []
+        names = {"toc_title": "“目录”标题", "title_zh": "中文摘要页的题目", "abstract_label_zh": "“摘要”标题",
+                 "title_en": "英文摘要页的题目", "abstract_label_en": "“Abstract”标题"}
+        quote = lambda i: "“" + doc.paragraphs[i].text.strip()[:20] + "”"
+        pos, found = [], []
         for role in front:
             if role not in roles:
-                err("PART_MISSING", f"缺少{role}部分。")
+                err("PART_MISSING", f"缺少{names.get(role, role)}（{role}）。")
             else:
                 pos.append(roles.index(role))
-        if pos != sorted(pos):
-            err("PART_ORDER", "前置部分顺序与用户所选模板不符。")
+                found.append(role)
+        for i in range(1, len(pos)):
+            if pos[i] < pos[i - 1]:
+                err("PART_ORDER", f"p{pos[i]}: {names[found[i]]}{quote(pos[i])}排在了{names[found[i - 1]]}"
+                    f"{quote(pos[i - 1])}（p{pos[i - 1]}）前面，和所选版式的前置部分顺序不一致。")
+                break
+        # An abstract tagged as body sits between its label and the keywords: name it, so the
+        # misleading "body before the front matter" / "keywords inside the body" errors stay away.
+        misfiled = set()
+        for label_role, text_role, keywords_role in (("abstract_label_zh", "abstract_zh", "keywords_zh"),
+                                                     ("abstract_label_en", "abstract_en", "keywords_en")):
+            start = roles.index(label_role) if label_role in roles else None
+            end = next((i for i in range(start + 1, len(roles)) if roles[i] == keywords_role), None) if start is not None else None
+            for i in range(start + 1, end) if end is not None else ():
+                if roles[i] in ("preface", "h1", "h2", "h3", "h4", "body") and doc.paragraphs[i].text.strip():
+                    misfiled.add(i)
+                    err("ROLE_MISMATCH", f"p{i}: 这一段{quote(i)}在{names[label_role]}和关键词之间，应该是摘要正文"
+                        f"（{text_role}），现在标成了 {roles[i]}。")
         body = next(
-            (i for i, x in enumerate(roles) if x in ("preface", "h1", "h2", "h3", "h4", "body")),
+            (i for i, x in enumerate(roles) if x in ("preface", "h1", "h2", "h3", "h4", "body") and i not in misfiled),
             None,
         )
         if body is None:
             err("PART_MISSING", "缺少正文。")
         elif pos and body <= max(pos):
-            err("PART_ORDER", "正文排在前置部分之前。")
+            last = max(pos)
+            err("PART_ORDER", f"p{body}: 正文段落{quote(body)}（{roles[body]}）排在了{names[roles[last]]}"
+                f"{quote(last)}（p{last}）前面：前置部分里有段落被标成了正文或标题。")
         if "reference_title" not in roles:
             err("PART_MISSING", "缺少参考文献标题。")
         elif body is not None and roles.index("reference_title") <= body:
-            err("PART_ORDER", "参考文献未排在正文之后。")
+            at = roles.index("reference_title")
+            err("PART_ORDER", f"p{at}: 参考文献标题{quote(at)}排在了第一段正文{quote(body)}（p{body}）前面。")
+        ref_at = roles.index("reference_title") if "reference_title" in roles else len(roles)
+        for i, x in enumerate(roles):
+            if x == "reference" and i < ref_at and doc.paragraphs[i].text.strip():
+                err("ROLE_MISMATCH", f"p{i}: 这一段{quote(i)}标成了参考文献条目（reference），但它在参考文献标题前面：正文段落应为 body。")
+                break
+        late = {"abstract_zh", "abstract_en", "keywords_zh", "keywords_en", "abstract_label_zh", "abstract_label_en"}
+        for i in range(body + 1 if body is not None else len(roles), len(roles)):
+            if roles[i] in late and doc.paragraphs[i].text.strip():
+                err("ROLE_MISMATCH", f"p{i}: 正文开始以后的这一段{quote(i)}标成了{roles[i]}（摘要/关键词）：正文里的段落应为 body 或标题。")
+                break
+        if "reference_title" in roles:
+            for i in range(roles.index("reference_title") + 1, len(roles)):
+                if roles[i] in ("h1", "h2", "h3", "h4", "preface"):
+                    break
+                if roles[i] == "body" and doc.paragraphs[i].text.strip():
+                    err("ROLE_MISMATCH", f"p{i}: 参考文献标题后面的这一段标成了正文（body）{quote(i)}：参考文献条目应为 reference。")
+                    break
+        numbering_check(doc, reverse, err)
         minimum = (5 if spec["english_abstract"] else 4) - (0 if has_cover else 1)
         if len(doc.sections) < minimum:
             err("PART_BREAKS", "封面／摘要／目录／正文没有独立分节起页。")
@@ -507,11 +976,34 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
             if not nonempty:
                 missing_content.append(role)
         if missing_content:
-            warn(
-                "EMPTY_CONTENT",
-                "以下部分是空的：用户要求写作就补写；只排版就在 review.json 说明这是原稿本来就空的："
-                + ",".join(missing_content),
+            after = {"abstract_zh": "abstract_label_zh", "abstract_en": "abstract_label_en", "reference": "reference_title"}
+            prefix = {"keywords_zh": r"^\s*关键词", "keywords_en": r"^\s*key\s*words?"}
+            paragraphs = list(enumerate(doc.paragraphs))
+            candidates = []
+            for role in missing_content:
+                if role in after:
+                    starts = [i for i, q in paragraphs if reverse.get(q.style.name) == after[role]]
+                    found = [(i, q) for i, q in paragraphs[starts[0] + 1 : starts[0] + 4] if q.text.strip()] if starts else []
+                else:
+                    found = [(i, q) for i, q in paragraphs if re.match(prefix[role], q.text, re.I)]
+                generated = {"toc_title", "toc1", "toc2", "toc3", "toc4", "abstract_spacer", "spacer"}
+                candidates += [f"p{i}“{q.text.strip()[:15]}”（现在是 {reverse.get(q.style.name) or q.style.name}）"
+                               for i, q in found[:2] if reverse.get(q.style.name) not in generated]
+            labels = {"abstract_zh": "中文摘要", "keywords_zh": "中文关键词", "reference": "参考文献条目",
+                      "abstract_en": "英文摘要", "keywords_en": "英文关键词"}
+            (warn if keep else err)(
+                "PART_LEFT_EMPTY" if keep else "EMPTY_CONTENT",
+                "这些部分在成品里是空的："
+                + "、".join(labels[r] for r in missing_content)
+                + ("。用户说过保持原样（job.json 的 keep_as_is），按原稿留空了。" if keep else
+                   "。先排除角色标错：已有 Word 时打开 mapping.json，看原稿里对应的文字是不是被标成了 body 或别的角色"
+                   "（例如摘要正文应为 abstract_zh，参考文献条目应为 reference），改对后重新 run。"
+                   + ("可能是这几段：" + "；".join(candidates) + "。" if candidates else "")
+                   + "原稿本来就没有这部分时要补全（只排版也要补）：摘要和关键词根据正文起草，参考文献只补联网查到、"
+                   "用 refs 核实通过的真实文献；补的内容写进 job.json 的 corrections（content.json 时直接写进 content.json"
+                   "并在 corrections 登记），交付时逐条告诉用户。"),
             )
+    length_check(doc, reverse, warn if keep else err, keep)
     for i, img in enumerate(doc.inline_shapes):
         if i == 0 and has_cover:
             continue
@@ -532,6 +1024,10 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         "inline_images": len(doc.inline_shapes),
         "toc_unresolved": len(unresolved),
     }
+    # One cause, one issue: a heading set as body is a ROLE_MISMATCH and a HEADING_LEVEL; the
+    # latter also names the level, so it stays.
+    leveled = {e["message"].split(":")[0] for e in errors if e["code"] == "HEADING_LEVEL"}
+    errors[:] = [e for e in errors if not (e["code"] == "ROLE_MISMATCH" and e["message"].split(":")[0] in leveled)]
     return {
         "passed": not errors,
         "document_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
@@ -541,6 +1037,45 @@ def _check(path, final=False, intake_path=None, toc_report=None, validation_scop
         "validation_scope": validation_scope,
         "fully_validated": False,
     }
+
+
+def _keep_as_is(intake_path):
+    """job.json "keep_as_is": the user's words for leaving a part empty or a length off-limit."""
+    job = Path(intake_path).parent / "job.json" if intake_path else None
+    if not job or not job.is_file():
+        return None
+    try:
+        value = json.loads(job.read_text(encoding="utf-8")).get("keep_as_is")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def length_check(doc, reverse, report, keep):
+    """The school's limits: paper title within 24 characters, Chinese abstract 150-300 (Word's count)."""
+    from audit_helpers import lengths, word_count
+
+    limits = lengths()
+    by_role = lambda role: [(i, p) for i, p in enumerate(doc.paragraphs) if reverse.get(p.style.name) == role and p.text.strip()]
+    kept = "用户说过保持原样（job.json 的 keep_as_is），按原稿保留了。" if keep else None
+    titles = by_role("title_zh")
+    title = titles[0][1].text.strip() if titles else (doc.core_properties.title or "").strip()
+    count = word_count(title)
+    if title and count > limits["title_zh_max"]:
+        where = f"p{titles[0][0]}: " if titles else ""
+        report("TITLE_TOO_LONG", f"{where}论文题目“{title}”有 {count} 字，学校要求 {limits['title_zh_max']} 字以内。" + (kept or
+               "只排版也要改：保留原意精简到 24 字以内（去掉“关于”“浅谈”“的研究”之类可省的字），封面的 job.json info.title_zh "
+               "和摘要页题目一起改；已有 Word 时原稿题目段写进 job.json 的 corrections（part 为 title），交付时告诉用户原题和新题。"))
+    abstract = by_role("abstract_zh")
+    count = sum(word_count(p.text) for _, p in abstract)
+    low, high = limits["abstract_zh"]
+    if abstract and not low <= count <= high:
+        short = count < low
+        report("ABSTRACT_LENGTH", f"p{abstract[0][0]}: 中文摘要有 {count} 字，学校要求 {low}～{high} 字。" + (kept or (
+               ("要补写（只排版也要）：根据正文补上研究方法、主要结论等正文里已有的内容，" if short else
+                "要精简（只排版也要）：保留研究目的、方法、结论，删去背景铺垫和重复的话，")
+               + f"改到 {low}～{high} 字；已有 Word 时把整段原文和改后的写进 job.json 的 corrections（part 为 abstract），"
+               "content.json 时直接改 abstract 并在 corrections 登记，交付时告诉用户。")))
 
 
 def check(path, final=False, intake_path=None, toc_report=None, validation_scope="full"):

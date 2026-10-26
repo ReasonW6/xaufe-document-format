@@ -12,6 +12,27 @@ from table_layout import walk_tables, raw_rows, cell_margin
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def page_contract(template, request=None):
+    """Page box, margins and header/footer distances from the independent baseline plus the user's
+    page_twips; a header or page numbers added to B without a distance get A's distances."""
+    data = json.loads((ROOT / "assets/checks/audit-baseline.json").read_text(encoding="utf-8"))["pages"]
+    request = request or {}
+    page = dict(data[template])
+    asked = request.get("page_twips") or {}
+    page.update(asked)
+    added = data["added_header_or_page_numbers_distance"]
+    if (request.get("header") or {}).get("enabled") is True and "header" not in asked and page["header"] < 200:
+        page["header"] = added["header"]
+    if request.get("footer_page_numbers") and "footer" not in asked and page["footer"] < 200:
+        page["footer"] = added["footer"]
+    room = data["narrowed_margin"]
+    for side, distance in (("top", "header"), ("bottom", "footer")):
+        if side in asked and distance not in asked and page[distance] >= 200 \
+                and page[distance] + room["line_room"] > page[side]:
+            page[distance] = max(room["minimum_distance"], page[side] - room["line_room"])
+    return page
+
+
 def contract(template, request=None):
     data = json.loads((ROOT / "assets/checks/audit-baseline.json").read_text(encoding="utf-8"))
     result = deepcopy(data["roles"])
@@ -131,6 +152,8 @@ def paragraph_check(p, role, label, want, err, warn):
             # A table caption must stay with its following table; a bare figure has no caption.
             if role == "caption" and tag == "keepNext":
                 nxt = p._p.getnext()
+                if nxt is not None and nxt.xpath('./w:pPr/w:pStyle[@w:val="XAUFETableUnit"]'):
+                    nxt = nxt.getnext()  # caption, unit line, table: all three stay together
                 value = "1" if nxt is not None and nxt.tag == qn("w:tbl") else "0"
             if role == "figure" and tag == "keepNext":
                 nxt = p._p.getnext()
@@ -140,6 +163,9 @@ def paragraph_check(p, role, label, want, err, warn):
                     or not nxt.xpath('./w:pPr/w:pStyle[@w:val="XAUFECaption"]')
                 ):
                     value = "0"
+            # A body paragraph holding a long URL is set flush left so the line before it is not spread.
+            if role == "body" and tag == "jc" and value == "both" and re.search(r"[!-~]{40,}", visible(p)):
+                value = "left"
             if got != value:
                 err("PARAGRAPH", f"{label}: {tag}/{key}={got!r}，应为{value!r}。")
         # Extra properties can override an otherwise correct indent or spacing.
@@ -193,8 +219,16 @@ def paragraph_check(p, role, label, want, err, warn):
             )
 
 
-def run_check(p, role, label, want, err):
+# Roles whose weight the template fixes: a bold run here is a format error, not emphasis.
+FIXED_WEIGHT = {"h1", "h2", "h3", "h4", "preface", "reference_title", "caption", "title_zh", "title_en",
+                "abstract_label_zh", "abstract_label_en", "toc_title", "toc1", "toc2", "toc3", "toc4", "header"}
+# Running text may bold a few words, but a wholly bold paragraph is almost always a stray format.
+RUNNING_TEXT = {"body", "reference", "abstract_zh", "abstract_en", "code"}
+
+
+def run_check(p, role, label, want, err, warn=None):
     offset = 0
+    bold_runs = plain_runs = 0
     match = LABEL.match(visible(p)) if role.startswith("keywords_") else None
     for ri, r in enumerate(p._p.xpath(".//w:r")):
         text = "".join(r.xpath("./w:t/text()"))
@@ -221,20 +255,43 @@ def run_check(p, role, label, want, err):
         fonts = props["fonts"]
         for attr, code in [("eastAsia", "FONT_CN"), ("ascii", "FONT_EN"), ("hAnsi", "FONT_EN")]:
             if fonts.get(attr) != ft[attr] or fonts.get(attr + "Theme"):
-                err(code, f"{label}/r{ri}: 有效{attr}字体不是{ft[attr]}。")
+                err(code, f"{label}/r{ri}: 有效{attr}字体={fonts.get(attr) or fonts.get(attr + 'Theme')}，应为{ft[attr]}。")
         if ft["bold_required"] and not props.get("b", False):
-            err("FONT_BOLD", f"{label}/r{ri}: 要求加粗。")
+            err("FONT_BOLD", f"{label}/r{ri}: 加粗=否，应为是（要求加粗）。")
         if ft.get("bold_exact") and props.get("b", False) != ft["bold_required"]:
-            err("FONT_BOLD", f"{label}/r{ri}: 不符合用户明确的加粗开关。")
+            err("FONT_BOLD", f"{label}/r{ri}: 加粗={'是' if props.get('b', False) else '否'}，应为{'是' if ft['bold_required'] else '否'}（用户明确的加粗开关）。")
+        elif role in FIXED_WEIGHT and not ft["bold_required"] and props.get("b", False):
+            err("FONT_BOLD", f"{label}/r{ri}: 加粗=是，应为否（模板这一级不加粗）。")
+        if text.strip():
+            bold_runs, plain_runs = bold_runs + bool(props.get("b", False)), plain_runs + (not props.get("b", False))
         if props.get("vanish") or props.get("webHidden") or props.get("specVanish"):
             err("HIDDEN_TEXT", f"{label}/r{ri}: 存在隐藏正文。")
+        rpr = r.find(qn("w:rPr"))
+        def shown(tag):
+            node = rpr.find(qn("w:" + tag)) if rpr is not None else None
+            if node is None:
+                return False
+            if tag == "shd":  # a clear pattern still paints its fill colour
+                return node.get(qn("w:val")) not in ("clear", "nil") or (node.get(qn("w:fill")) or "auto").upper() not in ("AUTO", "FFFFFF")
+            return node.get(qn("w:val")) not in ("none", "0", "false")
+
+        looks = [name for tag, name in (("highlight", "高亮"), ("shd", "底纹"), ("emboss", "阳文"), ("imprint", "阴文"),
+                                        ("outline", "空心"), ("shadow", "阴影"), ("effect", "动态效果")) if shown(tag)]
+        if looks:
+            err("FONT_DECORATION", f"{label}/r{ri}: 文字带{'、'.join(looks)}，模板里没有这种格式。")
+        marks = [name for key, name in (("strike", "删除线"), ("dstrike", "双删除线"), ("caps", "全部大写"),
+                                        ("smallCaps", "小型大写")) if props.get(key)]
+        if rpr is not None and rpr.find(qn("w:em")) is not None and rpr.find(qn("w:em")).get(qn("w:val")) != "none":
+            marks.append("着重号")
+        if marks and warn:
+            warn("FONT_MARKS", f"{label}/r{ri}: “{text[:20]}”带{'、'.join(marks)}，是原稿里的格式，成品保留了原样（模板没有这种格式）。")
         for attr, default in [("w", "100"), ("spacing", "0"), ("position", "0")]:
             if props.get(attr, default) != default:
                 err("FONT_GEOMETRY", f"{label}/r{ri}: 字形宽度/间距/基线偏移{attr}未归一。")
         if props.get("color", "000000").upper() not in (
             {"000000", "AUTO"} if ft.get("color", "000000") == "000000" else {ft["color"]}
         ):
-            err("FONT_COLOR", f"{label}/r{ri}: 文字颜色不符合本次要求。")
+            err("FONT_COLOR", f"{label}/r{ri}: 文字颜色={props.get('color', '000000')}，应为{ft.get('color', '000000')}。")
         if "italic" in ft and (
             props.get("i", False) != ft["italic"] or props.get("iCs", False) != ft["italic"]
         ):
@@ -246,6 +303,55 @@ def run_check(p, role, label, want, err):
             k.split("}")[-1] in ("themeColor", "themeTint", "themeShade") for k in color.attrib
         ):
             err("FONT_COLOR", f"{label}/r{ri}: 主题色仍可能覆盖黑色。")
+    if (warn and role in RUNNING_TEXT and bold_runs and not plain_runs and not want["font"].get("bold_exact")
+            and len(visible(p).strip()) > 20):
+        warn("FONT_BOLD_PARAGRAPH", f"{label}: 整段都是加粗，模板正文不加粗（只强调个别词可以）。")
+
+
+# 三线表 (user rule 2026-10-26): top and bottom 1.5 pt (sz 12), under the header 0.25 pt (sz 2),
+# no vertical rules and no other horizontal rules.  Written here from the rule, not from table_layout.
+OUTER_RULE, HEADER_RULE = "12", "2"
+
+
+def _visible(edge):
+    return edge is not None and edge.get(qn("w:val")) not in (None, "nil", "none")
+
+
+MIN_PADDING = 80  # twips; Word's usual cell margin is 108
+
+
+def three_line_check(table, label, err):
+    where = f"{label}（第 {int(label[1:]) + 1} 个表格）"
+    borders = table._tbl.tblPr.find(qn("w:tblBorders"))
+    edges = {e: borders.find(qn("w:" + e)) if borders is not None else None
+             for e in ("top", "bottom", "left", "right", "insideH", "insideV")}
+    for e in ("top", "bottom"):
+        if not _visible(edges[e]) or edges[e].get(qn("w:sz")) != OUTER_RULE:
+            got = f"{int(edges[e].get(qn('w:sz'), '0')) / 8:g} 磅" if _visible(edges[e]) else "没有"
+            err("TABLE_RULES", f"{where}: {'顶线' if e == 'top' else '底线'}应为 1.5 磅，实际{got}。")
+    for e in ("left", "right", "insideH", "insideV"):
+        if _visible(edges[e]):
+            err("TABLE_RULES", f"{where}: 三线表不设竖线和其他横线，表格还有{ {'left': '左边框', 'right': '右边框', 'insideH': '内部横线', 'insideV': '内部竖线'}[e] }。")
+    mar = table._tbl.tblPr.find(qn("w:tblCellMar"))
+    for side in ("left", "right"):
+        edge = mar.find(qn("w:" + side)) if mar is not None else None
+        if edge is None or int(edge.get(qn("w:w"), "0")) < MIN_PADDING:
+            err("TABLE_PADDING", f"{where}: 单元格{'左' if side == 'left' else '右'}边没有留白（应约 0.19 厘米），文字会贴着表格边缘。")
+            break
+    rows = table._tbl.tr_lst
+    marked = [i for i, tr in enumerate(rows) if tr.xpath('./w:trPr/w:tblHeader[not(@w:val="0") and not(@w:val="false")]')]
+    header = max(marked or [0])
+    for ri, tr in enumerate(rows):
+        for tc in tr.tc_lst:
+            sides = {e.tag.split("}")[1]: e for e in tc.xpath("./w:tcPr/w:tcBorders/*")}
+            for side, edge in sides.items():
+                wanted = ri == header and side == "bottom"
+                if _visible(edge) and not wanted:
+                    err("TABLE_RULES", f"{where} 第 {ri + 1} 行: 单元格自带{side}边框，三线表只在表头下有一条线。")
+                    return
+            if ri == header and (not _visible(sides.get("bottom")) or sides["bottom"].get(qn("w:sz")) != HEADER_RULE):
+                err("TABLE_RULES", f"{where}: 表头下面的分隔线应为 0.25 磅。")
+                return
 
 
 def tables_check(doc, width, err):
@@ -262,6 +368,8 @@ def tables_check(doc, width, err):
                 if total > available:
                     err("TABLE_WIDTH", f"{label}: {total}twip超过可用{available}twip。")
                 pp = table._tbl.tblPr
+                if "/" not in label:
+                    three_line_check(table, label, err)
                 tw = pp.find(qn("w:tblW"))
                 if tw is None or tw.get(qn("w:type")) != "dxa" or tw.get(qn("w:w")) != str(total):
                     err("TABLE_WIDTH", label + ": 表格首选宽度与网格宽度不一致。")
@@ -433,3 +541,16 @@ def toc_proof_check(path, entries, vv, final, err, warn, proof_path=None):
             )
     except (ValueError, KeyError, TypeError, OSError) as exc:
         (err if final else warn)("TOC_PROOF_STALE", "目录验证证据无效：" + str(exc))
+
+
+CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿　-〿＀-￯‘-‟…—·]")
+
+
+def word_count(text):
+    """Word's 字数统计: each CJK character or full-width mark counts 1, each other run without spaces counts 1."""
+    text = text or ""
+    return len(CJK.findall(text)) + len(CJK.sub(" ", text).split())
+
+
+def lengths():
+    return json.loads((ROOT / "assets/checks/audit-baseline.json").read_text(encoding="utf-8"))["lengths"]

@@ -87,11 +87,85 @@ def resize_inline(p, max_width_twips, max_height_twips):
                 transform.set("cy", str(y))
 
 
-def fit_table(table, max_width, style_paragraph, *, repeat_header=False, max_height=13958):
+# Three-line table (三线表): top and bottom rules 1.5 pt, the rule under the header row 0.25 pt,
+# nothing else.  Border sizes are in eighths of a point.
+RULE_OUTER, RULE_HEADER = 12, 2
+
+
+def header_rows(table):
+    """Rows marked as repeating headers, or else the first row."""
+    marked = [i for i, tr in enumerate(table._tbl.tr_lst)
+              if tr.xpath('./w:trPr/w:tblHeader[not(@w:val="0") and not(@w:val="false")]')]
+    return marked or [0]
+
+
+def three_line(table):
+    pp = table._tbl.tblPr
+    for old in pp.findall(qn("w:tblBorders")):
+        pp.remove(old)
+    borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        rule = OxmlElement("w:" + edge)
+        if edge in ("top", "bottom"):
+            for key, val in (("val", "single"), ("sz", RULE_OUTER), ("space", 0), ("color", "000000")):
+                rule.set(qn("w:" + key), str(val))
+        else:
+            rule.set(qn("w:val"), "nil")
+        borders.append(rule)
+    # Schema order: tblBorders comes after tblW/jc/tblCellSpacing/tblInd.
+    anchor = next((pp.find(qn(t)) for t in ("w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook") if pp.find(qn(t)) is not None), None)
+    if anchor is not None:
+        anchor.addprevious(borders)
+    else:
+        pp.append(borders)
+    last_header = max(header_rows(table))
+    for ri, tr in enumerate(table._tbl.tr_lst):
+        for tc in tr.tc_lst:
+            tcpr = tc.get_or_add_tcPr()
+            for old in tcpr.findall(qn("w:tcBorders")):
+                tcpr.remove(old)
+            if ri == last_header:
+                cell_borders = OxmlElement("w:tcBorders")
+                bottom = OxmlElement("w:bottom")
+                for key, val in (("val", "single"), ("sz", RULE_HEADER), ("space", 0), ("color", "000000")):
+                    bottom.set(qn("w:" + key), str(val))
+                cell_borders.append(bottom)
+                after = next((tcpr.find(qn(t)) for t in ("w:shd", "w:noWrap", "w:tcMar", "w:textDirection", "w:tcFitText",
+                                                          "w:vAlign", "w:hideMark") if tcpr.find(qn(t)) is not None), None)
+                if after is not None:
+                    after.addprevious(cell_borders)
+                else:
+                    tcpr.append(cell_borders)
+
+
+CELL_PADDING = 108  # Word's usual left/right cell margin; B's master has no table style that sets one
+
+
+def pad(table):
+    """Explicit left/right cell margins, so text never touches the rules in any template or office suite."""
+    pp = table._tbl.tblPr
+    for old in pp.findall(qn("w:tblCellMar")):
+        pp.remove(old)
+    mar = OxmlElement("w:tblCellMar")
+    for side, width in (("top", 0), ("left", CELL_PADDING), ("bottom", 0), ("right", CELL_PADDING)):
+        setel(mar, side, w=width, type="dxa")
+    look = pp.find(qn("w:tblLook"))
+    if look is not None:
+        look.addprevious(mar)
+    else:
+        pp.append(mar)
+    for tc in table._tbl.iter(qn("w:tc")):
+        if tc.getparent().getparent() is table._tbl:  # this table's own cells, not a nested table's
+            for old in tc.xpath("./w:tcPr/w:tcMar"):
+                old.getparent().remove(old)
+
+
+def fit_table(table, max_width, style_paragraph, *, repeat_header=False, max_height=13958, top_level=True):
     if max_width < 426:
         raise ValueError("表格可用宽度不足以容纳五号文字及边距；不能擅自缩小字号。")
     if table._tbl.xpath("./w:tblPr/w:tblpPr"):
         raise ValueError("浮动表格需专门核对锚点；本路径只处理行内表格。")
+    pad(table)
     rows = list(raw_rows(table))
     widths = [int(c.get(qn("w:w"), "0")) for c in table._tbl.tblGrid.gridCol_lst]
     if not widths or min(widths) <= 0:
@@ -179,7 +253,9 @@ def fit_table(table, max_width, style_paragraph, *, repeat_header=False, max_hei
                         after=0,
                     )
             for nested in cell.tables:
-                fit_table(nested, available, style_paragraph, max_height=max_height)
+                fit_table(nested, available, style_paragraph, max_height=max_height, top_level=False)
+    if top_level:
+        three_line(table)
     return {"before_twips": old_total, "after_twips": target, "columns": len(widths)}
 
 

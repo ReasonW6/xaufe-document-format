@@ -18,9 +18,9 @@ class CaptionFlow(Fixture):
                 t.cell(1, 0).text = "001"
                 out, result, _, _ = self.restyle(d, template, roles={"p0": "h1", "p1": "caption"})
                 self.assertPass(result)
-                self.assertEqual(
-                    paragraph_properties(out.paragraphs[1], "keepNext").get("val"), "1"
-                )
+                caption = next(p for p in out.paragraphs if p.text == "表1 合成数据")
+                self.assertEqual(paragraph_properties(caption, "keepNext").get("val"), "1")
+                self.assertEqual(caption._p.getprevious().xpath("string(.)"), "")  # a blank line above the table group
 
     def test_standalone_caption_does_not_bind_unrelated_prose(self):
         d = Document()
@@ -144,22 +144,21 @@ class LongCoverLayout(Fixture):
         return out, state
 
     def test_green_long_cover_continuation_aligns_to_title(self):
-        out, state = self.make("A", "校园自习空间预约与服务质量分析系统的设计与排版测试")
+        out, state = self.make("A", "校园自习空间预约与服务质量分析系统设计与排版测试")
         self.assertPass(check(out, intake_path=state))
         ind = Document(out).paragraphs[5]._p.pPr.find(qn("w:ind"))
         self.assertEqual(
             dict(ind.attrib), {qn("w:left"): "2508", qn("w:right"): "0", qn("w:hanging"): "1800"}
         )
 
-    def test_red_long_cover_keeps_original_indents(self):
-        out, state = self.make("B", "校园自习空间预约与服务质量分析系统的设计与排版测试")
+    def test_red_long_cover_continuation_aligns_to_title(self):
+        out, state = self.make("B", "校园自习空间预约与服务质量分析系统设计与排版测试")
         self.assertPass(check(out, intake_path=state))
-        d = Document(out)
-        baseline = Document(E.ROOT / E.SPEC["master_file"])
-        self.assertEqual(
-            dict(d.paragraphs[5]._p.pPr.find(qn("w:ind")).attrib),
-            dict(baseline.paragraphs[5]._p.pPr.find(qn("w:ind")).attrib),
-        )
+        p = Document(out).paragraphs[5]._p.pPr
+        ind = dict(p.find(qn("w:ind")).attrib)
+        self.assertEqual(ind[qn("w:right")], "0")
+        self.assertGreater(int(ind[qn("w:hanging")]), 0)
+        self.assertEqual(p.find(qn("w:jc")).get(qn("w:val")), "left")
 
     def test_short_green_cover_keeps_original_indents(self):
         out, state = self.make("A", "合成短题目")
@@ -172,7 +171,7 @@ class LongCoverLayout(Fixture):
         )
 
     def test_tampered_long_cover_indent_rejected(self):
-        out, state = self.make("A", "校园自习空间预约与服务质量分析系统的设计与排版测试")
+        out, state = self.make("A", "校园自习空间预约与服务质量分析系统设计与排版测试")
         d = Document(out)
         d.paragraphs[5]._p.pPr.find(qn("w:ind")).set(qn("w:left"), "999")
         d.save(out)
@@ -186,3 +185,20 @@ class LongCoverLayout(Fixture):
         d.paragraphs[6].paragraph_format.line_spacing = Pt(1)
         d.save(out)
         self.assertCode(check(out, intake_path=state), "COVER_LAYOUT")
+
+
+class LongLines(Fixture):
+    def test_paragraph_with_a_long_url_is_flush_left_not_stretched(self):
+        url = "https://example.org/a/very/long/path/that/keeps/going/without/any/space.html"
+        path, state = self.build(blocks=[{"type": "paragraph", "text": "长链接示例：" + url},
+                                         {"type": "paragraph", "text": "普通正文。"}])
+        self.assertPass(check(path, intake_path=state))
+        jc = {p.text: p.alignment for p in Document(path).paragraphs if p.text.startswith(("长链接", "普通正文"))}
+        self.assertEqual(str(jc["长链接示例：" + url]), "LEFT (0)")
+        self.assertIsNone(jc["普通正文。"])  # the style's justification
+
+    def test_each_code_line_is_its_own_paragraph(self):
+        path, state = self.build(blocks=[{"type": "code", "text": "def f(a):\n    return a"}])
+        self.assertPass(check(path, intake_path=state))
+        code = [p.text for p in Document(path).paragraphs if p.style.name == E.ROLES["code"]]
+        self.assertEqual(code, ["def f(a):", "    return a"])

@@ -18,6 +18,7 @@ from check_format import check
 from toc_format import enforce
 import office_discovery as O
 import office_backend as B
+from fixtures import ABSTRACT
 
 
 def sha(p):
@@ -32,6 +33,11 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.d = Path(self.tmp.name)
+        # Synthetic renders below write no PDF; the rendered-page audit has its own tests
+        # (tests/test_render_audit.py) and runs for real in tests/run_acceptance.py.
+        audit = patch("delivery.audit_rendered", return_value={"passed": True, "errors": [], "warnings": [], "pages": 1, "fonts": {}})
+        audit.start()
+        self.addCleanup(audit.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -70,7 +76,7 @@ class Base(unittest.TestCase):
         }
         if paper:
             data.update(
-                abstract_zh="这是合成摘要。",
+                abstract_zh=ABSTRACT,
                 keywords_zh=["合成数据", "格式检查"],
                 references=["[1] 虚构参考文献，仅测试排版。"],
             )
@@ -202,7 +208,7 @@ class Customizations(Base):
 
     def test_custom_body_font_and_size(self):
         out, state = self.build(
-            request={"styles": {"body": {"cn": "仿宋", "size": 12, "line": 440}}}
+            request={"styles": {"body": {"cn": "仿宋", "size": 12, "line": 440, "line_rule": "exact"}}}
         )
         self.assertPass(check(out, intake_path=state))
 
@@ -274,6 +280,15 @@ class Customizations(Base):
         out, state = self.build(request={"page_twips": {"left": 1600, "right": 1600}})
         self.assertPass(check(out, intake_path=state))
         self.assertEqual(Document(out).paragraphs[14]._p.xpath("./w:pPr/w:framePr/@w:w"), ["8706"])
+
+    def test_narrow_column_pulls_the_cover_field_underlines_in(self):
+        out, state = self.build(request={"page_twips": {"left": 2500, "right": 2500}})
+        self.assertPass(check(out, intake_path=state))
+        doc = Document(out)
+        width = 11906 - 2500 - 2500
+        field = doc.paragraphs[E.SPEC["cover"]["fields"]["student_name"]]
+        tabs = [int(x) for x in field._p.xpath("./w:pPr/w:tabs/w:tab/@w:pos")]
+        self.assertLessEqual(max(tabs), width)
 
     def test_requires_true_request_evidence(self):
         state = self.d / "intake.json"
@@ -571,6 +586,32 @@ class DeliveryGuards(Base):
         with self.assertRaisesRegex(ValueError, "第 1 页"):
             self.review(w, r, pages={"1": "请填写：第1页实际看到的情况"})
 
+    def test_pages_may_be_reviewed_in_ranges_but_each_page_once(self):
+        def three_pages(docx, outdir):
+            outdir = Path(outdir)
+            outdir.mkdir(exist_ok=True, parents=True)
+            pages = []
+            for n in (1, 2, 3):
+                png = outdir / f"page-00{n}.png"
+                png.write_bytes(b"unit-test-only-not-real-render-%d" % n)
+                pages.append({"page": n, "png": png.name, "png_sha256": sha(png)})
+            result = {"source_sha256": sha(docx), "pages": pages, "visual_review": "pending"}
+            D.write_json(outdir / "render-report.json", result)
+            return result
+
+        source, state = self.build(paper=False, cover=False)
+        info = D.create(self.d / "output/ranges.docx", parent=self.d)
+        with patch("delivery.render", side_effect=three_pages):
+            r = D.prepare(info["workspace"], source, state)
+        w = Path(info["workspace"])
+        with self.assertRaisesRegex(ValueError, "写了两次"):
+            self.review(w, r, pages={"1": "单元测试合成记录：封面", "1-3": "单元测试合成记录：正文"})
+        with self.assertRaisesRegex(ValueError, "还缺第 3 页"):
+            self.review(w, r, pages={"1-2": "单元测试合成记录：前两页"})
+        with self.assertRaisesRegex(ValueError, "不是页码"):
+            self.review(w, r, pages={"3-1": "单元测试合成记录：倒着写"})
+        self.review(w, r, pages={"1": "单元测试合成记录：封面", "2-3": "单元测试合成记录：正文两页无异常"})
+
     def test_unknown_review_key_rejected(self):
         w, src, s, r = self.job()
         with self.assertRaises(ValueError):
@@ -595,6 +636,26 @@ class DeliveryGuards(Base):
         self.assertTrue(src.exists())
         self.assertTrue(s.exists())
         self.assertEqual(len(list((self.d / "output").iterdir())), 1)
+
+    def test_notice_names_the_renderer_when_it_is_not_word(self):
+        base = {"review": {"visual_review": "done"}, "validation_scope": "full"}
+        self.assertEqual(D.user_notice(dict(base, renderer="word", has_toc=True)), "")
+        lo = D.user_notice(dict(base, renderer="libreoffice", has_toc=True))
+        self.assertIn("LibreOffice", lo)
+        self.assertIn("更新域", lo)
+        self.assertNotIn("更新域", D.user_notice(dict(base, renderer="wps", has_toc=False)))
+        self.assertIn("WPS", D.user_notice(dict(base, renderer="wps", has_toc=False)))
+
+    def test_adopted_size_deviation_reads_as_chinese_sizes(self):
+        text = D._plain_deviation({"code": "FONT_SIZE", "expected": "21", "actual": "28半磅", "where": {"text": "一、引言"}})
+        self.assertIn("五号（10.5 磅）", text)
+        self.assertIn("四号（14 磅）", text)
+        # Paragraph properties in words, not OOXML values.
+        text = D._plain_deviation({"code": "PARAGRAPH", "message": "成品第3段：jc/val='center'，应为'both'。",
+                                   "expected": "'both'", "actual": "'center'", "where": {"text": "合成正文"}})
+        self.assertIn("对齐和模板默认不同（模板：两端对齐；现在：居中）", text)
+        self.assertEqual(D._readable("spacing/line", "'360'"), "1.5 倍（固定值时 18 磅）")
+        self.assertEqual(D._readable("ind/firstLineChars", "'200'"), "2 字符")
 
     def test_does_not_delete_unrelated_output_files(self):
         w, src, s, r = self.job()
@@ -752,6 +813,76 @@ class ExtraGuards(Base):
 
         with patch("office_backend.ps_run", side_effect=run):
             B._word(src, pdf, {}, self.d)
+
+
+
+class SecondRenderer(unittest.TestCase):
+    """Checked in LibreOffice while Word is installed too: the page count Word gets is compared."""
+
+    def test_a_different_page_count_in_the_other_engine_is_reported(self):
+        import pymupdf as fitz
+        from unittest.mock import patch
+        from docx import Document as New
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            final = folder / "final.docx"
+            New().save(final)
+
+            def pdf(path, pages):
+                doc = fitz.open()
+                for _ in range(pages):
+                    doc.new_page()
+                doc.save(path)
+
+            pdf(folder / "first.pdf", 2)
+
+            def other(docx, target, used):
+                pdf(target, 3)
+                return {"engine": "word"}
+
+            with patch("office_backend.second_opinion", side_effect=other):
+                found = D.renderer_difference(final, folder / "first.pdf", folder / "second.pdf", "libreoffice")
+                self.assertIn("LibreOffice 排出 2 页，Word 排出 3 页", found["message"])
+                self.assertIn("Word 排出 3 页", D.tell_user([found])[0])
+                # Checked in Word already: nothing to compare against.
+                self.assertIsNone(D.renderer_difference(final, folder / "first.pdf", folder / "second.pdf", "word"))
+            with patch("office_backend.second_opinion", return_value=None):
+                self.assertIsNone(D.renderer_difference(final, folder / "first.pdf", folder / "second.pdf", "libreoffice"))
+
+
+class TellUser(unittest.TestCase):
+    """What the user is told comes as plain sentences, never instructions meant for the agent."""
+
+    def test_each_kind_reads_as_one_whole_sentence_for_the_user(self):
+        from delivery import tell_user
+
+        warnings = [
+            {"code": "RENDERER_FALLBACK", "message": "指定用 Word 渲染，但它这次用不了，实际是用 LibreOffice 分页和检查的。"
+                                                     "用户点名要某个软件时要告诉用户；能修好那个软件就修好后重新 run。"},
+            {"code": "REF_SUPPORT_UNCONFIRMED", "message": "这些引用的原文摘录没能在读得到的原文里对上，支撑关系只有你的判断："
+                                                           "[2]（文献核对：已验证）引用句“快速排序平均更快”／摘录“quicksort is 37% faster on aver”（NOT_FOUND）；"
+                                                           "[4]（文献核对：无法验证）引用句“合成句”／摘录“synthetic”（UNCHECKED）。逐条核对引用句和摘录。"},
+            {"code": "REF_CITATION_MISMATCH", "message": "这些引用号标的句子和对应文献看起来说的不是一回事，可能标错了序号：[3] “天气很好”。逐条核对。"},
+            {"code": "MARGIN_TOO_SMALL", "message": "页边距 left 只有 0.30 厘米：多数打印机印不到离纸边 0.5 厘米以内的地方。是用户要求的就在回复里提醒用户。"},
+            {"code": "STYLE_HARD_TO_READ", "message": "正文（body）的文字颜色是 FFFFFF，在白纸上几乎看不见。确认是用户要的就在回复里提醒用户。"},
+            {"code": "FONT_MARKS", "message": "p3/r0: “重要提示”带删除线，是原稿里的格式，成品保留了原样（模板没有这种格式）。"},
+            {"code": "HEADING_NUMBERING", "message": "标题“第一章 绪论”的编号和它的级别（h1）对不上：一级用“一、”。先看 mapping.json。"},
+            {"code": "ORIGINAL_PAGE_NUMBERS_DROPPED", "message": "原稿页脚有页码。要在回复里告诉用户；写 footer_page_numbers。"},
+            {"code": "ORIGINAL_HIGHLIGHT_REMOVED", "message": "原稿里“待补数据”等 2 处文字带高亮或底纹，模板没有这种格式，成品里去掉了（文字没动）。要在回复里告诉用户。"},
+        ]
+        lines = tell_user(warnings)
+        self.assertEqual(len(lines), len(warnings))
+        for line in lines:
+            for internal in ("用户点名", "你的判断", "review.json", "mapping.json", "job.json", "NOT_FOUND", "(body)", "（body）", "重新 run"):
+                self.assertNotIn(internal, line)
+            self.assertTrue(line.endswith(("。", "）")), line)
+        self.assertIn("第 2 条文献确认真实存在", lines[1])
+        self.assertIn("第 4 条文献既没能核对是否真实存在", lines[1])
+        self.assertNotIn("4、", lines[1].split("确认真实存在")[0])
+        self.assertIn("Word 这次用不了", lines[0])
+        self.assertIn("0.30 厘米", lines[3])
+        self.assertIn("“待补数据”等2 处文字带的高亮或底纹", lines[-1])
 
 
 if __name__ == "__main__":

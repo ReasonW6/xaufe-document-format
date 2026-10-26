@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import intake as I
 import engine as E
 from check_format import check
+from fixtures import ABSTRACT
 
 
 def value(text):
@@ -104,7 +105,7 @@ class InstructionClarity(unittest.TestCase):
         self.complete("A", {"english_abstract": False})
         with self.assertRaises(ValueError) as cm:
             self.build(self.sample(abstract_en="Synthetic abstract."))
-        self.assertIn("本次有效格式未启用", str(cm.exception))
+        self.assertIn("本次版式不含英文摘要", str(cm.exception))
         self.assertNotIn("红色模板", str(cm.exception))
 
     def test_b_enabled_english_is_accepted(self):
@@ -112,7 +113,7 @@ class InstructionClarity(unittest.TestCase):
         data = self.sample(
             mode="paper",
             metadata={"title_en": "Synthetic title"},
-            abstract_zh="合成摘要。",
+            abstract_zh=ABSTRACT,
             abstract_en="Synthetic abstract.",
             keywords_zh=["合成"],
             keywords_en=["synthetic"],

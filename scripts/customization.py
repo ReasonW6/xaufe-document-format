@@ -31,6 +31,8 @@ ROLE_STYLES = {
     "caption": "XAUFE Caption",
     "figure": "XAUFE Figure",
     "table_text": "XAUFE Table Text",
+    "table_note": "XAUFE Table Note",
+    "table_unit": "XAUFE Table Unit",
     "code": "XAUFE Code",
     "equation": "XAUFE Equation",
     "spacer": "XAUFE Spacer",
@@ -78,6 +80,7 @@ TOP_KEYS = {
     "cover_fonts",
     "keyword_labels",
     "heading_levels",
+    "heading_numbering",
 }
 
 
@@ -98,13 +101,77 @@ def number(value, lo, hi, name, integer=False):
         raise ValueError(f"{name}须是{lo}至{hi}之间的" + ("整数。" if integer else "数值。"))
 
 
-def validate_style(patch, *, cover=False):
+def unknown_key(path, key, allowed):
+    """“不认识的项” with the JSON path and the nearest valid key."""
+    import difflib
+
+    close = difflib.get_close_matches(str(key), sorted(allowed), n=1, cutoff=0.5)
+    if str(key).lower() in ("font", "fonts", "font_name", "family", "font_family") and {"cn", "latin"} <= set(allowed):
+        close = ["cn（中文字体）”或“latin（西文字体）"]
+    return ValueError(
+        f"job.json 的 {path} 里有不认识的项“{key}”" + (f"，是不是想写“{close[0]}”？" if close else "。")
+        + "可用的项：" + "、".join(sorted(allowed)) + "。写法见 references/job.md；"
+        "脚本确实不支持的要求按 references/special-cases.md 处理，不能忽略用户要求。"
+    )
+
+
+FONT_KEYS = {"cn", "latin", "size", "bold", "italic", "color", "underline"}
+
+
+def locate_format(request):
+    """Check the shape of job.json "format" first, so every error names its path (format.styles.h1.size)."""
+    if not isinstance(request, dict):
+        raise ValueError("job.json 的 format 必须是 JSON 对象（没有特别要求就写 {}）。")
+    for key in request:
+        if key not in TOP_KEYS:
+            raise unknown_key("format", key, TOP_KEYS)
+    sections = {
+        "styles": set(ROLE_STYLES) - {"cover"},
+        "header": {"enabled", "left", "right", "border"},
+        "page_twips": set(load_profile("A")["page_twips"]),
+        "cover_fonts": {"label", "title", "fields", "date", "course"},
+        "keyword_labels": {"zh", "en"},
+    }
+    for key, allowed in sections.items():
+        section = request.get(key)
+        if section is None:
+            continue
+        if not isinstance(section, dict):
+            raise ValueError(f"job.json 的 format.{key} 必须是 JSON 对象。")
+        for name, value in section.items():
+            if name not in allowed:
+                raise unknown_key(f"format.{key}", name, allowed)
+            if key in ("styles", "cover_fonts", "keyword_labels") and value is not None:
+                path = f"format.{key}.{name}"
+                if not isinstance(value, dict):
+                    raise ValueError(f"job.json 的 {path} 必须是 JSON 对象，例如 {{\"size\": 12}}。")
+                keys = STYLE_KEYS if key == "styles" else FONT_KEYS
+                for k in value:
+                    if k not in keys:
+                        raise unknown_key(path, k, keys)
+                try:
+                    validate_style({k: v for k, v in value.items() if v is not None}, cover=key != "styles", path=path)
+                except ValueError as exc:
+                    message = str(exc)
+                    raise ValueError(message if path in message else f"job.json 的 {path}：{message}") from exc
+            elif key == "page_twips" and value is not None:
+                number(value, 0, 50000, f"job.json 的 format.page_twips.{name}（单位 twip，1 厘米 = 567）", True)
+
+
+def validate_style(patch, *, cover=False, path=""):
     if not isinstance(patch, dict) or set(patch) - (
         {"cn", "latin", "size", "bold", "italic", "color", "underline"} if cover else STYLE_KEYS
     ):
         raise ValueError(
             "这个格式要求脚本不支持；用户要求仍有效，按 references/special-cases.md 的“脚本做不到的要求”处理，不能退回默认格式。"
         )
+    if not cover and "line" in patch and "line_rule" not in patch:
+        raise ValueError(f"job.json 的 {path or 'format.styles'} 写了 line，也要写 line_rule：倍数行距用 \"auto\"（line 是 240 的倍数，"
+                         "1.5 倍写 360），固定行距用 \"exact\"（line 是磅数×20，22 磅写 440）。只写 line 时同一个数字两种理解差很多。")
+    if not cover and isinstance(patch.get("line"), (int, float)) and 0 < patch["line"] < 20:
+        raise ValueError(f"job.json 的 {path or 'format.styles'}.line={patch['line']} 太小：不是倍数也不是磅数。"
+                         f"{patch['line']:g} 倍行距写 \"line\": {round(patch['line'] * 240)}, \"line_rule\": \"auto\"；"
+                         "固定行距写磅数×20（22 磅写 440）配 \"line_rule\": \"exact\"。")
     for key, val in patch.items():
         if key in ("cn", "latin"):
             if not isinstance(val, str) or not val.strip():
@@ -128,9 +195,9 @@ def validate_style(patch, *, cover=False):
             if val not in ("auto", "exact", "atLeast"):
                 raise ValueError("行距类型无效。")
         elif key == "size":
-            number(val, 1, 96, key)
+            number(val, 1, 96, f"job.json 的 {path}.size（磅）" if path else key)
         else:
-            number(val, 0, 50000, key, True)
+            number(val, 0, 50000, f"job.json 的 {path}.{key}" if path else key, True)
     if "first" in patch and "chars" in patch:
         raise ValueError("首行缩进不能同时指定绝对值和字符值。")
     if "left" in patch and "left_chars" in patch:
@@ -144,6 +211,7 @@ def validate_style(patch, *, cover=False):
 def effective_profile(template, request=None):
     spec = load_profile(template)
     request = deepcopy({} if request is None else request)
+    locate_format(request)
     if not isinstance(request, dict) or set(request) - TOP_KEYS:
         raise ValueError(
             "format 里有不认识的字段；只能用 references/job.md 列出的字段。脚本不支持的要求见 references/special-cases.md，不能忽略用户要求。"
@@ -188,14 +256,23 @@ def effective_profile(template, request=None):
     m = spec["page_twips"]
     width = m["width"] - m["left"] - m["right"]
     if width < 1200 or m["height"] - m["top"] - m["bottom"] < 2000:
-        raise ValueError("页面剩余空间不足，需重新安排布局，不能静默缩字。")
+        raise ValueError(f"job.json 的 format.page_twips 边距太大：左右边距 {m['left']}+{m['right']}、上下边距 {m['top']}+{m['bottom']} twip，"
+                         f"版心只剩宽 {width}、高 {m['height'] - m['top'] - m['bottom']} twip（至少要 1200×2000；1 厘米=567 twip）。"
+                         "按用户要求重新确定边距，不能靠缩小字号硬塞。")
     if spec["logo"]["width_emu"] > width * 635:
-        raise ValueError("Logo超过当前版心，请按用户要求确定等比尺寸。")
+        raise ValueError(f"校徽（Logo）宽 {spec['logo']['width_emu'] / 360000:.1f} 厘米，超过了当前版心宽 {width / 567:.1f} 厘米"
+                         f"（左右边距 {m['left']}+{m['right']} twip）。把 format.logo_width_cm 设成不超过 {width / 567:.1f}，"
+                         "或按用户要求调整边距；校徽会等比缩放。")
     styles = request.get("styles", {})
     if not isinstance(styles, dict) or set(styles) - (set(ROLE_STYLES) - {"cover"}):
         raise ValueError("未知段落角色。")
+    height = m["height"] - m["top"] - m["bottom"]
     for role, patch in styles.items():
         validate_style(patch)
+        for key in ("before", "after", "line"):
+            if isinstance(patch, dict) and isinstance(patch.get(key), (int, float)) and patch[key] > height:
+                raise ValueError(f"job.json 的 format.styles.{role}.{key}={patch[key]} 比整个版心还高（{height}，单位是磅×20）："
+                                 "一段的间距不可能超过一页，检查是不是单位写错了。")
         spec.setdefault("style_overrides", {}).setdefault(ROLE_STYLES[role], {}).update(patch)
     if "english_abstract" in request:
         enabled = request["english_abstract"]
@@ -244,6 +321,15 @@ def effective_profile(template, request=None):
     if header.get("enabled") is True and "header" not in pages and m["header"] < 200:
         m["header"] = load_profile("A")["page_twips"]["header"]
     spec["footer"]["page_numbers"] = request.get("footer_page_numbers", False)
+    # The same for page numbers: B's zero footer distance would print them at the paper edge.
+    if spec["footer"]["page_numbers"] and "footer" not in pages and m["footer"] < 200:
+        m["footer"] = load_profile("A")["page_twips"]["footer"]
+    # Narrowed top/bottom margins with the default header/footer distance: the header or page number
+    # would sit inside the text column, so the distance shrinks with the margin (never closer to the
+    # paper edge than printers reach).  A distance the user gave stays as it is.
+    for side, distance in (("top", "header"), ("bottom", "footer")):
+        if side in pages and distance not in pages and m[distance] >= 200 and m[distance] + 300 > m[side]:
+            m[distance] = max(280, m[side] - 300)
     if "cover_label" in request:
         spec["cover"]["document_label"] = request["cover_label"]
     if "cover_title_label" in request:
@@ -270,6 +356,8 @@ def effective_profile(template, request=None):
     if any(role in styles for role in ("h4", "toc4")) and levels != 4:
         raise ValueError("四级样式需要先明确heading_levels=4。")
     spec["heading_levels"] = levels
+    if request.get("heading_numbering", "template") not in ("template", "own"):
+        raise ValueError("heading_numbering只支持\"template\"或\"own\"；\"own\"表示用户确认原稿按自己的方式编号。")
     spec["toc"]["indents_twips"] = list(spec["toc"]["indents_twips"])
     if len(spec["toc"]["indents_twips"]) == 3:
         vals = spec["toc"]["indents_twips"]
@@ -408,6 +496,7 @@ def merge_request(current, patch):
     """
     if not isinstance(current, dict) or not isinstance(patch, dict):
         raise ValueError("格式差异必须为JSON对象。")
+    locate_format({k: v for k, v in patch.items() if v is not None})
     if set(patch) - TOP_KEYS:
         raise ValueError("未知格式差异字段。")
     dictionaries = {

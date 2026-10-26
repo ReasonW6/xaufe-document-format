@@ -333,7 +333,7 @@ class EnvironmentDecision(Base):
             patch("delivery.render", side_effect=failure),
             patch("office_backend.export_pdf", return_value={}),
         ):
-            with self.assertRaisesRegex(ValueError, "当前稿件导出失败"):
+            with self.assertRaisesRegex(ValueError, "导不出这份稿件"):
                 D.prepare(w, src, state, "SYNTHETIC no GUI")
 
     def test_all_exports_and_smoke_failed_note_allows_skip(self):

@@ -157,6 +157,27 @@ class MergeTests(Fixture):
         with self.assertRaises(ValueError):
             C.merge_request({}, {"cover_fonts": {"madeup": None}})
 
+    def test_independent_page_baseline_agrees_with_the_generator(self):
+        from audit_helpers import page_contract
+
+        for template in ("A", "B"):
+            for request in ({}, {"footer_page_numbers": True}, {"header": {"enabled": True}},
+                            {"page_twips": {"left": 1418, "right": 1418}},
+                            {"footer_page_numbers": True, "page_twips": {"footer": 300}},
+                            {"footer_page_numbers": True, "page_twips": {"top": 1000, "bottom": 1000}},
+                            {"page_twips": {"top": 300, "bottom": 300}},
+                            {"page_twips": {"bottom": 300, "footer": 992}}):
+                with self.subTest(template=template, request=request):
+                    self.assertEqual(page_contract(template, request), C.effective_profile(template, request)["page_twips"])
+        # Hand-checked values, not copied from layout.json.
+        self.assertEqual((page_contract("B")["left"], page_contract("B")["right"]), (1701, 1247))
+        self.assertEqual((page_contract("A")["left"], page_contract("A")["header"]), (1701, 851))
+        # A narrowed margin pulls the default header/footer distance in; one the user gave stays.
+        narrow = page_contract("A", {"page_twips": {"top": 1000, "bottom": 1000}})
+        self.assertEqual((narrow["header"], narrow["footer"]), (700, 700))
+        self.assertEqual(page_contract("A", {"page_twips": {"top": 300, "bottom": 300}})["footer"], 280)
+        self.assertEqual(page_contract("A", {"page_twips": {"bottom": 300, "footer": 992}})["footer"], 992)
+
     def test_label_multiturn_merge(self):
         a = {"keyword_labels": {"zh": {"size": 12, "italic": True}}}
         self.assertEqual(
@@ -378,6 +399,17 @@ class TypographyTests(Fixture):
             120,
         )
 
+    def test_added_page_numbers_get_a_printable_footer_distance(self):
+        # B has no footer, so its footer distance is 0: page numbers would sit at the paper edge.
+        self.assertEqual(
+            C.effective_profile("B", {"footer_page_numbers": True})["page_twips"]["footer"],
+            C.load_profile("A")["page_twips"]["footer"],
+        )
+        self.assertEqual(
+            C.effective_profile("B", {"footer_page_numbers": True, "page_twips": {"footer": 300}})["page_twips"]["footer"],
+            300,
+        )
+
     def test_default_red_header_distance_unchanged(self):
         self.assertEqual(
             C.effective_profile("B")["page_twips"]["header"],
@@ -547,6 +579,44 @@ class WPSTests(Fixture):
             result = B.export_pdf(source, target)
         self.assertEqual(result["engine"], "wps")
         self.assertTrue(target.is_file())
+
+    def test_libreoffice_keeps_home_so_user_fonts_are_found(self):
+        # ~/Library/Fonts (macOS) and ~/.fonts (Linux) are reached through HOME.
+        seen = {}
+
+        def run(cmd, **kw):
+            seen.update(kw["env"])
+            out = Path(cmd[cmd.index("--outdir") + 1])
+            (out / "a.pdf").write_bytes(b"%PDF-1.4 synthetic")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        source = self.root / "a.docx"
+        Document().save(source)
+        with tempfile.TemporaryDirectory(dir=self.root) as tmp, patch("office_backend.subprocess.run", side_effect=run):
+            B._lo(source, self.root / "a.pdf", {"path": "soffice"}, Path(tmp))
+        self.assertEqual(seen.get("HOME"), os.environ.get("HOME"))
+        self.assertNotIn(str(self.root), seen.get("XDG_CONFIG_HOME", ""))
+        self.assertTrue((self.root / "a.pdf").is_file())
+
+    def test_libreoffice_on_macos_is_told_where_fonts_are(self):
+        seen = {}
+
+        def run(cmd, **kw):
+            seen.update(kw["env"])
+            (Path(cmd[cmd.index("--outdir") + 1]) / "a.pdf").write_bytes(b"%PDF-1.4 synthetic")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        source = self.root / "a.docx"
+        Document().save(source)
+        with (
+            tempfile.TemporaryDirectory(dir=self.root) as tmp,
+            patch("office_backend.subprocess.run", side_effect=run),
+            patch("office_backend.sys.platform", "darwin"),
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            os.environ.pop("SAL_USE_VCLPLUGIN", None)
+            B._lo(source, self.root / "a.pdf", {"path": "soffice"}, Path(tmp))
+        self.assertEqual(seen["SAL_USE_VCLPLUGIN"], "osx")
 
     def test_invalid_pdf_backend_rejected(self):
         source = self.root / "a.docx"

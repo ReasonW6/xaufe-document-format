@@ -8,6 +8,8 @@ from docx.oxml.ns import qn
 
 # A blank the author typed after the colon belongs to the label and is kept.
 LABEL = re.compile(r"^(关键词\s*[:：]|Key\s*words\s*[:：])[ 　]*", re.I)
+# Punctuation typed between keywords (with any blanks around it).
+PUNCT = re.compile(r"[ 　]*[；;，,、][ 　]*")
 
 
 def visible(p):
@@ -64,6 +66,9 @@ def normalize(p, words=None):
             separators = [
                 (m.end() + matched.start(i), m.end() + matched.end(i)) for i in range(1, len(words))
             ]
+    elif PUNCT.search(value) and all(t.strip() for t in PUNCT.split(value)):
+        # "A；B；C" / "a; b": the template separates keywords by blanks, not punctuation.
+        separators = [(m.end() + x.start(), m.end() + x.end()) for x in PUNCT.finditer(value)]
     else:
         separators = [
             (m.end() + x.start(), m.end() + x.end()) for x in re.finditer(r" {2,}", value)
@@ -90,6 +95,7 @@ def normalize(p, words=None):
             "before": before,
             "after": expected,
             "allowed_change": "仅已识别的词间ASCII空格统一为3个，并去掉段末空白",
+            "punctuation": bool(PUNCT.search(before[m.end():])),
         }
     )
 

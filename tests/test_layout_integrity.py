@@ -24,6 +24,7 @@ from audit_helpers import toc_entries
 from keywords import normalize, visible
 from refresh_toc import logical_policy, update, verify_existing
 from render_preview import font_report
+from fixtures import ABSTRACT
 
 
 def candidate(value, source="user", **kwargs):
@@ -61,8 +62,10 @@ class Fixture(unittest.TestCase):
         I.resolve(p, {"metadata": data})
         return p
 
-    def build(self, template="A", paper=False, cover=False, blocks=None, extras=None):
+    def build(self, template="A", paper=False, cover=False, blocks=None, extras=None, request=None):
         state = self.state(template)
+        if request:
+            I.customize(state, request, "测试模拟用户要求")
         data = {
             "mode": "paper" if paper else "document",
             "cover": cover,
@@ -75,7 +78,7 @@ class Fixture(unittest.TestCase):
         }
         if paper:
             data.update(
-                abstract_zh="中文排版测试摘要。",
+                abstract_zh=ABSTRACT,
                 keywords_zh=["格式", "验证"],
                 references=["合成参考条目，仅作格式测试。"],
             )
@@ -276,11 +279,12 @@ class ParagraphRepairs(Fixture):
         self.assertEqual(ind["left"], "420")
         self.assertNotIn("leftChars", ind)
 
-    def test_reference_both_alignment(self):
+    def test_reference_left_alignment(self):
+        # Left, not justified: a long URL would otherwise stretch the line before it (seen in Word).
         for template in ("A", "B"):
             out, _ = self.build(template, paper=True)
             p = next(p for p in Document(out).paragraphs if p.style.name == "XAUFE Reference")
-            self.assertEqual(paragraph_properties(p, "jc")["val"], "both")
+            self.assertEqual(paragraph_properties(p, "jc")["val"], "left")
 
     def test_keyword_hanging_indents(self):
         out, _ = self.build(paper=True)
@@ -452,8 +456,16 @@ class ParagraphRepairs(Fixture):
         r, _, _ = self.mutate(change, cover=True)
         self.assertCode(r, "COVER_EFFECTIVE_FONT")
 
-    def test_unnumbered_heading_is_warning_not_content_rewrite(self):
+    def test_unnumbered_heading_gets_the_template_number(self):
         out, state = self.build(blocks=[{"type": "heading", "level": 1, "text": "系统设计"}])
+        r = check(out, intake_path=state)
+        self.assertPass(r)
+        self.assertNotIn("HEADING_NUMBERING", [w["code"] for w in r["warnings"]])
+        self.assertEqual(Document(out).paragraphs[0].text, "一、系统设计")
+
+    def test_unnumbered_heading_kept_when_the_user_owns_the_numbering(self):
+        out, state = self.build(blocks=[{"type": "heading", "level": 1, "text": "系统设计"}],
+                                request={"heading_numbering": "own"})
         r = check(out, intake_path=state)
         self.assertPass(r)
         self.assertIn("HEADING_NUMBERING", [w["code"] for w in r["warnings"]])
@@ -492,7 +504,7 @@ class TableRepairs(Fixture):
         d, _ = self.table_doc()
         out, r, _, _ = self.restyle(d)
         self.assertPass(r)
-        self.assertLessEqual(sum(c.width.twips for c in out.tables[0].columns), 8306)
+        self.assertLessEqual(sum(c.width.twips for c in out.tables[0].columns), 8958)
 
     def test_table_grid_centered_not_cell_text_left_aligned(self):
         d, _ = self.table_doc()
@@ -701,7 +713,7 @@ class KeywordAndPreservation(Fixture):
         with self.assertRaises(ValueError):
             self.restyle(d, roles={"p0": "keywords_zh"})
 
-    def test_empty_keywords_are_not_hard_content_gate(self):
+    def test_empty_parts_must_be_completed_unless_the_user_keeps_them(self):
         out, state = self.build(
             paper=True,
             extras={
@@ -713,8 +725,13 @@ class KeywordAndPreservation(Fixture):
             },
         )
         r = check(out, intake_path=state)
+        self.assertIn("EMPTY_CONTENT", [x["code"] for x in r["errors"]])
+        self.assertIn("只排版也要补", next(x["message"] for x in r["errors"] if x["code"] == "EMPTY_CONTENT"))
+        (Path(state).parent / "job.json").write_text(json.dumps({"keep_as_is": "摘要先空着，我自己写"}, ensure_ascii=False),
+                                                     encoding="utf-8")
+        r = check(out, intake_path=state)
         self.assertPass(r)
-        self.assertIn("EMPTY_CONTENT", [x["code"] for x in r["warnings"]])
+        self.assertIn("PART_LEFT_EMPTY", [x["code"] for x in r["warnings"]])
 
     def test_input_image_blob_hash_unchanged(self):
         d = Document()
@@ -851,9 +868,11 @@ class TocRepairs(Fixture):
         ):
             report = update(out, target, intake_path=state)
         self.assertEqual(len(report["passes"]), 2)
+        (Path(state).parent / "job.json").write_text(json.dumps({"keep_as_is": "这些部分先空着"}, ensure_ascii=False),
+                                                     encoding="utf-8")
         r = check(target, final=True, intake_path=state)
         self.assertPass(r)
-        self.assertIn("EMPTY_CONTENT", [w["code"] for w in r["warnings"]])
+        self.assertIn("PART_LEFT_EMPTY", [w["code"] for w in r["warnings"]])
 
     def test_font_environment_change_requires_new_toc_render(self):
         out, state = self.build(paper=True)
